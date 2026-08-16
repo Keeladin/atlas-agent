@@ -15,7 +15,7 @@ from atlas_morning.intervals import (
     Interval,
     find_intervals,
     reported_work_interval,
-    suspicious_night_wrap,
+    suspicious_numeric_interval,
 )
 from atlas_morning.models import Entry, ReportingUnit
 
@@ -58,6 +58,37 @@ MACHINE_TOKEN = re.compile(
     re.I,
 )
 ALL_AT_WORK = re.compile(r"^all at work\b", re.I)
+LABOR_ONLY = re.compile(r"^labou?r\.?\s*100%?\s*\.?$", re.I)
+REPORT_LEVEL_RE = re.compile(
+    r"^(?:"
+    r"long\s+standing\b|"
+    r"stop\s+and\s+fix\b|"
+    r"empty\s+(?:scotch|parts)\s+car\b|"
+    r"load\s+\d+\s*x\b|"
+    r"into\s+parts\s+car\b|"
+    r"take\s+.+\s+to\s+station\b|"
+    r"standing\s+\d"
+    r")",
+    re.I,
+)
+FARM_GATES = re.compile(r"\bfarm\s+gates?\b", re.I)
+GLUED_HEADER = re.compile(
+    r"^(L\d{2,3}|[A-Za-z]{2,10}\d{1,3})(\d{1,2}\s*[h:]\s*\d{2}\b.*)$",
+    re.I,
+)
+
+
+def _unglue_header(line: str) -> str:
+    stripped = line.strip()
+    for pattern in (
+        r"^(L\d{2})(\d{1,2}\s*[h:]\s*\d{2}\b.*)$",
+        r"^(L\d{3})(\d{1,2}\s*[h:]\s*\d{2}\b.*)$",
+        r"^([A-Za-z]{2,10}\d{1,3})(\d{1,2}\s*[h:]\s*\d{2}\b.*)$",
+    ):
+        match = re.match(pattern, stripped, re.I)
+        if match and is_plausible_equipment_id(match.group(1)):
+            return f"{match.group(1)} {match.group(2)}"
+    return line
 
 
 def _is_item_line(line: str) -> bool:
@@ -144,13 +175,17 @@ def split_blocks(text: str) -> list[list[str]]:
             current = []
 
     for raw in lines:
-        stripped = raw.strip()
+        stripped = _unglue_header(raw.strip()).strip()
         if not stripped:
             continue
-        if HEADING_RE.match(stripped):
+        if HEADING_RE.match(stripped) or LABOR_ONLY.match(stripped):
             flush()
             continue
         if ATTENDANCE_RE.match(stripped):
+            flush()
+            current = [stripped]
+            continue
+        if REPORT_LEVEL_RE.match(stripped):
             flush()
             current = [stripped]
             continue
@@ -161,16 +196,82 @@ def split_blocks(text: str) -> list[list[str]]:
         if current and ATTENDANCE_RE.match(current[0]):
             current.append(stripped)
             continue
-        if current and TERMINAL_STATUS.match(current[-1]) and _looks_like_new_activity(stripped):
+        if current and (
+            TERMINAL_STATUS.match(current[-1]) or REPORT_LEVEL_RE.match(current[0])
+        ) and (_looks_like_new_activity(stripped) or REPORT_LEVEL_RE.match(stripped)):
             flush()
             current = [stripped]
             continue
         if current:
             current.append(stripped)
-        elif _looks_like_new_activity(stripped):
+        elif _looks_like_new_activity(stripped) or REPORT_LEVEL_RE.match(stripped):
             current = [stripped]
     flush()
-    return blocks
+    return _expand_blocks_by_intervals(blocks)
+
+
+def _interval_led_line(line: str) -> bool:
+    found = find_intervals(line)
+    if not found:
+        return False
+    stripped = line.strip()
+    raw = found[0].raw.strip()
+    return stripped == raw or stripped.lower().startswith(raw[:6].lower())
+
+
+def _item_only_line(block: list[str]) -> str | None:
+    if not block:
+        return None
+    if _is_item_line(block[0]):
+        return _split_item_and_rest(block[0])[0]
+    return None
+
+
+def _expand_blocks_by_intervals(blocks: list[list[str]]) -> list[list[str]]:
+    expanded: list[list[str]] = []
+    for block in blocks:
+        iv_idxs = [i for i, line in enumerate(block) if find_intervals(line)]
+        if len(iv_idxs) < 2:
+            expanded.append(block)
+            continue
+        item_only = _item_only_line(block)
+        first_iv = iv_idxs[0]
+        work_before_first = any(
+            0 < idx < first_iv and not find_intervals(block[idx])
+            for idx in range(len(block))
+        )
+
+        def with_item(chunk: list[str]) -> list[str]:
+            if item_only and chunk and not _is_item_line(chunk[0]):
+                return [item_only, *chunk]
+            return chunk
+
+        if work_before_first:
+            prev = 0
+            for iv in iv_idxs:
+                chunk = block[prev : iv + 1]
+                expanded.append(with_item(chunk))
+                prev = iv + 1
+            if prev < len(block):
+                expanded[-1].extend(block[prev:])
+        else:
+            for n, iv in enumerate(iv_idxs):
+                end = iv_idxs[n + 1] if n + 1 < len(iv_idxs) else len(block)
+                chunk = block[0:end] if n == 0 else block[iv:end]
+                expanded.append(with_item(chunk))
+    return expanded
+
+
+def _retitle_if_operational(item: str, work: str) -> tuple[str, str]:
+    blob = f"{item} {work}"
+    if FARM_GATES.search(work):
+        return "Farm gates", "operational"
+    if re.search(r"empty\s+(?:scotch|parts)\s+car", blob, re.I):
+        return "Empty scotch/parts car", "operational"
+    if REPORT_LEVEL_RE.match(item) or REPORT_LEVEL_RE.match(work.split("\n")[0] if work else ""):
+        label = (work or item).split("\n")[0][:60]
+        return label, "operational"
+    return item, ""
 
 
 def _interval_for_block(lines: list[str]) -> Interval | None:
@@ -210,6 +311,8 @@ def _people(lines: list[str]) -> str:
     if not lines:
         return ""
     last = lines[-1].strip()
+    if REPORT_LEVEL_RE.match(last) or WORK_VERB.match(last) or LABOR_ONLY.match(last):
+        return ""
     if PEOPLE_LINE.match(last) and not ITEM_RE.match(last) and not find_intervals(last):
         if not RUNNING.search(last) and not STILL_REPAIR.search(last):
             if len(last.split()) <= 8:
@@ -342,6 +445,7 @@ def extract_entries(
         people = _people(block)
         period_raw = interval.raw if interval else ""
         happened, work = _work_and_happened(block, item, period_raw, people)
+        item, operational = _retitle_if_operational(item, work)
         if interval:
             start, end = interval.start, interval.end
             start_kind, end_kind = interval.start_kind, interval.end_kind
@@ -350,11 +454,11 @@ def extract_entries(
             start_kind = end_kind = "missing"
             if not period_raw:
                 period_raw = "not stated"
-        ambiguous = bool(interval and suspicious_night_wrap(interval, shift))
+        ambiguous = bool(interval and suspicious_numeric_interval(interval, shift))
         duration = reported_work_interval(interval, shift) if interval else ""
         state = _classify_state(blob)
         follow = _follow_up(blob)
-        character = ""
+        character = operational
         if re.search(r"\bservice\b|\bmaintenance\b", blob, re.I) and not re.search(
             r"\bbreakdown\b", blob, re.I
         ):

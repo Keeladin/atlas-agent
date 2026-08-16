@@ -196,6 +196,16 @@ If either bound is SOS, EOS, open-ended, “still busy,” missing, or otherwise
 
 In a **night-shift** report, do not confidently calculate a duration when numeric clocks wrap midnight and the written start looks like a daytime clock (for example `10:30–00:10` yielding 13 h 40 min). Keep the original wording, withhold the duration, and flag for confirmation. Do **not** silently rewrite `10:30` to `22:30`.
 
+Also withhold and flag a numeric wrap whose calculated duration is longer than 8 hours (for example `22h00–20h45` yielding ~22 h). Ordinary short midnight spans such as `22:30–01:55` may still be calculated.
+
+Recognize a machine header glued to a time (`L9122h15 - 22h55` → L91, 22h15–22h55). Do not invent a machine `L9122`.
+
+If one written machine block contains more than one work interval, keep each interval visible as its own entry (same machine unless the later work is clearly a different operational activity).
+
+Report-level or orphan fragments (labor %, empty scotch/parts car, farm gates, stop-and-fix, long standing, standing-at-location notes, chatter replies) must not be attached to the previous machine. They survive as their own operational rows or are omitted if they are only a labor-percentage line.
+
+When two same-item last-reported states are chronologically an unresolved state then a later closed/operational state, treat that as progression/closure, not an automatic conflict.
+
 Meeting time, operational-day bounds, and approximate shift windows must not be used as SOS/EOS substitutes.
 
 ---

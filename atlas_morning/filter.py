@@ -114,7 +114,7 @@ TIME_HINT_RE = re.compile(
     re.I,
 )
 ATTENDANCE_RE = re.compile(
-    r"^(absent|absend|all at work|absent for shift)\b",
+    r"^(absent|absend|all at work|absent for shift|work\s*force|workforce)\b",
     re.I,
 )
 
@@ -124,8 +124,8 @@ def looks_like_reporting_unit(message: Message) -> bool:
     if not text:
         return False
     if message.media_refs and len(text) < 80 and not TIME_HINT_RE.search(text):
-        # media-only / near-media follow-up
-        return True
+        # Voice/photo-only follow-ups are not shift reports.
+        return False
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return False
@@ -203,23 +203,34 @@ def build_reporting_units(messages: list[Message]) -> list[ReportingUnit]:
             gap = (nxt.timestamp - message.timestamp).total_seconds()
             if gap < 0 or gap > 45 * 60:
                 break
-            if looks_like_reporting_unit(nxt) and not (
-                nxt.media_refs and len(nxt.text.strip()) < 80
+            if (
+                nxt.media_refs
+                and len(nxt.text.strip()) < 80
+                and not looks_like_reporting_unit(nxt)
             ):
-                # a second full report from the same sender is its own unit
-                if HEADING_RE.search(nxt.text) or (
-                    TIME_HINT_RE.search(nxt.text) and ITEM_RE.search(nxt.text)
-                ):
-                    break
-            unit.extra_sources.append(nxt)
-            i += 1
+                unit.extra_sources.append(nxt)
+                i += 1
+                continue
+            if not looks_like_reporting_unit(nxt):
+                # Chatter / orphan comments stay out of the previous report.
+                i += 1
+                continue
+            if HEADING_RE.search(nxt.text) or (
+                TIME_HINT_RE.search(nxt.text) and ITEM_RE.search(nxt.text)
+            ):
+                break
+            # Short addendum that itself looks like a report: own unit.
+            break
         units.append(unit)
     return units
 
 
 def combined_text(unit: ReportingUnit) -> str:
     parts = [unit.message.text]
-    parts.extend(src.text for src in unit.extra_sources)
+    for src in unit.extra_sources:
+        if src.media_refs and len(src.text.strip()) < 80:
+            continue
+        parts.append(src.text)
     return "\n".join(parts)
 
 

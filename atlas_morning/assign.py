@@ -13,7 +13,7 @@ NIGHT_LABEL = re.compile(
     re.I,
 )
 DAY_LABEL = re.compile(
-    r"\b(?:tmm\s+)?day\s+shift\b|\b(?:daily|dialy)\s+report\b",
+    r"\b(?:tmm\s+)?day\s+shift\b",
     re.I,
 )
 HEADING_DATE = re.compile(
@@ -73,8 +73,7 @@ def assign_unit(unit: ReportingUnit, config: dict[str, Any] | None = None) -> Re
         described = "night"
     elif DAY_LABEL.search(heading):
         described = "day"
-    if described is None:
-        described = _shift_from_clocks(text)
+    # "Daily/Dialy Report" is a document title, not a shift label.
 
     uncertain = False
     heading_date = _heading_date(text)
@@ -85,8 +84,10 @@ def assign_unit(unit: ReportingUnit, config: dict[str, Any] | None = None) -> Re
         elif submitted.hour >= 14:
             described = "day"
         else:
-            described = "unknown"
-            uncertain = True
+            described = _shift_from_clocks(text)
+            if described is None:
+                described = "unknown"
+                uncertain = True
 
     if heading_date is not None and described != "unknown":
         op_day = heading_date

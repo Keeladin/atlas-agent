@@ -15,7 +15,12 @@ from atlas_morning.filter import (
     is_plausible_equipment_id,
 )
 from atlas_morning.models import Message, ReportingUnit
-from atlas_morning.intervals import Interval, find_intervals, reported_work_interval
+from atlas_morning.intervals import (
+    Interval,
+    find_intervals,
+    reported_work_interval,
+    suspicious_numeric_interval,
+)
 from atlas_morning.load import load_messages
 from atlas_morning.pack import build_pack, render_pack
 from atlas_morning.reconcile import apply_corrections, flag_entries
@@ -482,6 +487,187 @@ class ExceptionAndItemQuality(unittest.TestCase):
         )
 
 
+class FocusedReplayDateFixes(unittest.TestCase):
+    """Regressions from 2026-01-20, 02-18, 03-08, 03-09, 04-09."""
+
+    def _extract(self, text: str, shift: str = "night"):
+        unit = ReportingUnit(
+            message=Message(
+                sender="Lyle",
+                timestamp=datetime(2026, 2, 19, 2, 38),
+                text=text,
+            ),
+            shift=shift,
+        )
+        return extract_entries(unit, load_config(CONFIG_PATH))
+
+    def test_glued_machine_header_l91(self):
+        entries = self._extract(
+            "L9122h15 - 22h55\n"
+            "Fit tyres.\n"
+            "Running\n"
+        )
+        self.assertTrue(any("L91" in e.item.upper() for e in entries))
+        l91 = next(e for e in entries if "L91" in e.item.upper())
+        self.assertIn("22h15", l91.period_raw.replace(" ", ""))
+        self.assertIn("22h55", l91.period_raw.replace(" ", ""))
+        self.assertNotIn("L9122", l91.item.replace(" ", ""))
+
+    def test_farm_gates_not_owned_by_sst12(self):
+        entries = self._extract(
+            "Sst12\n"
+            "sos - 21h10\n"
+            "Repair  wire harness  and replace amber light.\n"
+            "21h00 - 0045\n"
+            "Repair  farm gates and post\n"
+            "Running\n"
+        )
+        sst12 = [e for e in entries if "SST12" in e.item.upper().replace(" ", "")]
+        self.assertTrue(sst12)
+        self.assertFalse(any("farm" in e.work_finding.lower() for e in sst12))
+        self.assertTrue(
+            any("farm" in (e.item + e.work_finding).lower() for e in entries)
+        )
+
+    def test_empty_scotch_car_not_on_rlh3(self):
+        entries = self._extract(
+            "Rlh3 23h30 - 00h15\n"
+            "Showing cable fault.\n"
+            "Running.\n"
+            "Empty  scotch car.\n"
+            "Labor 100%\n"
+        )
+        rlh = next(e for e in entries if "RLH3" in e.item.upper())
+        self.assertNotIn("scotch", rlh.work_finding.lower())
+        self.assertFalse(any("labor" in e.item.lower() for e in entries))
+        self.assertTrue(any("scotch" in (e.item + e.work_finding).lower() for e in entries))
+
+    def test_second_interval_visible_same_machine(self):
+        entries = self._extract(
+            "Stc12\n"
+            "Replace bosh pump\n"
+            "21h00--00h00\n"
+            "Brakes binding\n"
+            "Dayshift to check please\n"
+            "01h14--03h00\n"
+        )
+        stc = [e for e in entries if "STC12" in e.item.upper().replace(" ", "")]
+        self.assertGreaterEqual(len(stc), 2)
+        first = next(e for e in stc if "21h00" in e.period_raw)
+        second = next(e for e in stc if "01h14" in e.period_raw)
+        self.assertIn("bosh pump", first.work_finding.lower())
+        self.assertNotIn("brakes binding", first.work_finding.lower())
+        self.assertIn("brakes binding", second.work_finding.lower())
+        self.assertNotIn("bosh pump", second.work_finding.lower())
+
+    def test_lyle_second_interval_keeps_its_own_time_and_work(self):
+        entries = self._extract(
+            "Tdr9 20h50 - 21h55\n"
+            "Replace Hydraulic  hose.\n"
+            "Running\n"
+            "00h00 - 01h30\n"
+            "Move sec4 into entrance  of bay 1\n"
+        )
+        tdr = [e for e in entries if "TDR9" in e.item.upper()]
+        self.assertGreaterEqual(len(tdr), 2)
+        first = next(e for e in tdr if "20h50" in e.period_raw)
+        second = next(e for e in tdr if "00h00" in e.period_raw or "00h00" in e.period_raw.replace(" ", ""))
+        self.assertIn("hose", first.work_finding.lower())
+        self.assertIn("sec4", second.work_finding.lower())
+        self.assertNotEqual(first.period_raw, second.period_raw)
+        from atlas_morning.reconcile import flag_entries
+        flagged = flag_entries(tdr)
+        self.assertFalse(any("Overlapping" in f for e in flagged for f in e.flags))
+
+    def test_backwards_interval_withheld(self):
+        interval = find_intervals("22h00 - 20h45")[0]
+        self.assertTrue(suspicious_numeric_interval(interval, "night"))
+        self.assertEqual(reported_work_interval(interval, "night"), "")
+        entries = self._extract(
+            "Tdr10 22h00 - 20h45\nCharge and fit Accumulators.\nRunning\n"
+        )
+        tdr = next(e for e in entries if "TDR10" in e.item.upper())
+        self.assertEqual(tdr.reported_work_interval, "")
+        self.assertTrue(tdr.interval_ambiguous)
+        self.assertNotIn("22 h", tdr.reported_work_interval)
+
+    def test_progression_not_conflict(self):
+        from atlas_morning.reconcile import flag_entries
+        from atlas_morning.models import Entry
+
+        earlier = Entry(
+            item="ARB4",
+            item_key="ARB4",
+            period_raw="11h50 - eos",
+            start=None,
+            end=None,
+            start_kind="missing",
+            end_kind="eos",
+            what_happened="fitting broke",
+            work_finding="Paul still busy",
+            last_reported_state="Still under repair",
+            follow_up="",
+            people="",
+            work_character="",
+            media_present=False,
+            source_ref="2026-04-09 16:00:00|Lyle",
+        )
+        later = Entry(
+            item="ARB4",
+            item_key="ARB4",
+            period_raw="21h00--22h00",
+            start=(21, 0),
+            end=(22, 0),
+            start_kind="numeric",
+            end_kind="numeric",
+            what_happened="Remove broken fitting , test all ok",
+            work_finding="test all ok",
+            last_reported_state="Reported operational",
+            follow_up="",
+            people="",
+            work_character="",
+            media_present=False,
+            source_ref="2026-04-10 02:22:00|Fanie Lombard",
+        )
+        flagged = flag_entries([earlier, later])
+        self.assertFalse(
+            any("Conflicting last-reported" in f for e in flagged for f in e.flags)
+        )
+
+    def test_dialy_report_after_midnight_is_night_from_clocks(self):
+        from atlas_morning.assign import assign_unit
+        from atlas_morning.models import ReportingUnit
+
+        unit = ReportingUnit(
+            message=Message(
+                sender="Fanie Lombard",
+                timestamp=datetime(2026, 3, 9, 3, 56),
+                text="Dialy Report\nStc12\nReplace bosh pump\n21h00--00h00\n",
+            )
+        )
+        assigned = assign_unit(unit, load_config(CONFIG_PATH))
+        self.assertEqual(assigned.shift, "night")
+        self.assertEqual(assigned.operational_day, date(2026, 3, 8))
+
+    def test_chatter_followup_not_attached(self):
+        from atlas_morning.filter import build_reporting_units
+        from atlas_morning.load import parse_whatsapp_text
+
+        messages = parse_whatsapp_text(
+            "18/02/2026, 14:00 - Fanie Lombard: Dialy Report\n"
+            "L97\nGot a flat tyre\n"
+            "\n"
+            "18/02/2026, 14:05 - Fanie Lombard: No sir it was used the entire shift sst 19\n"
+            "Jan report by Jaco oor Rlh5\n"
+        )
+        units = build_reporting_units(messages)
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0].extra_sources, [])
+        entries = extract_entries(units[0], load_config(CONFIG_PATH))
+        blob = " ".join(e.work_finding for e in entries).lower()
+        self.assertNotIn("no sir", blob)
+
+
 class IntervalUnitTests(unittest.TestCase):
     def test_sos_eos_no_duration(self):
         interval = find_intervals("sos - 14h30")[0]
@@ -498,10 +684,13 @@ class IntervalUnitTests(unittest.TestCase):
         interval = find_intervals("10:30-00:10")[0]
         self.assertTrue(suspicious_night_wrap(interval, "night"))
         self.assertEqual(reported_work_interval(interval, "night"), "")
-        self.assertEqual(reported_work_interval(interval, "day"), "13 h 40 min")
+        self.assertEqual(reported_work_interval(interval, "day"), "")
         evening = find_intervals("22:30-01:55")[0]
         self.assertFalse(suspicious_night_wrap(evening, "night"))
         self.assertEqual(reported_work_interval(evening, "night"), "3 h 25 min")
+        backward = find_intervals("22h00 - 20h45")[0]
+        self.assertTrue(suspicious_numeric_interval(backward, "night"))
+        self.assertEqual(reported_work_interval(backward, "night"), "")
 
     def test_midnight_span(self):
         interval = find_intervals("22:30-01:55")[0]

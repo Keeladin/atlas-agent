@@ -5,7 +5,12 @@ from dataclasses import dataclass
 
 from atlas_morning.models import ClockKind
 
-TOKEN = r"(?:sos|eos|eoe|still\s+busy|\d{1,2}\s*[h:.]\s*\d{2}|\d{1,2}\s*h\b)"
+TOKEN = (
+    r"(?:sos|eos|eoe|eod|still\s+busy|"
+    r"\d{1,2}\s*[h:.]\s*\d{2}|"
+    r"\d{1,2}\s*h\b|"
+    r"(?:[01]\d|2[0-3])[0-5]\d)"
+)
 INTERVAL_RE = re.compile(
     rf"(?P<a>{TOKEN})\s*(?:[-–—=]{{1,2}}|to|tot)\s*(?P<b>{TOKEN})",
     re.I,
@@ -25,7 +30,7 @@ def parse_clock_token(token: str) -> tuple[tuple[int, int] | None, ClockKind]:
     raw = re.sub(r"\s+", "", token).lower()
     if raw == "sos":
         return None, "sos"
-    if raw in {"eos", "eoe"}:
+    if raw in {"eos", "eoe", "eod"}:
         return None, "eos"
     if raw.startswith("stillbusy"):
         return None, "still_busy"
@@ -44,6 +49,9 @@ def parse_clock_token(token: str) -> tuple[tuple[int, int] | None, ClockKind]:
         if 0 <= hour <= 23:
             return (hour, 0), "numeric"
         return None, "missing"
+    match = re.fullmatch(r"([01]\d|2[0-3])([0-5]\d)", raw)
+    if match:
+        return (int(match.group(1)), int(match.group(2))), "numeric"
     return None, "missing"
 
 
@@ -102,8 +110,28 @@ def suspicious_night_wrap(interval: Interval, shift: str | None) -> bool:
     return 6 <= hour <= 17
 
 
-def reported_work_interval(interval: Interval, shift: str | None = None) -> str:
+SUSPICIOUS_WRAP_MINUTES = 8 * 60
+
+
+def suspicious_numeric_interval(interval: Interval, shift: str | None = None) -> bool:
+    """Withhold confident duration for backwards or implausibly long wraps.
+
+    Do not rewrite clocks. 22h00–20h45 and 10:30–00:10 are examples.
+    Ordinary midnight spans such as 22:30–01:55 remain calculable.
+    """
     if suspicious_night_wrap(interval, shift):
+        return True
+    if interval.start_kind != "numeric" or interval.end_kind != "numeric":
+        return False
+    if interval.start is None or interval.end is None:
+        return False
+    if wraps_midnight(interval):
+        return minutes_between(interval.start, interval.end) > SUSPICIOUS_WRAP_MINUTES
+    return False
+
+
+def reported_work_interval(interval: Interval, shift: str | None = None) -> str:
+    if suspicious_numeric_interval(interval, shift):
         return ""
     if interval.start_kind == "numeric" and interval.end_kind == "numeric":
         if interval.start is None or interval.end is None:
@@ -131,3 +159,14 @@ def intervals_overlap(a: Interval, b: Interval) -> bool:
     if b1 < b0:
         b1 += 24 * 60
     return a0 < b1 and b0 < a1
+
+
+def intervals_equal(a: Interval, b: Interval) -> bool:
+    return (
+        a.start_kind == b.start_kind
+        and a.end_kind == b.end_kind
+        and a.start == b.start
+        and a.end == b.end
+        and a.start is not None
+        and a.end is not None
+    )

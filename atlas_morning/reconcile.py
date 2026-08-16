@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from atlas_morning.intervals import Interval, intervals_overlap
+from atlas_morning.intervals import Interval, intervals_equal, intervals_overlap
 from atlas_morning.models import Entry
 
 CONTINUITY_EVIDENCE = (
@@ -36,6 +36,31 @@ def _as_interval(entry: Entry) -> Interval:
     )
 
 
+OPEN_STATES = {
+    "Not tested",
+    "Still under repair",
+    "Awaiting spares",
+    "State not established from report",
+}
+CLOSED_STATES = {
+    "Reported operational",
+    "Reported complete",
+}
+
+
+def _is_state_progression(ordered: list[Entry]) -> bool:
+    """Unresolved then later closed is closure, not a conflict."""
+    if len(ordered) < 2:
+        return False
+    saw_open = False
+    for entry in ordered:
+        if entry.last_reported_state in OPEN_STATES:
+            saw_open = True
+        elif saw_open and entry.last_reported_state in CLOSED_STATES:
+            return True
+    return False
+
+
 def _explicit_single_continue(entry: Entry) -> bool:
     blob = f"{entry.what_happened} {entry.work_finding}".lower()
     return blob.startswith("cont to") or "cont to assemble" in blob
@@ -55,7 +80,11 @@ def flag_entries(entries: list[Entry]) -> list[Entry]:
                 right = entries[right_i]
                 if _explicit_single_continue(left) and left_i == right_i:
                     continue
-                overlap = intervals_overlap(_as_interval(left), _as_interval(right))
+                left_iv = _as_interval(left)
+                right_iv = _as_interval(right)
+                overlap = intervals_overlap(left_iv, right_iv) and not intervals_equal(
+                    left_iv, right_iv
+                )
                 if overlap:
                     left.overlap_noted = True
                     right.overlap_noted = True
@@ -87,17 +116,23 @@ def flag_entries(entries: list[Entry]) -> list[Entry]:
                         f"Possible continuation of earlier {right.item} work — confirm",
                     )
 
-        states = {
-            entries[i].last_reported_state
-            for i in indexes
-            if entries[i].last_reported_state != "State not established from report"
-        }
-        if len(states) > 1:
-            for i in indexes:
-                _add_flag(
-                    entries[i],
-                    f"Conflicting last-reported states for {entries[i].item} — both kept",
-                )
+        ordered = sorted(
+            (entries[i] for i in indexes),
+            key=lambda entry: (entry.source_ref, entry.start or (99, 99)),
+        )
+        if not _is_state_progression(ordered):
+            states = {
+                entries[i].last_reported_state
+                for i in indexes
+                if entries[i].last_reported_state
+                not in {"", "State not established from report"}
+            }
+            if len(states) > 1:
+                for i in indexes:
+                    _add_flag(
+                        entries[i],
+                        f"Conflicting last-reported states for {entries[i].item} — both kept",
+                    )
 
     for entry in entries:
         if entry.work_character == "attendance":

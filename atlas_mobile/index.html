@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1a2332">
+  <title>Atlas Mobile Capture</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <p class="brand">AtlasAgent</p>
+    <h1>Mobile Capture</h1>
+    <p id="net-banner" class="banner">Checking connection…</p>
+  </header>
+
+  <main>
+    <section id="screen-home">
+      <button id="btn-new-report" class="primary">Start report</button>
+      <h2>On this device</h2>
+      <div id="report-list"></div>
+    </section>
+
+    <section id="screen-start" hidden>
+      <h2>Start Atlas report</h2>
+      <form id="form-start">
+        <label>Who
+          <select id="field-user" required></select>
+        </label>
+        <label>Operational day (06:00 start)
+          <input id="field-day" type="date" required>
+        </label>
+        <label>Shift
+          <select id="field-shift" required>
+            <option value="">Choose…</option>
+            <option value="day">Day</option>
+            <option value="night">Night</option>
+          </select>
+        </label>
+        <p id="start-val" class="error"></p>
+        <div class="row">
+          <button type="button" id="btn-start-cancel">Cancel</button>
+          <button type="submit" class="primary">Create local report</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="screen-report" hidden>
+      <p id="report-heading"></p>
+      <div class="row">
+        <button id="btn-home">Home</button>
+        <button id="btn-add-activity" class="primary">Add activity</button>
+        <button id="btn-end-report">End Report</button>
+      </div>
+      <div id="activity-list"></div>
+    </section>
+
+    <section id="screen-activity" hidden>
+      <h2>Activity</h2>
+      <label>Kind
+        <select id="act-kind">
+          <option value="machine">Machine</option>
+          <option value="other">Other operational</option>
+          <option value="attendance">Attendance</option>
+        </select>
+      </label>
+      <div id="wrap-subject">
+        <label>Machine / item
+          <input id="act-subject" type="text" autocomplete="off" placeholder="SST12 or type a new identity">
+        </label>
+        <div id="machine-suggest" class="suggest"></div>
+      </div>
+      <div id="wrap-attendance" hidden>
+        <label><input id="act-all-at-work" type="checkbox"> All at work</label>
+      </div>
+      <label>What happened
+        <textarea id="act-work" rows="3"></textarea>
+      </label>
+      <div id="wrap-times">
+        <label>Time
+          <select id="act-time-mode">
+            <option value="clocks">Start and end clocks</option>
+            <option value="no_times">No times — standing / status</option>
+          </select>
+        </label>
+      </div>
+      <div id="wrap-clocks" class="row">
+        <label>Start <input id="act-start" type="time"></label>
+        <label>End <input id="act-end" type="time"></label>
+      </div>
+      <div id="wrap-continue" hidden>
+        <p id="continue-hint" class="hint"></p>
+        <label>This activity
+          <select id="act-continue">
+            <option value="">Choose…</option>
+            <option value="continue">Continue previous</option>
+            <option value="new">New issue</option>
+          </select>
+        </label>
+      </div>
+      <div id="wrap-outcome">
+        <label>Job outcome
+          <select id="act-outcome">
+            <option value="">Choose…</option>
+            <option value="completed">Completed</option>
+            <option value="incomplete">Incomplete / continue</option>
+          </select>
+        </label>
+      </div>
+      <div id="wrap-state">
+        <label>Machine state
+          <select id="act-state">
+            <option value="">Choose…</option>
+            <option value="running">Running / operational</option>
+            <option value="not_tested">Not tested</option>
+            <option value="still_under_repair">Still under repair / standing</option>
+            <option value="awaiting_parts">Awaiting parts</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+      </div>
+      <div id="wrap-state-other" hidden>
+        <label>Other state note
+          <input id="act-state-other" type="text">
+        </label>
+      </div>
+      <label>Follow-up / unresolved
+        <input id="act-follow" type="text">
+      </label>
+      <label>People (optional)
+        <input id="act-people" type="text">
+      </label>
+      <label>Extra detail (optional)
+        <textarea id="act-extra" rows="2"></textarea>
+      </label>
+      <div id="val-box" class="val"></div>
+      <div class="row">
+        <button type="button" id="btn-activity-cancel">Cancel</button>
+        <button type="button" id="btn-save-back">Back to list</button>
+        <button type="button" id="btn-next" class="primary" disabled>Next</button>
+      </div>
+    </section>
+
+    <section id="screen-end" hidden>
+      <h2>End Report</h2>
+      <p id="end-meta"></p>
+      <div id="end-review"></div>
+      <h3>WhatsApp text</h3>
+      <textarea id="wa-text" rows="16" readonly></textarea>
+      <div class="row">
+        <button type="button" id="btn-end-back">Back</button>
+        <button type="button" id="btn-complete">Mark completed (local only)</button>
+        <button type="button" id="btn-copy-wa" class="primary">Copy</button>
+      </div>
+      <p id="copy-status" class="muted"></p>
+      <button type="button" id="btn-home-2">Home</button>
+    </section>
+  </main>
+
+  <script src="js/records.js"></script>
+  <script src="js/directory.js"></script>
+  <script src="js/validate.js"></script>
+  <script src="js/assemble.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

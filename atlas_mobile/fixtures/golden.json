@@ -1,0 +1,424 @@
+{
+  "machines": [
+    {"id": "SST12", "aliases": ["Sst12"]},
+    {"id": "SST16", "aliases": []},
+    {"id": "SST21", "aliases": []},
+    {"id": "STC12", "aliases": []},
+    {"id": "ARB4", "aliases": ["Arb4"]},
+    {"id": "L91", "aliases": []},
+    {"id": "TDR10", "aliases": ["Tdr10"]}
+  ],
+  "cases": [
+    {
+      "id": "timed-completed-running",
+      "activity": {
+        "kind": "machine",
+        "subject": "SST12",
+        "work": "Repair harness and amber light.",
+        "time_mode": "clocks",
+        "start": "20:00",
+        "end": "21:10",
+        "job_outcome": "completed",
+        "machine_state": "running",
+        "follow_up": "",
+        "continuation": "",
+        "orange_acks": []
+      },
+      "expect": { "status": "green" }
+    },
+    {
+      "id": "timed-incomplete-still-under-repair",
+      "activity": {
+        "kind": "machine",
+        "subject": "ARB4",
+        "work": "Fitting broke, no fitting UG.",
+        "time_mode": "clocks",
+        "start": "11:50",
+        "end": "14:00",
+        "job_outcome": "incomplete",
+        "machine_state": "still_under_repair",
+        "follow_up": "No fitting available UG.",
+        "continuation": "",
+        "orange_acks": []
+      },
+      "expect": { "status": "green" }
+    },
+    {
+      "id": "completed-not-tested",
+      "activity": {
+        "kind": "machine",
+        "subject": "SST16",
+        "work": "Service. Needs brake test.",
+        "time_mode": "clocks",
+        "start": "08:30",
+        "end": "09:00",
+        "job_outcome": "completed",
+        "machine_state": "not_tested",
+        "follow_up": "No operator to assist.",
+        "continuation": "",
+        "orange_acks": []
+      },
+      "expect": { "status": "green" }
+    },
+    {
+      "id": "no-times-standing-green",
+      "activity": {
+        "kind": "machine",
+        "subject": "L91",
+        "work": "Standing at 763 settlers with 2 flat tyres.",
+        "time_mode": "no_times",
+        "start": "",
+        "end": "",
+        "job_outcome": "",
+        "machine_state": "still_under_repair",
+        "follow_up": "No spare tyres UG.",
+        "continuation": "",
+        "orange_acks": []
+      },
+      "expect": { "status": "green" }
+    },
+    {
+      "id": "missing-machine-state-red",
+      "activity": {
+        "kind": "machine",
+        "subject": "SST12",
+        "work": "Replace hose.",
+        "time_mode": "clocks",
+        "start": "20:40",
+        "end": "21:45",
+        "job_outcome": "completed",
+        "machine_state": "",
+        "follow_up": "",
+        "continuation": "",
+        "orange_acks": []
+      },
+      "expect": { "status": "red", "red_contains": "Machine state is required." }
+    },
+    {
+      "id": "missing-job-outcome-red",
+      "activity": {
+        "kind": "machine",
+        "subject": "SST12",
+        "work": "Replace hose.",
+        "time_mode": "clocks",
+        "start": "20:40",
+        "end": "21:45",
+        "job_outcome": "",
+        "machine_state": "running",
+        "follow_up": "",
+        "continuation": "",
+        "orange_acks": []
+      },
+      "expect": { "status": "red", "red_contains": "Job outcome is required" }
+    },
+    {
+      "id": "suspicious-1030-0010-orange",
+      "activity": {
+        "kind": "machine",
+        "subject": "ARB4",
+        "work": "Remove and replace drifter.",
+        "time_mode": "clocks",
+        "start": "10:30",
+        "end": "00:10",
+        "job_outcome": "completed",
+        "machine_state": "running",
+        "follow_up": "",
+        "continuation": "",
+        "orange_acks": []
+      },
+      "expect": { "status": "orange", "orange_code": "suspicious_clocks" }
+    },
+    {
+      "id": "suspicious-2200-2045-orange",
+      "activity": {
+        "kind": "machine",
+        "subject": "TDR10",
+        "work": "Charge and fit accumulators.",
+        "time_mode": "clocks",
+        "start": "22:00",
+        "end": "20:45",
+        "job_outcome": "completed",
+        "machine_state": "running",
+        "follow_up": "",
+        "continuation": "",
+        "orange_acks": []
+      },
+      "expect": { "status": "orange", "orange_code": "suspicious_clocks" }
+    },
+    {
+      "id": "overnight-2230-0155-green",
+      "activity": {
+        "kind": "machine",
+        "subject": "STC12",
+        "work": "Install rear propshaft.",
+        "time_mode": "clocks",
+        "start": "22:30",
+        "end": "01:55",
+        "job_outcome": "completed",
+        "machine_state": "running",
+        "follow_up": "",
+        "continuation": "",
+        "orange_acks": []
+      },
+      "expect": { "status": "green" }
+    },
+    {
+      "id": "suspicious-acked-green",
+      "activity": {
+        "kind": "machine",
+        "subject": "ARB4",
+        "work": "Remove and replace drifter.",
+        "time_mode": "clocks",
+        "start": "10:30",
+        "end": "00:10",
+        "job_outcome": "completed",
+        "machine_state": "running",
+        "follow_up": "",
+        "continuation": "",
+        "orange_acks": ["suspicious_clocks"]
+      },
+      "expect": { "status": "green" }
+    },
+    {
+      "id": "new-identity-orange",
+      "activity": {
+        "kind": "machine",
+        "subject": "XYZ99",
+        "work": "Inspect.",
+        "time_mode": "clocks",
+        "start": "09:00",
+        "end": "09:30",
+        "job_outcome": "completed",
+        "machine_state": "running",
+        "follow_up": "",
+        "continuation": "",
+        "orange_acks": []
+      },
+      "expect": { "status": "orange", "orange_code": "new_identity" }
+    },
+    {
+      "id": "new-identity-confirmed-green",
+      "activity": {
+        "kind": "machine",
+        "subject": "XYZ99",
+        "work": "Inspect.",
+        "time_mode": "clocks",
+        "start": "09:00",
+        "end": "09:30",
+        "job_outcome": "completed",
+        "machine_state": "running",
+        "follow_up": "",
+        "continuation": "",
+        "orange_acks": ["new_identity"]
+      },
+      "expect": { "status": "green" }
+    },
+    {
+      "id": "other-operational-no-state",
+      "activity": {
+        "kind": "other",
+        "subject": "Farm gates",
+        "work": "Repair farm gates and post.",
+        "time_mode": "clocks",
+        "start": "21:00",
+        "end": "00:45",
+        "job_outcome": "",
+        "machine_state": "",
+        "follow_up": "",
+        "continuation": "",
+        "orange_acks": []
+      },
+      "expect": { "status": "green" }
+    },
+    {
+      "id": "attendance-named",
+      "activity": {
+        "kind": "attendance",
+        "subject": "",
+        "work": "Fanie - sick",
+        "time_mode": "no_times",
+        "start": "",
+        "end": "",
+        "job_outcome": "",
+        "machine_state": "",
+        "follow_up": "",
+        "continuation": "",
+        "orange_acks": []
+      },
+      "expect": { "status": "green" }
+    },
+    {
+      "id": "continue-required-when-thread-open",
+      "activity": {
+        "kind": "machine",
+        "subject": "ARB4",
+        "work": "Remove broken fitting, test all ok.",
+        "time_mode": "clocks",
+        "start": "21:00",
+        "end": "22:00",
+        "job_outcome": "completed",
+        "machine_state": "running",
+        "follow_up": "",
+        "continuation": "",
+        "orange_acks": []
+      },
+      "context": {
+        "prior": {
+          "status": "completed_local",
+          "activities": [
+            {
+              "kind": "machine",
+              "subject": "ARB4",
+              "work": "Fitting broke.",
+              "time_mode": "clocks",
+              "start": "11:50",
+              "end": "14:00",
+              "job_outcome": "incomplete",
+              "machine_state": "still_under_repair",
+              "follow_up": "No fitting UG.",
+              "continuation": ""
+            }
+          ]
+        }
+      },
+      "expect": { "status": "red", "red_contains": "Continue previous or New issue" }
+    },
+    {
+      "id": "continue-running-closes",
+      "activity": {
+        "kind": "machine",
+        "subject": "ARB4",
+        "work": "Remove broken fitting, test all ok.",
+        "time_mode": "clocks",
+        "start": "21:00",
+        "end": "22:00",
+        "job_outcome": "completed",
+        "machine_state": "running",
+        "follow_up": "",
+        "continuation": "continue",
+        "orange_acks": []
+      },
+      "context": {
+        "prior": {
+          "status": "completed_local",
+          "activities": [
+            {
+              "kind": "machine",
+              "subject": "ARB4",
+              "work": "Fitting broke.",
+              "job_outcome": "incomplete",
+              "machine_state": "still_under_repair",
+              "follow_up": "No fitting UG."
+            }
+          ]
+        }
+      },
+      "expect": { "status": "green", "closes_thread": true }
+    },
+    {
+      "id": "completed-running-without-continue-does-not-close",
+      "expect_thread": {
+        "subject": "ARB4",
+        "reports": [
+          {
+            "activities": [
+              {
+                "kind": "machine",
+                "subject": "ARB4",
+                "job_outcome": "incomplete",
+                "machine_state": "still_under_repair"
+              },
+              {
+                "kind": "machine",
+                "subject": "ARB4",
+                "job_outcome": "completed",
+                "machine_state": "running",
+                "continuation": ""
+              }
+            ]
+          }
+        ],
+        "open": true
+      }
+    },
+    {
+      "id": "same-machine-new-issue-does-not-close",
+      "expect_thread": {
+        "subject": "SST21",
+        "reports": [
+          {
+            "activities": [
+              {
+                "kind": "machine",
+                "subject": "SST21",
+                "job_outcome": "incomplete",
+                "machine_state": "still_under_repair"
+              },
+              {
+                "kind": "machine",
+                "subject": "SST21",
+                "job_outcome": "completed",
+                "machine_state": "running",
+                "continuation": "new"
+              }
+            ]
+          }
+        ],
+        "open": true
+      }
+    }
+  ],
+  "assemble": {
+    "id": "compact-whatsapp",
+    "report": {
+      "user_id": "user.jaco",
+      "user_display_name": "Jaco Fouché",
+      "operational_day": "2026-01-20",
+      "shift": "night",
+      "activities": [
+        {
+          "kind": "machine",
+          "subject": "SST12",
+          "work": "Repair harness and amber light.",
+          "time_mode": "clocks",
+          "start": "20:00",
+          "end": "21:10",
+          "job_outcome": "completed",
+          "machine_state": "running"
+        },
+        {
+          "kind": "other",
+          "subject": "Farm gates",
+          "work": "Repair farm gates and post.",
+          "time_mode": "clocks",
+          "start": "21:00",
+          "end": "00:45"
+        },
+        {
+          "kind": "machine",
+          "subject": "L91",
+          "work": "Standing 813S / brakes. MS to fault find.",
+          "time_mode": "no_times",
+          "machine_state": "still_under_repair",
+          "follow_up": "MS to fault find."
+        },
+        {
+          "kind": "attendance",
+          "work": "Lucky - sick"
+        }
+      ]
+    },
+    "expect_contains": [
+      "Night shift 2026-01-20 — Jaco Fouché",
+      "SST12 20:00-21:10",
+      "Repair harness and amber light.",
+      "Running",
+      "Farm gates 21:00-00:45",
+      "L91",
+      "Still under repair / standing",
+      "Attendance",
+      "Lucky - sick"
+    ],
+    "expect_absent": ["SOS", "EOS"]
+  }
+}

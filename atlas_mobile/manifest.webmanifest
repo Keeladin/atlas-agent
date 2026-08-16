@@ -1,0 +1,9 @@
+{
+  "name": "AtlasAgent Mobile Capture",
+  "short_name": "Atlas Capture",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#121820",
+  "theme_color": "#1a2332",
+  "description": "Offline Atlas report capture"
+}

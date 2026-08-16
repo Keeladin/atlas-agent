@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Atlas Capture fixtures</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <h1>Golden fixtures</h1>
+  <pre id="out">Running…</pre>
+  <script src="js/records.js"></script>
+  <script src="js/directory.js"></script>
+  <script src="js/validate.js"></script>
+  <script src="js/assemble.js"></script>
+  <script>
+    fetch("fixtures/golden.json")
+      .then(function (r) { return r.json(); })
+      .then(function (golden) {
+        const lines = [];
+        let failed = 0;
+        golden.cases.forEach(function (testCase) {
+          if (testCase.expect_thread) {
+            const open = AtlasRecords.threadIsOpen(
+              testCase.expect_thread.subject,
+              testCase.expect_thread.reports
+            );
+            const ok = open === testCase.expect_thread.open;
+            if (!ok) failed += 1;
+            lines.push((ok ? "ok  " : "FAIL") + " " + testCase.id);
+            return;
+          }
+          const reports = [];
+          if (testCase.context && testCase.context.prior) reports.push(testCase.context.prior);
+          const result = AtlasValidate.validateActivity(testCase.activity, {
+            machines: golden.machines,
+            reportsInOrder: reports.concat([{ activities: [] }]),
+          });
+          const ok = result.status === testCase.expect.status;
+          if (!ok) failed += 1;
+          lines.push((ok ? "ok  " : "FAIL") + " " + testCase.id + " " + result.status);
+        });
+        const text = AtlasAssemble.whatsappText(golden.assemble.report);
+        golden.assemble.expect_contains.forEach(function (n) {
+          const ok = text.indexOf(n) !== -1;
+          if (!ok) failed += 1;
+          lines.push((ok ? "ok  " : "FAIL") + " whatsapp " + n);
+        });
+        lines.push(failed ? failed + " failed" : "All golden fixtures passed.");
+        document.getElementById("out").textContent = lines.join("\n");
+      });
+  </script>
+</body>
+</html>

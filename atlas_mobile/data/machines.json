@@ -1,0 +1,493 @@
+{
+  "type": "atlas.machine_directory",
+  "machines": [
+    {
+      "id": "machine.adr13",
+      "canonical_id": "ADR13",
+      "display_name": "ADR13",
+      "aliases": [
+        "Adr13"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.adr14",
+      "canonical_id": "ADR14",
+      "display_name": "ADR14",
+      "aliases": [
+        "Adr14"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.arb4",
+      "canonical_id": "ARB4",
+      "display_name": "ARB4",
+      "aliases": [
+        "ARB4",
+        "Arb4",
+        "ARB04"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.arb5",
+      "canonical_id": "ARB5",
+      "display_name": "ARB5",
+      "aliases": [
+        "ARB5",
+        "Arb5",
+        "ARB05"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.bsl01",
+      "canonical_id": "BSL01",
+      "display_name": "BSL01",
+      "aliases": [
+        "Bsl01"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.bsl02",
+      "canonical_id": "BSL02",
+      "display_name": "BSL02",
+      "aliases": [
+        "Bsl02"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.dt3",
+      "canonical_id": "DT3",
+      "display_name": "DT3",
+      "aliases": [
+        "Dt3",
+        "DT03"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.dt4",
+      "canonical_id": "DT4",
+      "display_name": "DT4",
+      "aliases": [
+        "Dt4",
+        "DT04",
+        "Dt04"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.dt301",
+      "canonical_id": "DT301",
+      "display_name": "DT301",
+      "aliases": [
+        "Dt301"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.dt401",
+      "canonical_id": "DT401",
+      "display_name": "DT401",
+      "aliases": [
+        "Dt401"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.dt402",
+      "canonical_id": "DT402",
+      "display_name": "DT402",
+      "aliases": [
+        "Dt402"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.l91",
+      "canonical_id": "L91",
+      "display_name": "L91",
+      "aliases": [
+        "L 91"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.l95",
+      "canonical_id": "L95",
+      "display_name": "L95",
+      "aliases": [],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.l96",
+      "canonical_id": "L96",
+      "display_name": "L96",
+      "aliases": [],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.l97",
+      "canonical_id": "L97",
+      "display_name": "L97",
+      "aliases": [],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.l102",
+      "canonical_id": "L102",
+      "display_name": "L102",
+      "aliases": [
+        "L102E",
+        "L102e"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.l105",
+      "canonical_id": "L105",
+      "display_name": "L105",
+      "aliases": [],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.nsc02",
+      "canonical_id": "NSC02",
+      "display_name": "NSC02",
+      "aliases": [
+        "Nsc02",
+        "NSC2"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.rlh1",
+      "canonical_id": "RLH1",
+      "display_name": "RLH1",
+      "aliases": [
+        "Rlh1",
+        "RLH01"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.rlh3",
+      "canonical_id": "RLH3",
+      "display_name": "RLH3",
+      "aliases": [
+        "Rlh3",
+        "RLH03"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.rlh5",
+      "canonical_id": "RLH5",
+      "display_name": "RLH5",
+      "aliases": [
+        "Rlh5",
+        "RLH05"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.sec3",
+      "canonical_id": "SEC3",
+      "display_name": "SEC3",
+      "aliases": [
+        "Sec3",
+        "SEC03",
+        "Sec03"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.sec4",
+      "canonical_id": "SEC4",
+      "display_name": "SEC4",
+      "aliases": [
+        "Sec4",
+        "SEC04"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.sec5",
+      "canonical_id": "SEC5",
+      "display_name": "SEC5",
+      "aliases": [
+        "Sec5",
+        "SEC05",
+        "Sec05"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.secl01",
+      "canonical_id": "SECL01",
+      "display_name": "SECL01",
+      "aliases": [
+        "SecL01",
+        "Secl01",
+        "SECL1"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.slv02",
+      "canonical_id": "SLV02",
+      "display_name": "SLV02",
+      "aliases": [
+        "Slv02",
+        "SLV2"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.sst12",
+      "canonical_id": "SST12",
+      "display_name": "SST12",
+      "aliases": [
+        "Sst12"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.sst15",
+      "canonical_id": "SST15",
+      "display_name": "SST15",
+      "aliases": [
+        "Sst15"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.sst16",
+      "canonical_id": "SST16",
+      "display_name": "SST16",
+      "aliases": [
+        "Sst16"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.sst17",
+      "canonical_id": "SST17",
+      "display_name": "SST17",
+      "aliases": [
+        "Sst17"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.sst19",
+      "canonical_id": "SST19",
+      "display_name": "SST19",
+      "aliases": [
+        "Sst19"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.sst20",
+      "canonical_id": "SST20",
+      "display_name": "SST20",
+      "aliases": [
+        "Sst20"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.sst21",
+      "canonical_id": "SST21",
+      "display_name": "SST21",
+      "aliases": [
+        "Sst21"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.sst22",
+      "canonical_id": "SST22",
+      "display_name": "SST22",
+      "aliases": [
+        "Sst22"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.stc9",
+      "canonical_id": "STC9",
+      "display_name": "STC9",
+      "aliases": [
+        "Stc9",
+        "STC09",
+        "Stc09"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.stc12",
+      "canonical_id": "STC12",
+      "display_name": "STC12",
+      "aliases": [
+        "Stc12"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.stc13",
+      "canonical_id": "STC13",
+      "display_name": "STC13",
+      "aliases": [
+        "Stc13"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.stc14",
+      "canonical_id": "STC14",
+      "display_name": "STC14",
+      "aliases": [
+        "Stc14",
+        "Stc 14"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.stc15",
+      "canonical_id": "STC15",
+      "display_name": "STC15",
+      "aliases": [
+        "Stc15"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.stv6",
+      "canonical_id": "STV6",
+      "display_name": "STV6",
+      "aliases": [
+        "STV06",
+        "Stv6",
+        "Stv06",
+        "STV-GT 01",
+        "Stvgt01",
+        "Stv gt 01",
+        "STVGT01"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.tdr8",
+      "canonical_id": "TDR8",
+      "display_name": "TDR8",
+      "aliases": [
+        "Tdr8",
+        "TDR08",
+        "Tdr08"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.tdr9",
+      "canonical_id": "TDR9",
+      "display_name": "TDR9",
+      "aliases": [
+        "Tdr9",
+        "TDR09",
+        "Tdr09"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.tdr10",
+      "canonical_id": "TDR10",
+      "display_name": "TDR10",
+      "aliases": [
+        "Tdr10"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.trbl02",
+      "canonical_id": "TRBL02",
+      "display_name": "TRBL02",
+      "aliases": [
+        "Trbl02",
+        "TRBL2"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.trbl03",
+      "canonical_id": "TRBL03",
+      "display_name": "TRBL03",
+      "aliases": [
+        "Trbl03",
+        "TRBL3"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    },
+    {
+      "id": "machine.trbl04",
+      "canonical_id": "TRBL04",
+      "display_name": "TRBL04",
+      "aliases": [
+        "Trbl04",
+        "TRBL4"
+      ],
+      "status": "active",
+      "available_in_picker": true
+    }
+  ]
+}

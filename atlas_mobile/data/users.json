@@ -1,0 +1,26 @@
+{
+  "type": "atlas.user_directory",
+  "users": [
+    {
+      "id": "user.lyle",
+      "display_name": "Lyle",
+      "role": "supervisor",
+      "status": "active",
+      "can_create_supervisor_reports": true
+    },
+    {
+      "id": "user.jurie",
+      "display_name": "Jurie Venter",
+      "role": "supervisor",
+      "status": "active",
+      "can_create_supervisor_reports": true
+    },
+    {
+      "id": "user.jaco",
+      "display_name": "Jaco Fouché",
+      "role": "director",
+      "status": "active",
+      "can_create_supervisor_reports": true
+    }
+  ]
+}

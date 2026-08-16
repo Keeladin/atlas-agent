@@ -49,3 +49,11 @@ Atlas becomes the **controlled source** of the report. WhatsApp remains an **ext
 - Supervisor-authored reports are still human operational reports, not agent personas.
 
 V1 acceptance tests, filters, operational-day rules, and the export adapter stay as they are until a future slice is specified.
+
+---
+
+## Queued for review
+
+`Mobile functionality.md` — Atlas Mobile Shift Reporting proposal.
+
+Capture one activity at a time on a phone; resolve green/orange/red before Next; End Report then copy WhatsApp text. Capture, validation, drafts and End Report review must work offline; sync to the server happens when coverage returns. Not authorised for implementation. Does not change current V1 replay/parser work.

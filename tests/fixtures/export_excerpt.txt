@@ -1,0 +1,408 @@
+04/01/2026, 03:02 - Messages and calls are end-to-end encrypted. Only people in this chat can read, listen to, or share them. *Learn more*
+
+07/01/2026, 03:05 - Lyle: L96 sos - eoe
+Replace front coil springs, fit new shocks,
+Replace stabilizer  bar and brushes.
+Fit  side new CV LH
+Make up RH CV
+Fit LH knuckle  and spindle. 
+💥 MS RH side shaft seal, casing needs to be pencil grinder as bur prevents seal to enter. 
+Complete LH and fit hubs L&R. 
+
+L91 11h00 - 11h20
+Replace LR tyre. 
+👍🏼
+
+Sst22 sos - eos.
+Complete  removal of front diff. 
+Fit new diff
+💥 MS to fit hubs from old diff. 
+Fill oils
+Replace u joint and fit. 
+
+Sst12 23h46 - 00h09
+No steering, coil fail
+Make temp plan remove park brake coil from rlh1 and fit as blocked  production. 
+Instruction  to bring to 813ws at eos that MS can fit correctly coil and fit removed coil back on RLH1
+Is running to comp shift.
+
+Stc12 22h10 - 23h40
+Fault find rear lights not working, repair harness.
+👍🏼
+
+NSC02 sos - 22h30
+No compressor oil. 
+Drain 4 L oil from RLH1 and top up. 
+👍🏼
+
+Sst16 22h00 - 23h30
+Jumpstart, 1 x battery only 7.5 v needs replacement💥 no spare batterys.
+👍🏼 
+
+Trbl03 21h40 - 22h00
+Replace resin  hose
+👍🏼
+
+ADR14 21h00 - 22h01
+Replace hyd hose
+👍🏼
+
+Rlh4 sos - 21h15
+T111 833N 
+On request  from G Yssle assist on rig tripping mini sub.
+Change settings on circuit braker inrish current on mini sub.
+
+Received  report SECL01 
+Pump no 2 not pumping  properly, no spare pump UG. Please  arrange  one to go down. 
+
+No wifi reception 813 WS.
+Cables damaged ar mini sub bull nose just up from wS. Live wires  also hanging as spark when contact on damaged  mesh.
+
+07/01/2026, 06:43 - Jaco Fouché: IMG-20260107-WA0008.jpg (file attached)
+
+08/01/2026, 15:37 - Fanie Lombard: Dialy Report
+
+L96
+Assemble front diff
+Do simret brake test
+08h00--15h00
+
+Sst22
+Cont to assemble diff,s
+Night shift to do simret beake test please
+08h00--14h45
+
+Sec03
+Repair oil leak and replace filters
+08h00--10h15
+Fanie staying on to baby sit
+
+Stc14
+Repair rear lights
+Refitt roller cover
+08h00--09h30
+
+Adr13
+Do phasing
+09h00--09h30
+Ass with hose 10h36
+
+Adr14
+Ass with diesel
+10h00--11h15
+Arrived at workshop
+Start repairs on leftboom
+Refitt sling
+Replace broken bolts
+Test with operator all ok
+11h40--13h30
+
+Tdr10
+Supply compressor oil
+11h45--12h45
+
+Sst21
+Replace rev alarm
+09h50--10h50
+
+Stc12
+Burst steering hose
+13h25--15h00
+
+Nsc02
+They started to strip the rear shoot to remove all concrete, still busy on it , night shift to cont assisting them11 h30-- 15h00
+
+12/01/2026, 15:13 - Lyle: Sst20 08h30 - 12h30
+Replace tappet  cover gaskets.
+Repair rear lights harness.
+Running 
+
+L91 10h00 - 11h00
+Bleed brakes and charge intenifier.
+Running 
+💥 NS to replace  front propshaft  u joints.
+
+Sst19 sos - 10h00
+Fasten e stops, refit 1x plug on pdm.
+Insulation of wires on gear selection. 
+Running 
+
+Arb5 sos - 13h10
+Replace hyd hoses, do wrapping, replace 1 set wear straps on bed.
+Running 
+
+Dt04 -01 08h15 - 08h30
+Jumpstart.
+Running 
+
+Trbl03 13h10 - 14h45
+Inspect flush valve, check compressor  pressure.
+Remove blockage, change o ring on HP accumulator,  test. 
+Running.
+
+20/01/2026, 03:31 - +27 78 737 4598: Night shift report 
+
+Bongane ensure both ACU's running in North, Started all the fans at 813N, checked the blasting boxes and completed his logbook. Went to SPC-0 to fault find on rock breaker, couldn't get it going at due to faulty relay and no spares there
+
+Tiaan check T102 813S gully box, continued with legal inspections and completion of logbooks
+
+Dawie repaired 1015 90° bend, vent crew installed it at RB2. Alignment of fan and wall was an issue, task completed 
+
+Vent crew reported that square to rounds that went down is wrong. 833N have box shaped while we have half round in workshop.
+
+Johan, Willem completed T46 833S vent wall, also removed generator for master drilling.
+Wall started at T50, chains are up and 2 x block boards. All material their to continue. Also removed force fan in T46 before continuing with wall.
+Theo assisted with Dieci and Stephen with UV. 
+
+💥L96 was taken to 813 workshop at sos, front lockers have an issue and break heads are leaking oil. Still down and booked of at control.
+💥AC is not working and also no dash panel lights is working 
+
+Hardus transported 4inch pipes and pump  from station. 
+Yellow cable went down but was blocked the whole shift by L94 with no operator available to move it.
+
+Batch plant pump running
+
+20/01/2026, 04:17 - Francois Coetzee: Good day leadership... Reminder on  Standdowns sessions for this week ....
+Standdowns is
+
+Wednesday Mining Projects@ 06:15 @TGP Meeting area - projects employees.  
+ Friday  Plant and Services at 06:15.  @ Front end Boiler Workshop... There will be  Energy pumping from 5:00 and then  but  do Stand down as planned...
+
+20/01/2026, 15:07 - Jaco Fouché: TRBL04
+08:00-09:00
+Replace return sling
+STC09
+08:00-09:00
+Repair steering solenoid cartridge
+L96 
+08:00-11:00
+Replace wheel hub locks
+TDR10
+09:00-10:00
+Weld ILMEG frame
+SST12
+09:30-Still busy
+Lift machine off rocks and replace numerous damaged hydraulic hoses
+
+NS please replace drum lift cartridges on STC09
+
+28/04/2026, 08:22 - Jurie Venter: Secl-01
+20:45-21:00
+Remove and replace door switch striker
+Fasten lose fitting on basket hose
+
+Stc13
+21:25-21:45
+Jumpstart
+
+L96
+21:50-22:10
+Remove and replace flat wheel
+
+Stv6
+22:10-22:30
+Remove and replace feul 
+Sensor 
+
+Sst12
+23:40-00:30
+Repair wire on hooter
+Remove and replace alternator 
+
+L102
+20:00-01:20
+Remove broken shock 
+Reweld shock bracked 
+Fit new shock 
+Remove exhaust ,cut out damage flex joint ,cut a flex joint out of a other exhaust and fit on exhaust of L102 fit exhaust 
+
+Stc14
+22:50-00:30
+Remove and replace burst house inside cab 
+
+Stc12
+00:30-02:30
+Remove fitting and fit to new diff ,try removing broken fittings but failed ,remove piston from old diff and strip new diff to fit piston
+
+30/04/2026, 14:17 - Fanie Lombard: Dialy Report
+
+Sst20
+Replace reverse hooter
+Repair hydraulic oil leak
+10h00--11h05
+
+Trbl02
+Replace flush head bolts
+10h00-10h30
+
+Sst15
+Weld outrigger cover
+12h20--12h50
+
+Stc12
+Tighten wheels
+Fill oil
+Repair electrical
+Adjust brakes
+Test all ok
+08h00--13h37
+
+Rlh5
+Replace knuckle cylinder top left
+Replace top right knuckle cylinder over centre valve
+Replace shank lub air adjuster
+Adjust to 4.5 bar
+Replace shank
+08h00--13h19
+
+Tdr8
+Check tripping
+11h15--12h00
+
+Move L91 to bay 1
+
+Absend
+Junior
+
+05/05/2026, 15:08 - Lyle: TDR08 09h10 - 12h15
+Repair illmack  pulsating actuators.
+Running 
+
+Sst16 sos - eos
+Service.
+Needs brake test done, no operator  to assist. 
+
+Trbl02 sos - eos
+Replace pins, fitting on feed cylinder, 
+Remove and refit tensioning cylinder and hoses 
+Not complete .
+Needs flush head fitting(can not find spare)
+Alighn tension fitting.
+
+Sst15 8h30 - 09h00
+Repair  alternator terminal 
+Running 
+
+Remove tubeless Tyre's from L103, to be fitted  to L97.
+
+06/05/2026, 03:54 - Jurie Venter: Tmm night shift 
+Sst22
+22:20-22:30
+Loose wire 
+Leonard 
+
+Sst21
+21:30-22:00
+Remove and replace steering hose
+Happy &collen 
+
+Arb4
+10:30-00:10
+Remove and replace drifter,re-charge accumulators ,grease the drifter 
+Henk &christo 
+
+Sst21
+00:30-01:14
+Clean transmision sensor ,re-align and install steering pin 
+Jurie,lazerus& leonardo
+
+Stc9
+22:30-01:55
+Remove damage front propshaft ,found cradel pin missing try to align cradel but fail due to ground level where machine was parked ,pin was recovered and repair all spares on machine 
+Happy&collen 
+
+Absent 
+Fanie-sick
+Jurior -induction
+Boitumelo -sick 
+Lucky -sick
+
+03/07/2026, 04:29 - Jurie Venter: Night shift tmm 
+Secl01
+00:00=00:40
+Remove,reweld and refit door hinge 
+Jurie&Collin 
+
+Trbl04
+23:00=01:00
+Assist Phillip on repair of hose slide that was broken of on afternoon shift 
+Fanie 
+
+L91 
+21:00=23:00
+Assist with fitting gearbox 
+Fanie 
+
+Rlh1
+21:30=01:30
+Remove and replace feed motor, fault finding on diesel system, found silicon inside banjo bolt ,clean out tand and all pipe tested machine all good ,on testing found trading pressure solenoid tripping 
+Henk & boitumelo 
+
+L91
+21:00=01:30
+Fit gearbox ,fit propshafts fit cross member not done need propshaft bolts and oil 
+Happy & junior 
+
+Rlh1
+00:15=03:30
+Fault finding on trimming switch, found tab 1wire 54  making a short, not done 
+Leonardo 
+
+All at work
+
+26/05/2026, 05:40 - Lyle: Tmm night shift
+RLH3 22h00 - 23h00
+Replace hose.
+Running
+
+26/05/2026, 06:30 - Jurie Venter: Tmm night shift
+STC14
+22:00-01:10
+Repair earth.
+No operator to test.
+
+27/05/2026, 15:20 - Lyle: Daily Report
+STC14 09:00 - 13:30
+Mechanical work on brakes.
+Running
+
+STC14 12:00 - 13:30
+Electrical work on lights.
+Running
+
+27/05/2026, 15:25 - Lyle: Daily Report
+L91
+8:10 - 10:07
+Jump start LDV, do brake test, found reverse hooter not working
+and battery damaged, ask Machiel to repair
+Fanie P
+
+L91
+9:00 - 9:30
+Repair reverse lights and replace battery
+Machiel
+
+28/05/2026, 15:10 - Lyle: Daily Report
+RLH5 20h40 - 21h45
+Replace hose.
+Running
+
+RLH5 22h00 - 22h30
+Not complete.
+Still under repair.
+
+28/05/2026, 15:12 - Lyle: Daily Report
+SST12 10h00 - 11h00
+Weld basket.
+Photos on report group.
+Running
+
+29/05/2026, 15:05 - Lyle: Daily Report
+SST21 08h00 - 09h00
+Replace hose.
+Running
+
+12/01/2026, 15:40 - J Venter: Daily Report
+SST99 10h00 - 11h00
+Repair hose.
+Running

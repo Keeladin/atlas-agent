@@ -1,0 +1,35 @@
+{
+  "operational_day_start": "06:00",
+  "meeting_time": "05:30",
+  "shift_windows": {
+    "day": ["06:00", "14:00"],
+    "night": ["18:00", "02:00"]
+  },
+  "usual_post": {
+    "day_after": "14:00",
+    "night_after": "02:00"
+  },
+  "relevant_senders": [
+    {
+      "name": "Lyle",
+      "aliases": ["Lyle"],
+      "from": null,
+      "until": null
+    },
+    {
+      "name": "Jurie Venter",
+      "aliases": ["Jurie Venter", "Jurie"],
+      "from": "2026-04-28",
+      "until": null
+    },
+    {
+      "name": "Fanie Lombard",
+      "aliases": ["Fanie Lombard"],
+      "from": null,
+      "until": "2026-04-30"
+    }
+  ],
+  "excluded_v1_authors": ["Jaco Fouché"],
+  "item_aliases": {},
+  "sender_aliases": {}
+}

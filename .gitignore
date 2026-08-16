@@ -1,0 +1,22 @@
+# Secrets
+.env
+*.env
+instance/
+secrets*
+
+# Raw operational data
+WhatsApp*.txt
+WhatsApp*.zip
+
+# Generated replay output
+output/replay/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.DS_Store

@@ -42,6 +42,22 @@ class ProviderSpec:
         value = self.capabilities.get(capability_id)
         return None if value is None else float(value)
 
+    def estimate_cost_usd(
+        self,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> float | None:
+        if (
+            self.input_cost_per_million is None
+            or self.output_cost_per_million is None
+        ):
+            return None
+        return (
+            max(0, input_tokens) * self.input_cost_per_million
+            + max(0, output_tokens) * self.output_cost_per_million
+        ) / 1_000_000.0
+
 
 class ModelProvider(Protocol):
     spec: ProviderSpec

@@ -29,6 +29,18 @@ class RetryPolicy:
     retry_on: tuple[str, ...] = ("rework", "abstain")
     stop_on: tuple[str, ...] = ("pass", "fail", "blocked")
 
+    def __post_init__(self) -> None:
+        valid = {"pass", "rework", "abstain", "fail", "blocked"}
+        retry = set(self.retry_on)
+        stop = set(self.stop_on)
+        unknown = (retry | stop) - valid
+        if unknown:
+            raise ValueError(f"Unknown retry-policy statuses: {sorted(unknown)}")
+        if "pass" in retry or "fail" in retry:
+            raise ValueError("pass/fail are terminal and cannot be automatic retry states")
+        if retry & stop:
+            raise ValueError("retry_on and stop_on must not overlap")
+
 
 @dataclass(frozen=True)
 class CapabilitySpec:
@@ -71,6 +83,9 @@ class CapabilityRequest:
     context: dict[str, Any]
     input_artifact_ids: tuple[str, ...]
     attempt: int
+    direct_input_artifact_ids: tuple[str, ...] = ()
+    dependency_artifact_ids: tuple[str, ...] = ()
+    idempotency_key: str | None = None
 
 
 @dataclass(frozen=True)

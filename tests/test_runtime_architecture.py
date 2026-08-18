@@ -109,10 +109,19 @@ class AtlasRuntimeTests(unittest.TestCase):
     def test_deterministic_runtime_completes_multi_step_task(self):
         caps = CapabilityRegistry()
         verifiers = VerifierRegistry()
+
         def handler(request):
             return CapabilityOutcome("pass", output={"step": request.step_id})
+
         for name in ("demo.a", "demo.b"):
-            caps.register(CapabilitySpec(id=name, description=name, executor_kind="deterministic", verifier_id="core.nonempty", budget=ExecutionBudget(max_attempts=2), parallel_safe=True), handler)
+            caps.register(CapabilitySpec(
+                id=name,
+                description=name,
+                executor_kind="deterministic",
+                verifier_id="core.nonempty",
+                budget=ExecutionBudget(max_attempts=2),
+                parallel_safe=True,
+            ), handler)
         task = self._task(criteria=("A done", "B done"))
         a = self.store.add_step(task.id, description="A", capability="demo.a", metadata={"satisfies_criteria": [1]})
         self.store.add_step(task.id, description="B", capability="demo.b", dependencies=[a.id], metadata={"satisfies_criteria": [2]})
@@ -124,9 +133,11 @@ class AtlasRuntimeTests(unittest.TestCase):
     def test_rework_retries_without_turn_depth_limit(self):
         caps = CapabilityRegistry()
         calls = {"n": 0}
+
         def handler(request):
             calls["n"] += 1
             return CapabilityOutcome("pass", output="good" if calls["n"] >= 2 else "bad")
+
         verifiers = VerifierRegistry()
         def verifier(spec, output, context):
             return VerificationResult("pass" if output == "good" else "rework", "checked")
@@ -159,7 +170,8 @@ class AtlasRuntimeTests(unittest.TestCase):
         registry.register(local)
         registry.register(cloud)
         spec = CapabilitySpec(id="reasoning.deep", description="deep", executor_kind="model", verifier_id="core.nonempty", privacy="local_only")
-        self.assertEqual(ModelRouter(registry).select(spec, context_chars=1000).provider.spec.key, "local")
+        route = ModelRouter(registry).select(spec, context_chars=1000)
+        self.assertEqual(route.provider.spec.key, "local")
 
     def test_model_capability_routes_and_records_provider(self):
         providers = ProviderRegistry()
@@ -210,10 +222,34 @@ class AtlasRuntimeTests(unittest.TestCase):
 
     def test_tool_gateway_requires_receipt_for_side_effects(self):
         gateway = ToolGateway()
-        gateway.register(ToolSpec("mail.send", "send mail", required_authority="communicate", side_effects=("external_email",), idempotent=False), lambda arguments: ToolResult(True, output={"sent": True}))
+        gateway.register(
+            ToolSpec("mail.send", "send mail", required_authority="communicate", side_effects=("external_email",), idempotent=False),
+            lambda arguments: ToolResult(True, output={"sent": True}),
+        )
         result = gateway.invoke("mail.send", {"to": "x@example.com"}, authority_scope="communicate")
         self.assertFalse(result.ok)
         self.assertIn("receipt", result.error)
+
+    def test_non_idempotent_side_effect_is_not_blindly_retried(self):
+        caps = CapabilityRegistry()
+        calls = {"n": 0}
+        def handler(request):
+            calls["n"] += 1
+            return CapabilityOutcome("pass", output={"sent": True}, receipt={"ok": True, "message_id": "m1"})
+        verifiers = VerifierRegistry()
+        verifiers.register("mail.verify", lambda spec, output, context: VerificationResult("rework", "delivery state ambiguous"))
+        caps.register(CapabilitySpec(
+            id="mail.send", description="send once", executor_kind="tool",
+            required_authority="communicate", side_effects=("external_email",),
+            idempotent=False, verifier_id="mail.verify", budget=ExecutionBudget(max_attempts=3),
+        ), handler)
+        task = self._task(authority="communicate")
+        self.store.add_step(task.id, description="Send", capability="mail.send", metadata={"accept_all_criteria": True})
+        result = TaskRuntime(store=self.store, capabilities=caps, verifiers=verifiers).run_until_blocked(task.id)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(len(self.store.list_executions(task.id)), 1)
+        self.assertTrue(any(event.name == "retry.blocked" for event in self.store.list_events(task.id)))
 
     def test_mcp_bridge_is_adapter_not_runtime_core(self):
         class FakeMCP:
@@ -224,7 +260,8 @@ class AtlasRuntimeTests(unittest.TestCase):
         gateway = ToolGateway()
         ids = MCPToolBridge(FakeMCP()).register_discovered(gateway, prefix="mcp.test")
         self.assertEqual(ids, ("mcp.test.lookup",))
-        self.assertTrue(gateway.invoke("mcp.test.lookup", {"q": "abc"}, authority_scope="read").ok)
+        result = gateway.invoke("mcp.test.lookup", {"q": "abc"}, authority_scope="read")
+        self.assertTrue(result.ok)
 
     def test_planner_creates_dependency_graph_from_strict_json(self):
         plan_text = '{"steps":[{"key":"a","description":"Collect","capability":"demo.collect","dependencies":[],"satisfies_criteria":[]},{"key":"b","description":"Finish","capability":"demo.finish","dependencies":["a"],"satisfies_criteria":[1]}],"notes":[]}'
@@ -232,12 +269,24 @@ class AtlasRuntimeTests(unittest.TestCase):
         fake = FakeProvider(ProviderSpec("planner", "planner-model", "fake", {"planning.general": 0.9}), text=plan_text)
         providers.register(fake)
         planning_spec = CapabilitySpec(id="planning.general", description="plan", executor_kind="model", verifier_id="core.nonempty")
-        planner = TaskPlanner(store=self.store, model_router=ModelRouter(providers), planning_capability=planning_spec, capability_manifest=[{"id": "demo.collect"}, {"id": "demo.finish"}])
+        planner = TaskPlanner(
+            store=self.store,
+            model_router=ModelRouter(providers),
+            planning_capability=planning_spec,
+            capability_manifest=[{"id": "demo.collect"}, {"id": "demo.finish"}],
+        )
         task, plan = planner.plan_and_create(objective="Do it", success_criteria=("Finished",))
         steps = self.store.list_steps(task.id)
-        self.assertEqual(len(steps), 2)
-        self.assertEqual(steps[1].dependencies, (steps[0].id,))
+        self.assertEqual(len(steps), 3)
+        self.assertTrue(steps[0].metadata.get("internal_planning"))
+        self.assertEqual(steps[0].status, "pass")
+        self.assertEqual(steps[2].dependencies, (steps[1].id,))
         self.assertEqual(plan.steps[1].satisfies_criteria, (1,))
+        executions = self.store.list_executions(task.id, step_id=steps[0].id)
+        self.assertEqual(len(executions), 1)
+        self.assertEqual(executions[0].provider, "planner")
+        self.assertEqual(executions[0].status, "pass")
+        self.assertTrue(any(a.kind == "task_plan" for a in self.store.list_artifacts(task.id)))
 
     def test_eval_score_can_change_model_route(self):
         registry = ProviderRegistry()
@@ -282,28 +331,38 @@ class AtlasRuntimeTests(unittest.TestCase):
         for i in range(1, 26):
             step = self.store.add_step(task.id, description=f"frame {i}", capability="deep.step", dependencies=([previous] if previous else []), metadata={"satisfies_criteria": [i]})
             previous = step.id
-        result = TaskRuntime(store=self.store, capabilities=caps, budget=RuntimeBudget(max_executions=100, max_cycles=100)).run_until_blocked(task.id)
+        runtime = TaskRuntime(store=self.store, capabilities=caps, budget=RuntimeBudget(max_executions=100, max_cycles=100))
+        result = runtime.run_until_blocked(task.id)
         self.assertEqual(result.status, "completed")
         self.assertEqual(len(self.store.list_executions(task.id)), 25)
         self.assertGreaterEqual(len([e for e in self.store.list_events(task.id) if e.name == "capability.completed"]), 25)
 
     def test_openai_responses_adapter_normalizes_output(self):
         provider = OpenAIResponsesProvider(ProviderSpec("openai", "gpt-test", "openai_responses", {"reasoning.general": 1.0}))
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test"}, clear=False), patch("atlas_core.providers.http._post_json", return_value={"output_text": "hello", "usage": {"input_tokens": 3, "output_tokens": 2}}):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test"}, clear=False), patch(
+            "atlas_core.providers.http._post_json",
+            return_value={"output_text": "hello", "usage": {"input_tokens": 3, "output_tokens": 2}},
+        ):
             response = provider.generate(ModelRequest("reasoning.general", "system", "input"))
         self.assertEqual(response.text, "hello")
         self.assertEqual(response.metrics["output_tokens"], 2)
 
     def test_anthropic_messages_adapter_normalizes_output(self):
         provider = AnthropicMessagesProvider(ProviderSpec("anthropic", "claude-test", "anthropic_messages", {"reasoning.general": 1.0}))
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}, clear=False), patch("atlas_core.providers.http._post_json", return_value={"content": [{"type": "text", "text": "hello"}], "usage": {"input_tokens": 3, "output_tokens": 2}}):
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}, clear=False), patch(
+            "atlas_core.providers.http._post_json",
+            return_value={"content": [{"type": "text", "text": "hello"}], "usage": {"input_tokens": 3, "output_tokens": 2}},
+        ):
             response = provider.generate(ModelRequest("reasoning.general", "system", "input"))
         self.assertEqual(response.text, "hello")
         self.assertEqual(response.metrics["input_tokens"], 3)
 
     def test_gemini_adapter_normalizes_output(self):
         provider = GeminiGenerateContentProvider(ProviderSpec("google", "gemini-test", "gemini_generate_content", {"reasoning.general": 1.0}))
-        with patch.dict("os.environ", {"GEMINI_API_KEY": "test"}, clear=False), patch("atlas_core.providers.http._post_json", return_value={"candidates": [{"content": {"parts": [{"text": "hello"}]}}], "usageMetadata": {"promptTokenCount": 3}}):
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test"}, clear=False), patch(
+            "atlas_core.providers.http._post_json",
+            return_value={"candidates": [{"content": {"parts": [{"text": "hello"}]}}], "usageMetadata": {"promptTokenCount": 3}},
+        ):
             response = provider.generate(ModelRequest("reasoning.general", "system", "input"))
         self.assertEqual(response.text, "hello")
         self.assertEqual(response.metrics["promptTokenCount"], 3)

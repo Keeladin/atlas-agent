@@ -286,15 +286,21 @@ VERIFY
 ```
 
 Task depth can be thousands of frames. Each frame remains bounded and independently auditable.
+The execution row is created atomically before any handler/model/tool runs. Explicit recovery can
+convert interrupted idempotent work into a retryable new attempt, while interrupted non-idempotent
+side effects fail closed because external state may be unknown. Optional task/capability cost
+budgets preflight priced provider calls and normalized provider usage is retained on executions.
 
 ## 7. Context topology
 
 Contexts such as `research`, `plan`, `execute`, `review`, `verify` and `present` are operating
 profiles, not agents.
 
-For each execution frame Atlas builds a fresh context projection from durable state. Oversized
+For each execution frame Atlas builds a fresh context projection from durable state. Direct step
+inputs and dependency outputs remain separately identified inside the capability request. Oversized
 artifacts are represented by identity/hash/metadata rather than silently truncating the task's
-objective, criteria or constraints. A later step may explicitly retrieve omitted content.
+objective, criteria or constraints. A deterministic capability may explicitly retrieve its direct
+artifact by ID; a later reasoning step may request omitted content through retrieval.
 
 The context window is a workspace, not a database.
 
@@ -326,7 +332,10 @@ The runtime includes provider adapters for:
 - other OpenAI-compatible gateways such as xAI through configuration.
 
 Cloud providers are disabled by default in example configuration and credentials are read from
-environment variables. Provider identities and model IDs are configuration, not business logic.
+environment variables. The example includes current OpenAI (`gpt-5.6` alias), Gemini
+(`gemini-3.6-flash`) and xAI (`grok-4.5`) identifiers plus an explicit Anthropic model placeholder
+that must be set from the account's current model catalogue. Provider identities and model IDs are
+configuration, not business logic.
 
 Routing considers:
 
@@ -350,10 +359,21 @@ Atlas includes a capability eval harness with:
 - `pass@k` (at least one success in k);
 - `pass^k` (all k attempts succeed).
 
-Measured scores can override static model capability scores in routing. Model roles are therefore
-intended to be earned through Atlas-specific evals rather than prestige or size.
+Measured scores override neutral provider eligibility seeds in routing and are persisted in SQLite
+by provider + capability, so earned competence survives restarts. Model roles are therefore earned
+through Atlas-specific evals rather than prestige, size, or a hard-coded static hierarchy.
 
-## 11. Tool and MCP boundary
+## 11. Local knowledge and retrieval
+
+Atlas includes a SQLite-first knowledge plane for extracted text. `knowledge.ingest_text` chunks and
+persists source material with document/chunk hashes and provenance; `knowledge.search` returns
+source-grounded chunks through the same capability/artifact/claim runtime. FTS5 is used when
+available, with a deterministic SQLite fallback. This is sufficient to exercise large-manual
+ingestion and bounded iterative retrieval without introducing a vector service before measured
+semantic-retrieval need exists. Embedding/vector retrieval can later implement the same retrieval
+contract without changing task ownership.
+
+## 12. Tool and MCP boundary
 
 Native tools and APIs pass through a normalized Tool Gateway. Side-effecting tools must return a
 receipt; success without a receipt is rejected at the boundary.
@@ -365,7 +385,7 @@ tools.
 The wire transport itself is intentionally not embedded in core runtime because Atlas may use
 stdio, HTTP, vendor-hosted or connector-provided MCP clients. Transport choice belongs at the edge.
 
-## 12. Authority and safety
+## 13. Authority and safety
 
 Authority levels are monotonic:
 
@@ -383,9 +403,9 @@ request and pauses the step. Approval applies to that bounded action rather than
 the whole task's authority.
 
 Non-idempotent side effects are not automatically retried merely because a model or verifier asks
-for rework. Ambiguous post-side-effect verification fails closed and requires explicit recovery.
+for rework.
 
-## 13. Events and observability
+## 14. Events and observability
 
 Runtime lifecycle events are persisted in SQLite and may also be published to an in-process event
 bus:
@@ -409,24 +429,26 @@ without becoming orchestration logic.
 
 OpenTelemetry can later subscribe at this boundary without changing execution semantics.
 
-## 14. Current implementation layout
+## 15. Current implementation layout
 
 ```text
 atlas_core/
   tasks/          durable SQLite task/step/execution/artifact/claim/approval/event state
   capabilities/   contracts, registry, canonical intelligence capabilities
-  providers/      provider contracts, routing, configuration and HTTP adapters
+  providers/      provider contracts, routing, durable eval scores, configuration and HTTP adapters
+  knowledge/      SQLite FTS ingestion/search with chunk provenance
   integrations/   adapters around existing vertical responsibilities
   authority.py    authority ladder and decisions
   context.py      bounded frame context assembly
-  runtime.py      task execution engine
+  runtime.py      task execution engine and interrupted-frame recovery
   verification.py capability + completion verification
-  planner.py      strict bounded plan -> durable task graph
+  planner.py      strict durable planning execution -> task graph
+  presentation.py deterministic evidence-backed task presentation
   tools.py        normalized tools + MCP bridge
   evals.py        capability reliability harness
-  events.py       runtime event fan-out
+  events.py       isolated runtime event fan-out
   bootstrap.py    runtime assembly
-  __main__.py     minimal CLI surface
+  __main__.py     CLI for plan/run/recover/approve/result/knowledge/Morning
 ```
 
 Existing:
@@ -436,7 +458,7 @@ atlas_morning/    frozen legacy/import morning workflow (kept intact)
 atlas_mobile/     offline-first mobile capture surface (kept intact)
 ```
 
-## 15. Deliberate external boundaries
+## 16. Deliberate external boundaries
 
 The full runtime topology is implemented without pretending that every possible external system is
 already configured.
@@ -457,7 +479,7 @@ These remain edge integrations for valid reasons:
 
 These are not incomplete hidden subsystems; they are explicit adapters around the canonical core.
 
-## 16. Validation requirements
+## 17. Validation requirements
 
 The architecture is not considered sound merely because modules import.
 
@@ -475,10 +497,9 @@ Regression requirements include:
 - provider abstention can fail over without hiding the failed attempt;
 - tasks can execute well beyond the old five-round ceiling;
 - side-effecting tools require execution receipts;
-- non-idempotent external actions are never blindly replayed;
 - checkpoints never duplicate large artifact payloads.
 
-## 17. What was reused and what was rejected
+## 18. What was reused and what was rejected
 
 ### From `atlas-agent`
 
@@ -500,7 +521,7 @@ lifecycle hooks/events and safe parallelism.
 
 Reject: multiple persistent named-agent identities as Atlas's product ontology.
 
-## 18. North-star definition
+## 19. North-star definition
 
 > Atlas is a local-first persistent operational agent whose durable runtime owns objectives, state,
 > evidence, authority and completion, and dynamically assembles deterministic capabilities, tools

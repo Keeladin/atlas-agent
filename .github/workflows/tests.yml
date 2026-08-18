@@ -1,0 +1,27 @@
+name: Atlas tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'architecture/**'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python regression suite
+        run: python -W error::ResourceWarning -m unittest discover -s tests -q
+      - name: Compile runtime and workflow packages
+        run: python -m compileall -q atlas_core atlas_morning tests
+      - name: Mobile fixture suite
+        run: node atlas_mobile/run_fixtures.js

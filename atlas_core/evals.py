@@ -66,3 +66,25 @@ class EvalHarness:
             pass_all_k=all_passes / denominator,
             k=k,
         )
+
+
+def record_eval_report(
+    router: Any,
+    provider_key: str,
+    report: EvalReport,
+    *,
+    metric: str = "pass_at_1",
+) -> float:
+    if metric not in {"pass_at_1", "pass_at_k", "pass_all_k"}:
+        raise ValueError("Unsupported eval routing metric")
+    score = float(getattr(report, metric))
+    router.record_eval_score(provider_key, report.capability_id, score)
+    if getattr(router, "score_store", None) is not None:
+        router.score_store.record(
+            provider_key,
+            report.capability_id,
+            score,
+            source=f"eval:{metric}",
+            sample_count=len({attempt.case for attempt in report.attempts}),
+        )
+    return score

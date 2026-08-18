@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from atlas_core.capabilities.contracts import CapabilitySpec
 from .contracts import ModelProvider
 from .registry import ProviderRegistry
+from .scores import ProviderScoreStore
 
 
 class ModelRoutingError(RuntimeError):
@@ -21,8 +22,14 @@ class RouteDecision:
 class ModelRouter:
     """Route model work by measured capability competence and operational constraints."""
 
-    def __init__(self, registry: ProviderRegistry) -> None:
+    def __init__(
+        self,
+        registry: ProviderRegistry,
+        *,
+        score_store: ProviderScoreStore | None = None,
+    ) -> None:
         self.registry = registry
+        self.score_store = score_store
         self._score_overrides: dict[tuple[str, str], float] = {}
 
     def record_eval_score(self, provider_key: str, capability_id: str, score: float) -> None:
@@ -30,10 +37,23 @@ class ModelRouter:
             raise ValueError("Eval score must be between 0 and 1.")
         self.registry.get(provider_key)
         self._score_overrides[(provider_key, capability_id)] = float(score)
+        if self.score_store is not None:
+            self.score_store.record(
+                provider_key,
+                capability_id,
+                float(score),
+                source="eval",
+            )
 
     def competence(self, provider: ModelProvider, capability_id: str) -> float | None:
         override = self._score_overrides.get((provider.spec.key, capability_id))
-        return override if override is not None else provider.spec.score_for(capability_id)
+        if override is not None:
+            return override
+        if self.score_store is not None:
+            durable = self.score_store.get(provider.spec.key, capability_id)
+            if durable is not None:
+                return durable.score
+        return provider.spec.score_for(capability_id)
 
     def select(self, capability: CapabilitySpec, *, context_chars: int, exclude_provider_keys: tuple[str, ...] = ()) -> RouteDecision:
         candidates: list[tuple[tuple[float, int, int, int, int], ModelProvider]] = []

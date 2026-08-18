@@ -7,16 +7,21 @@ from atlas_core.capabilities import CapabilityOutcome, CapabilityRegistry, Capab
 from atlas_core.verification import VerificationResult, VerifierRegistry
 
 
-def _morning_handler(request):
+def _morning_handler(request, *, task_store=None):
+    # Lazy imports keep the generic runtime independent of the domain package.
     from atlas_morning.config import load_aliases, load_config
     from atlas_morning.load import load_messages
     from atlas_morning.pack import build_pack, infer_operational_day, render_pack
     from atlas_morning.reconcile import load_corrections
 
     payload = {}
-    artifacts = request.context.get("artifacts", [])
-    if artifacts:
-        payload = artifacts[-1].get("payload") or {}
+    direct_ids = request.direct_input_artifact_ids or request.input_artifact_ids
+    if task_store is not None and direct_ids:
+        payload = task_store.get_artifact(direct_ids[-1]).payload
+    else:
+        artifacts = request.context.get("artifacts", [])
+        if artifacts:
+            payload = artifacts[-1].get("payload") or {}
     if not isinstance(payload, dict):
         return CapabilityOutcome("fail", error="morning input artifact must be an object")
     input_path = payload.get("input")
@@ -64,7 +69,12 @@ def _verify_morning(spec, output, context):
     return VerificationResult("pass", "morning pack output contract present")
 
 
-def register_morning_workflow(capabilities: CapabilityRegistry, verifiers: VerifierRegistry) -> None:
+def register_morning_workflow(
+    capabilities: CapabilityRegistry,
+    verifiers: VerifierRegistry,
+    *,
+    task_store=None,
+) -> None:
     verifiers.register("morning.output_contract", _verify_morning, replace=True)
     capabilities.register(
         CapabilitySpec(
@@ -81,5 +91,5 @@ def register_morning_workflow(capabilities: CapabilityRegistry, verifiers: Verif
             privacy="local_only",
             budget=ExecutionBudget(max_attempts=2, max_context_chars=32_000),
         ),
-        _morning_handler,
+        lambda request: _morning_handler(request, task_store=task_store),
     )

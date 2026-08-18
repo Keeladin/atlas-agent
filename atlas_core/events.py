@@ -15,15 +15,28 @@ class RuntimeEvent:
     payload: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class EventHandlerError:
+    event_name: str
+    handler_name: str
+    error: str
+
+
 EventHandler = Callable[[RuntimeEvent], None]
 
 
 class EventBus:
-    """Small in-process fan-out bus; durable event truth remains in TaskStore."""
+    """Small in-process fan-out bus for non-authoritative observers.
+
+    Durable event truth is written by TaskStore before fan-out. Observer bugs
+    must never become orchestration failures, so handler exceptions are isolated
+    and retained for diagnostics.
+    """
 
     def __init__(self) -> None:
         self._handlers: dict[str, list[EventHandler]] = defaultdict(list)
         self._all_handlers: list[EventHandler] = []
+        self._errors: list[EventHandlerError] = []
 
     def subscribe(self, name: str, handler: EventHandler) -> None:
         if name == "*":
@@ -32,7 +45,21 @@ class EventBus:
             self._handlers[name].append(handler)
 
     def emit(self, event: RuntimeEvent) -> None:
-        for handler in tuple(self._handlers.get(event.name, ())):
-            handler(event)
-        for handler in tuple(self._all_handlers):
-            handler(event)
+        handlers = [
+            *tuple(self._handlers.get(event.name, ())),
+            *tuple(self._all_handlers),
+        ]
+        for handler in handlers:
+            try:
+                handler(event)
+            except Exception as exc:
+                self._errors.append(
+                    EventHandlerError(
+                        event_name=event.name,
+                        handler_name=getattr(handler, "__name__", type(handler).__name__),
+                        error=str(exc),
+                    )
+                )
+
+    def errors(self) -> tuple[EventHandlerError, ...]:
+        return tuple(self._errors)

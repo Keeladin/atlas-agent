@@ -74,17 +74,35 @@ class ToolGateway:
 
         def capability_handler(request: CapabilityRequest) -> CapabilityOutcome:
             arguments: dict[str, Any] = {}
-            artifacts = request.context.get("artifacts", [])
-            if artifacts:
-                candidate = artifacts[-1].get("payload")
+            candidate_ids = (
+                request.direct_input_artifact_ids
+                or request.input_artifact_ids
+            )
+            artifacts_by_id = {
+                str(item.get("id")): item
+                for item in request.context.get("artifacts", [])
+                if isinstance(item, dict)
+            }
+            for artifact_id in reversed(candidate_ids):
+                item = artifacts_by_id.get(artifact_id)
+                candidate = item.get("payload") if item else None
                 if isinstance(candidate, dict):
-                    arguments = candidate
-            result = handler(arguments)
+                    arguments = dict(candidate)
+                    break
+            # Runtime already checked the task/approval boundary. Re-enter the
+            # gateway at the capability's required authority so normalization and
+            # side-effect receipt enforcement cannot be bypassed by wrapping a
+            # tool as a capability.
+            result = self.invoke(
+                tool_id,
+                arguments,
+                authority_scope=spec.required_authority,
+            )
             return CapabilityOutcome(
                 "pass" if result.ok else "fail",
                 output=result.output,
                 output_kind=output_kind,
-                receipt=result.receipt or {"ok": result.ok},
+                receipt=result.receipt,
                 metrics=result.metrics,
                 error=result.error,
             )

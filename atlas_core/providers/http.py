@@ -34,6 +34,30 @@ def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any], timeo
     return value
 
 
+def _normalize_usage(usage: dict[str, Any], *, family: str) -> dict[str, Any]:
+    metrics = dict(usage)
+    if family == "openai":
+        if "input_tokens" in usage:
+            metrics["input_tokens"] = int(usage.get("input_tokens") or 0)
+        elif "prompt_tokens" in usage:
+            metrics["input_tokens"] = int(usage.get("prompt_tokens") or 0)
+        if "output_tokens" in usage:
+            metrics["output_tokens"] = int(usage.get("output_tokens") or 0)
+        elif "completion_tokens" in usage:
+            metrics["output_tokens"] = int(usage.get("completion_tokens") or 0)
+    elif family == "anthropic":
+        metrics["input_tokens"] = int(usage.get("input_tokens") or 0)
+        metrics["output_tokens"] = int(usage.get("output_tokens") or 0)
+    elif family == "gemini":
+        metrics["input_tokens"] = int(usage.get("promptTokenCount") or 0)
+        metrics["output_tokens"] = int(
+            usage.get("candidatesTokenCount")
+            or usage.get("responseTokenCount")
+            or 0
+        )
+    return metrics
+
+
 def _require_env(name: str | None) -> str | None:
     if not name:
         return None
@@ -72,7 +96,7 @@ class OpenAIResponsesProvider:
                         pieces.append(str(content.get("text") or ""))
             text = "\n".join(piece for piece in pieces if piece).strip()
         usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
-        return ModelResponse(text=text, provider_key=self.spec.key, model=self.spec.model, raw=raw, metrics=dict(usage))
+        return ModelResponse(text=text, provider_key=self.spec.key, model=self.spec.model, raw=raw, metrics=_normalize_usage(dict(usage), family="openai"))
 
 
 @dataclass
@@ -104,7 +128,7 @@ class OpenAICompatibleChatProvider:
             if isinstance(message, dict):
                 text = str(message.get("content") or "").strip()
         usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
-        return ModelResponse(text=text, provider_key=self.spec.key, model=self.spec.model, raw=raw, metrics=dict(usage))
+        return ModelResponse(text=text, provider_key=self.spec.key, model=self.spec.model, raw=raw, metrics=_normalize_usage(dict(usage), family="openai"))
 
 
 @dataclass
@@ -134,7 +158,7 @@ class AnthropicMessagesProvider:
         parts = raw.get("content") if isinstance(raw.get("content"), list) else []
         text = "\n".join(str(part.get("text") or "") for part in parts if isinstance(part, dict) and part.get("type") == "text").strip()
         usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
-        return ModelResponse(text=text, provider_key=self.spec.key, model=self.spec.model, raw=raw, metrics=dict(usage))
+        return ModelResponse(text=text, provider_key=self.spec.key, model=self.spec.model, raw=raw, metrics=_normalize_usage(dict(usage), family="anthropic"))
 
 
 @dataclass
@@ -164,4 +188,4 @@ class GeminiGenerateContentProvider:
                     if isinstance(part, dict) and "text" in part:
                         text_parts.append(str(part.get("text") or ""))
         usage = raw.get("usageMetadata") if isinstance(raw.get("usageMetadata"), dict) else {}
-        return ModelResponse(text="\n".join(text_parts).strip(), provider_key=self.spec.key, model=self.spec.model, raw=raw, metrics=dict(usage))
+        return ModelResponse(text="\n".join(text_parts).strip(), provider_key=self.spec.key, model=self.spec.model, raw=raw, metrics=_normalize_usage(dict(usage), family="gemini"))

@@ -314,6 +314,7 @@ class AtlasRuntimeTests(unittest.TestCase):
         self.assertIn("do not return Markdown", request.system)
         self.assertEqual(request.metadata["response_format"], {"type": "json_object"})
         self.assertIn("Reply with exactly: Atlas resident provider online", request.input)
+        self.assertIn("only 1-based integer criterion ordinals", request.input)
 
     def test_eval_score_can_change_model_route(self):
         registry = ProviderRegistry()

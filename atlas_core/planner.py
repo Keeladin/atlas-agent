@@ -102,6 +102,7 @@ class TaskPlanner:
                         "dependencies contain step keys, never prose",
                         "do not execute work",
                         "use only supplied capability ids/versions",
+                        "satisfies_criteria contains only 1-based integer criterion ordinals, never criterion ids",
                     ],
                 },
             },

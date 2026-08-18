@@ -8,7 +8,6 @@ from atlas_core.verification import VerificationResult, VerifierRegistry
 
 
 def _morning_handler(request, *, task_store=None):
-    # Lazy imports keep the generic runtime independent of the domain package.
     from atlas_morning.config import load_aliases, load_config
     from atlas_morning.load import load_messages
     from atlas_morning.pack import build_pack, infer_operational_day, render_pack
@@ -82,6 +81,27 @@ def register_morning_workflow(
             description="Generate the frozen V1 TMM morning pack from a configured source.",
             executor_kind="deterministic",
             required_authority="read",
+            input_schema={
+                "type": "object",
+                "required": ["input", "config"],
+                "properties": {
+                    "input": {"type": "string", "minLength": 1},
+                    "config": {"type": "string", "minLength": 1},
+                    "aliases": {"type": ["string", "null"]},
+                    "corrections": {"type": ["string", "null"]},
+                    "day": {"type": ["string", "null"]},
+                },
+                "additionalProperties": False,
+            },
+            output_schema={
+                "type": "object",
+                "required": ["operational_day", "markdown"],
+                "properties": {
+                    "operational_day": {"type": "string", "minLength": 10, "maxLength": 10},
+                    "markdown": {"type": "string", "minLength": 1},
+                },
+                "additionalProperties": False,
+            },
             output_kind="morning_pack",
             context_profile="execute",
             verifier_id="morning.output_contract",

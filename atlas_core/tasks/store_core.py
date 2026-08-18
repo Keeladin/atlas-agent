@@ -112,6 +112,7 @@ class TaskStoreCoreMixin:
         *,
         description: str,
         capability: str | None = None,
+        capability_version: str | None = None,
         dependencies: Iterable[str] = (),
         input_artifact_ids: Iterable[str] = (),
         ordinal: int | None = None,
@@ -138,8 +139,8 @@ class TaskStoreCoreMixin:
         step_id = step_id or _new_id("step")
         with self._db() as db:
             db.execute(
-                "INSERT INTO task_steps (id,task_id,ordinal,description,capability,status,dependencies_json,input_artifact_ids_json,metadata_json) VALUES (?,?,?,?,?,'pending',?,?,?)",
-                (step_id, task_id, ordinal, description, capability.strip() if capability else None, _json_dump(dep_ids), _json_dump(input_ids), _json_dump(metadata or {})),
+                "INSERT INTO task_steps (id,task_id,ordinal,description,capability,capability_version,status,dependencies_json,input_artifact_ids_json,metadata_json) VALUES (?,?,?,?,?,?,'pending',?,?,?)",
+                (step_id, task_id, ordinal, description, capability.strip() if capability else None, capability_version.strip() if capability_version else None, _json_dump(dep_ids), _json_dump(input_ids), _json_dump(metadata or {})),
             )
         return self.get_step(step_id)
 

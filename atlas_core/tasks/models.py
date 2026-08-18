@@ -73,6 +73,7 @@ class StepRecord:
     ordinal: int
     description: str
     capability: str | None
+    capability_version: str | None
     status: str
     dependencies: tuple[str, ...]
     input_artifact_ids: tuple[str, ...]
@@ -99,6 +100,7 @@ class ExecutionRecord:
     task_id: str
     step_id: str
     capability: str
+    capability_version: str
     provider: str | None
     attempt: int
     status: str
@@ -110,6 +112,22 @@ class ExecutionRecord:
     error: str | None
     started_at: str
     ended_at: str | None
+
+
+@dataclass(frozen=True)
+class ContextManifestRecord:
+    id: str
+    task_id: str
+    step_id: str
+    execution_id: str
+    capability: str
+    capability_version: str
+    assembler_version: str
+    budget_tokens: int
+    total_tokens: int
+    manifest: dict[str, Any]
+    sha256: str
+    created_at: str
 
 
 @dataclass(frozen=True)

@@ -14,6 +14,7 @@ class TaskStoreExecutionMixin:
         *,
         step_id: str,
         capability: str,
+        capability_version: str = "1.0.0",
         provider: str | None = None,
         input_artifact_ids: Iterable[str] = (),
         execution_id: str | None = None,
@@ -52,9 +53,9 @@ class TaskStoreExecutionMixin:
             attempt = int(row["attempt"])
             db.execute(
                 "INSERT INTO task_executions "
-                "(id,task_id,step_id,capability,provider,attempt,status,input_artifact_ids_json) "
-                "VALUES (?,?,?,?,?,?,'running',?)",
-                (execution_id, task_id, step_id, capability, provider.strip() if provider else None, attempt, _json_dump(input_ids)),
+                "(id,task_id,step_id,capability,capability_version,provider,attempt,status,input_artifact_ids_json) "
+                "VALUES (?,?,?,?,?,?,?,'running',?)",
+                (execution_id, task_id, step_id, capability, capability_version, provider.strip() if provider else None, attempt, _json_dump(input_ids)),
             )
         return self.get_execution(execution_id)
 

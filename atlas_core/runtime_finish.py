@@ -10,6 +10,7 @@ from atlas_core.context import ContextBuilder
 from atlas_core.events import RuntimeEvent
 from atlas_core.providers import ModelRequest, ModelRoutingError
 from atlas_core.tasks import InvalidTransitionError, StepRecord
+from atlas_core.schema_validation import SchemaValidationError, validate_json
 from .runtime_types import RuntimeResult, RecoveryResult
 
 class RuntimeFinishMixin:
@@ -21,6 +22,31 @@ class RuntimeFinishMixin:
         context: dict[str, Any],
         outcome: CapabilityOutcome,
     ) -> None:
+        if outcome.status == "pass" and spec.output_schema:
+            try:
+                validate_json(outcome.output, spec.output_schema, path="$.output")
+            except SchemaValidationError as exc:
+                outcome = CapabilityOutcome(
+                    "rework",
+                    output=outcome.output,
+                    output_kind=outcome.output_kind,
+                    receipt=outcome.receipt,
+                    metrics=outcome.metrics,
+                    error=f"output schema validation failed: {exc}",
+                    claims=outcome.claims,
+                )
+                self._emit(
+                    step.task_id,
+                    "capability.output_schema_failed",
+                    step_id=step.id,
+                    execution_id=execution_id,
+                    payload={
+                        "capability": spec.id,
+                        "capability_version": spec.version,
+                        "error": str(exc),
+                    },
+                )
+
         if (
             outcome.status == "pass"
             and spec.side_effects

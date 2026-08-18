@@ -140,6 +140,84 @@ class TaskStoreRecordsMixin:
             rows = db.execute("SELECT * FROM task_events WHERE task_id=? ORDER BY id", (task_id,)).fetchall()
         return tuple(self._event_from_row(row) for row in rows)
 
+    def write_context_manifest(
+        self,
+        task_id: str,
+        *,
+        step_id: str,
+        execution_id: str,
+        capability: str,
+        capability_version: str,
+        assembler_version: str,
+        budget_tokens: int,
+        total_tokens: int,
+        manifest: dict[str, Any],
+        manifest_id: str | None = None,
+    ) -> ContextManifestRecord:
+        self.get_task(task_id)
+        if self.get_step(step_id).task_id != task_id:
+            raise ValueError("Context manifest step must belong to task.")
+        execution = self.get_execution(execution_id)
+        if execution.task_id != task_id or execution.step_id != step_id:
+            raise ValueError("Context manifest execution must belong to the same task and step.")
+        if execution.status != "running":
+            raise InvalidTransitionError("Context manifest must be written before execution becomes terminal.")
+        if budget_tokens < 0 or total_tokens < 0 or total_tokens > budget_tokens:
+            raise ValueError("Context manifest token accounting is invalid.")
+        encoded, digest = _payload_hash(manifest)
+        manifest_id = manifest_id or str(manifest.get("manifest_id") or _new_id("context"))
+        with self._db() as db:
+            try:
+                db.execute(
+                    "INSERT INTO task_context_manifests "
+                    "(id,task_id,step_id,execution_id,capability,capability_version,assembler_version,budget_tokens,total_tokens,manifest_json,sha256) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (manifest_id, task_id, step_id, execution_id, capability, capability_version, assembler_version, budget_tokens, total_tokens, encoded, digest),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise InvalidTransitionError(
+                    "Context manifest is immutable and this execution already has one."
+                ) from exc
+        return self.get_context_manifest(manifest_id)
+
+    def get_context_manifest(self, manifest_id: str) -> ContextManifestRecord:
+        with self._db() as db:
+            row = db.execute(
+                "SELECT * FROM task_context_manifests WHERE id=?",
+                (manifest_id,),
+            ).fetchone()
+        if row is None:
+            raise UnknownRecordError(f"Unknown context manifest: {manifest_id}")
+        return self._context_manifest_from_row(row)
+
+    def context_manifest_for_execution(self, execution_id: str) -> ContextManifestRecord | None:
+        with self._db() as db:
+            row = db.execute(
+                "SELECT * FROM task_context_manifests WHERE execution_id=?",
+                (execution_id,),
+            ).fetchone()
+        return None if row is None else self._context_manifest_from_row(row)
+
+    def list_context_manifests(
+        self,
+        task_id: str,
+        *,
+        step_id: str | None = None,
+    ) -> tuple[ContextManifestRecord, ...]:
+        self.get_task(task_id)
+        with self._db() as db:
+            if step_id is None:
+                rows = db.execute(
+                    "SELECT * FROM task_context_manifests WHERE task_id=? ORDER BY created_at,rowid",
+                    (task_id,),
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT * FROM task_context_manifests WHERE task_id=? AND step_id=? ORDER BY created_at,rowid",
+                    (task_id, step_id),
+                ).fetchall()
+        return tuple(self._context_manifest_from_row(row) for row in rows)
+
     def create_checkpoint(self, task_id: str, *, reason: str, checkpoint_id: str | None = None) -> CheckpointRecord:
         reason = reason.strip()
         if not reason:
@@ -188,6 +266,22 @@ class TaskStoreRecordsMixin:
             "artifacts": artifact_rows,
             "claims": [asdict(x) for x in self.list_claims(task_id)],
             "approvals": [asdict(x) for x in self.list_approvals(task_id)],
+            "context_manifests": [
+                {
+                    "id": x.id,
+                    "task_id": x.task_id,
+                    "step_id": x.step_id,
+                    "execution_id": x.execution_id,
+                    "capability": x.capability,
+                    "capability_version": x.capability_version,
+                    "assembler_version": x.assembler_version,
+                    "budget_tokens": x.budget_tokens,
+                    "total_tokens": x.total_tokens,
+                    "sha256": x.sha256,
+                    "created_at": x.created_at,
+                }
+                for x in self.list_context_manifests(task_id)
+            ],
         }
 
     def _validate_artifacts_for_task(self, task_id: str, artifact_ids: Iterable[str]) -> None:
@@ -205,7 +299,7 @@ class TaskStoreRecordsMixin:
 
     @staticmethod
     def _step_from_row(row: sqlite3.Row) -> StepRecord:
-        return StepRecord(row["id"], row["task_id"], int(row["ordinal"]), row["description"], row["capability"], row["status"], tuple(_json_load(row["dependencies_json"], [])), tuple(_json_load(row["input_artifact_ids_json"], [])), _json_load(row["metadata_json"], {}), row["created_at"], row["updated_at"])
+        return StepRecord(row["id"], row["task_id"], int(row["ordinal"]), row["description"], row["capability"], row["capability_version"] if "capability_version" in row.keys() else None, row["status"], tuple(_json_load(row["dependencies_json"], [])), tuple(_json_load(row["input_artifact_ids_json"], [])), _json_load(row["metadata_json"], {}), row["created_at"], row["updated_at"])
 
     @staticmethod
     def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
@@ -213,7 +307,17 @@ class TaskStoreRecordsMixin:
 
     @staticmethod
     def _execution_from_row(row: sqlite3.Row) -> ExecutionRecord:
-        return ExecutionRecord(row["id"], row["task_id"], row["step_id"], row["capability"], row["provider"], int(row["attempt"]), row["status"], tuple(_json_load(row["input_artifact_ids_json"], [])), tuple(_json_load(row["output_artifact_ids_json"], [])), row["verifier_artifact_id"], _json_load(row["receipt_json"], {}), _json_load(row["metrics_json"], {}), row["error"], row["started_at"], row["ended_at"])
+        version = row["capability_version"] if "capability_version" in row.keys() and row["capability_version"] else "1.0.0"
+        return ExecutionRecord(row["id"], row["task_id"], row["step_id"], row["capability"], version, row["provider"], int(row["attempt"]), row["status"], tuple(_json_load(row["input_artifact_ids_json"], [])), tuple(_json_load(row["output_artifact_ids_json"], [])), row["verifier_artifact_id"], _json_load(row["receipt_json"], {}), _json_load(row["metrics_json"], {}), row["error"], row["started_at"], row["ended_at"])
+
+    @staticmethod
+    def _context_manifest_from_row(row: sqlite3.Row) -> ContextManifestRecord:
+        return ContextManifestRecord(
+            row["id"], row["task_id"], row["step_id"], row["execution_id"],
+            row["capability"], row["capability_version"], row["assembler_version"],
+            int(row["budget_tokens"]), int(row["total_tokens"]),
+            _json_load(row["manifest_json"], {}), row["sha256"], row["created_at"],
+        )
 
     @staticmethod
     def _claim_from_row(row: sqlite3.Row) -> ClaimRecord:

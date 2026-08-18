@@ -6,6 +6,7 @@ from typing import Any
 
 from atlas_core.authority import authority_allows
 from atlas_core.capabilities import CapabilitySpec
+from atlas_core.context import ContextBuilder
 from atlas_core.providers import ModelRequest, ModelRouter
 from atlas_core.tasks import TaskRecord, TaskStore
 
@@ -17,6 +18,7 @@ class PlannedStep:
     capability: str
     dependencies: tuple[str, ...]
     satisfies_criteria: tuple[int, ...] = ()
+    capability_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -32,17 +34,10 @@ class PlanError(RuntimeError):
 class TaskPlanner:
     """Create a durable task and a source-grounded dependency plan.
 
-    Planning is itself durable Atlas work. The task, planning step, model
-    execution and raw plan artifact exist before any generated plan becomes the
-    executable graph.
+    Planning is itself durable Atlas work and uses the same ContextBuilder as
+    every other model invocation. No planner-specific prompt path may bypass the
+    immutable ContextManifest boundary.
     """
-
-    SYSTEM = (
-        "You are Atlas's bounded planner. Return JSON only with keys steps and notes. "
-        "steps is an array of objects: key, description, capability, dependencies, satisfies_criteria. "
-        "dependencies contains step keys, never prose. Do not execute work. "
-        "Do not invent capabilities outside the supplied manifest."
-    )
 
     def __init__(
         self,
@@ -56,8 +51,9 @@ class TaskPlanner:
         self.model_router = model_router
         self.planning_capability = planning_capability
         self.capability_manifest = capability_manifest
-        self._allowed_capabilities = {
-            str(item.get("id") or "").strip()
+        self.context_builder = ContextBuilder(store)
+        self._capability_versions: dict[str, str] = {
+            str(item.get("id") or "").strip(): str(item.get("version") or "1.0.0").strip()
             for item in capability_manifest
             if isinstance(item, dict) and str(item.get("id") or "").strip()
         }
@@ -76,12 +72,47 @@ class TaskPlanner:
             success_criteria=success_criteria,
             constraints=constraints,
             authority_scope=authority_scope,
-            metadata={**(metadata or {}), "planner": self.planning_capability.id},
+            metadata={
+                **(metadata or {}),
+                "planner": self.planning_capability.id,
+                "planner_version": self.planning_capability.version,
+            },
+        )
+        planning_input = self.store.put_artifact(
+            task.id,
+            kind="planning_request",
+            payload={
+                "objective": objective,
+                "success_criteria": list(success_criteria),
+                "constraints": list(constraints),
+                "authority_scope": authority_scope,
+                "capabilities": self.capability_manifest,
+                "planner_output_contract": {
+                    "format": "JSON object",
+                    "required_keys": ["steps", "notes"],
+                    "step_keys": [
+                        "key",
+                        "description",
+                        "capability",
+                        "capability_version",
+                        "dependencies",
+                        "satisfies_criteria",
+                    ],
+                    "rules": [
+                        "dependencies contain step keys, never prose",
+                        "do not execute work",
+                        "use only supplied capability ids/versions",
+                    ],
+                },
+            },
+            metadata={"purpose": "bounded durable planning input"},
         )
         planning_step = self.store.add_step(
             task.id,
             description="Create a bounded capability plan for this task.",
             capability=self.planning_capability.id,
+            capability_version=self.planning_capability.version,
+            input_artifact_ids=(planning_input.id,),
             metadata={"internal_planning": True},
         )
         if not authority_allows(
@@ -98,30 +129,57 @@ class TaskPlanner:
                 f"{self.planning_capability.required_authority!r}; "
                 f"task grants {authority_scope!r}."
             )
-        prompt = json.dumps(
-            {
-                "objective": objective,
-                "success_criteria": list(success_criteria),
-                "constraints": list(constraints),
-                "authority_scope": authority_scope,
-                "capabilities": self.capability_manifest,
-            },
-            ensure_ascii=False,
-        )
         if task.status == "planned":
             self.store.set_task_status(task.id, "active")
         execution = self.store.begin_execution(
             task.id,
             step_id=planning_step.id,
             capability=self.planning_capability.id,
+            capability_version=self.planning_capability.version,
+            input_artifact_ids=(planning_input.id,),
         )
         try:
+            pack = self.context_builder.build(
+                task.id,
+                planning_step.id,
+                artifact_ids=(planning_input.id,),
+                required_artifact_ids=(planning_input.id,),
+                execution_id=execution.id,
+                capability=self.planning_capability,
+                max_chars=self.planning_capability.budget.max_context_chars,
+            )
+            manifest_record = self.store.write_context_manifest(
+                task.id,
+                step_id=planning_step.id,
+                execution_id=execution.id,
+                capability=self.planning_capability.id,
+                capability_version=self.planning_capability.version,
+                assembler_version=pack.manifest.assembler_version,
+                budget_tokens=pack.manifest.budget_tokens,
+                total_tokens=pack.manifest.total_tokens,
+                manifest=pack.manifest.as_dict(),
+                manifest_id=pack.manifest.manifest_id,
+            )
+            self.store.append_event(
+                task.id,
+                step_id=planning_step.id,
+                execution_id=execution.id,
+                name="context.manifest.written",
+                payload={
+                    "manifest_id": manifest_record.id,
+                    "sha256": manifest_record.sha256,
+                    "capability": self.planning_capability.id,
+                    "capability_version": self.planning_capability.version,
+                    "tokens": pack.manifest.total_tokens,
+                    "budget": pack.manifest.budget_tokens,
+                },
+            )
             route = self.model_router.select(
                 self.planning_capability,
-                context_chars=len(prompt),
+                context_chars=pack.chars,
             )
             projected_cost = route.provider.spec.estimate_cost_usd(
-                input_tokens=max(1, (len(prompt) + 3) // 4),
+                input_tokens=pack.tokens,
                 output_tokens=max(
                     1,
                     ((self.planning_capability.budget.max_output_chars or 8_000) + 3) // 4,
@@ -141,10 +199,15 @@ class TaskPlanner:
             response = route.provider.generate(
                 ModelRequest(
                     self.planning_capability.id,
-                    self.SYSTEM,
-                    prompt,
+                    json.dumps(pack.payload["system"], ensure_ascii=False, sort_keys=True),
+                    pack.as_text(),
                     max_output_chars=self.planning_capability.budget.max_output_chars,
-                    metadata={"task_id": task.id, "step_id": planning_step.id},
+                    metadata={
+                        "task_id": task.id,
+                        "step_id": planning_step.id,
+                        "context_manifest_id": manifest_record.id,
+                        "capability_version": self.planning_capability.version,
+                    },
                 )
             )
             if (
@@ -154,8 +217,10 @@ class TaskPlanner:
                 raise PlanError(
                     "Planner output exceeds explicit capability output budget."
                 )
-            plan = self.parse_plan(response.text)
-            self._validate_plan(plan, criterion_count=len(success_criteria))
+            plan = self._pin_and_validate_plan(
+                self.parse_plan(response.text),
+                criterion_count=len(success_criteria),
+            )
             artifact = self.store.put_artifact(
                 task.id,
                 step_id=planning_step.id,
@@ -167,6 +232,7 @@ class TaskPlanner:
                             "key": item.key,
                             "description": item.description,
                             "capability": item.capability,
+                            "capability_version": item.capability_version,
                             "dependencies": list(item.dependencies),
                             "satisfies_criteria": list(item.satisfies_criteria),
                         }
@@ -178,6 +244,7 @@ class TaskPlanner:
                     "provider": response.provider_key,
                     "model": response.model,
                     "route": route.reason,
+                    "context_manifest_id": manifest_record.id,
                 },
             )
             verification = self.store.put_artifact(
@@ -186,7 +253,7 @@ class TaskPlanner:
                 kind="verification_result",
                 payload={
                     "status": "pass",
-                    "summary": "plan contract, capability references, criterion coverage and dependency graph validated",
+                    "summary": "plan contract, capability/version references, criterion coverage and dependency graph validated",
                     "details": {
                         "step_count": len(plan.steps),
                         "criterion_count": len(success_criteria),
@@ -213,6 +280,7 @@ class TaskPlanner:
                     "ok": True,
                     "provider": response.provider_key,
                     "model": response.model,
+                    "context_manifest_id": manifest_record.id,
                 },
                 metrics=metrics,
             )
@@ -241,6 +309,7 @@ class TaskPlanner:
                         task.id,
                         description=item.description,
                         capability=item.capability,
+                        capability_version=item.capability_version,
                         dependencies=[ids[dep] for dep in item.dependencies],
                         metadata={
                             "satisfies_criteria": list(item.satisfies_criteria),
@@ -252,22 +321,28 @@ class TaskPlanner:
                     progressed = True
             if not progressed:
                 unresolved = {item.key: item.dependencies for item in pending}
-                # This should already have been rejected by _validate_plan, but
-                # fail closed if persistence encounters a graph inconsistency.
                 self.store.set_task_status(task.id, "failed")
                 raise PlanError(
                     f"Plan contains missing or cyclic dependencies: {unresolved}"
                 )
         return self.store.get_task(task.id), plan
 
-    def _validate_plan(self, plan: TaskPlan, *, criterion_count: int) -> None:
-        keys = {step.key for step in plan.steps}
+    def _pin_and_validate_plan(self, plan: TaskPlan, *, criterion_count: int) -> TaskPlan:
         if not plan.steps:
             raise PlanError("Planner returned no executable steps.")
+        keys = {step.key for step in plan.steps}
+        pinned: list[PlannedStep] = []
         for step in plan.steps:
-            if step.capability not in self._allowed_capabilities:
+            expected_version = self._capability_versions.get(step.capability)
+            if expected_version is None:
                 raise PlanError(
                     f"Planner selected unregistered capability: {step.capability}"
+                )
+            selected_version = step.capability_version or expected_version
+            if selected_version != expected_version:
+                raise PlanError(
+                    "Planner selected an unregistered capability version: "
+                    f"{step.capability}@{selected_version}"
                 )
             missing = [dep for dep in step.dependencies if dep not in keys]
             if missing:
@@ -283,10 +358,20 @@ class TaskPlanner:
                 raise PlanError(
                     f"Plan step {step.key!r} references invalid criteria: {invalid_criteria}"
                 )
+            pinned.append(
+                PlannedStep(
+                    step.key,
+                    step.description,
+                    step.capability,
+                    step.dependencies,
+                    step.satisfies_criteria,
+                    selected_version,
+                )
+            )
 
         covered_criteria = {
             ordinal
-            for step in plan.steps
+            for step in pinned
             for ordinal in step.satisfies_criteria
         }
         missing_criteria = sorted(
@@ -299,7 +384,7 @@ class TaskPlanner:
             )
 
         resolved: set[str] = set()
-        remaining = {step.key: set(step.dependencies) for step in plan.steps}
+        remaining = {step.key: set(step.dependencies) for step in pinned}
         while remaining:
             ready = [key for key, deps in remaining.items() if deps <= resolved]
             if not ready:
@@ -307,6 +392,7 @@ class TaskPlanner:
             for key in ready:
                 resolved.add(key)
                 remaining.pop(key)
+        return TaskPlan(tuple(pinned), plan.notes)
 
     @staticmethod
     def parse_plan(text: str) -> TaskPlan:
@@ -324,6 +410,9 @@ class TaskPlanner:
             key = str(item.get("key") or "").strip()
             description = str(item.get("description") or "").strip()
             capability = str(item.get("capability") or "").strip()
+            capability_version = (
+                str(item.get("capability_version") or "").strip() or None
+            )
             if not key or not description or not capability or key in seen:
                 raise PlanError(
                     "Plan steps require unique key, description and capability."
@@ -334,7 +423,14 @@ class TaskPlanner:
             )
             satisfies = tuple(int(x) for x in item.get("satisfies_criteria", []))
             steps.append(
-                PlannedStep(key, description, capability, dependencies, satisfies)
+                PlannedStep(
+                    key,
+                    description,
+                    capability,
+                    dependencies,
+                    satisfies,
+                    capability_version,
+                )
             )
         notes = tuple(str(x) for x in data.get("notes", []) if str(x).strip())
         return TaskPlan(tuple(steps), notes)

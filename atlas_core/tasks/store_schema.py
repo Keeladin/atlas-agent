@@ -3,7 +3,9 @@ from __future__ import annotations
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
+
 from .store_common import RUNTIME_SCHEMA_VERSION, TaskStoreError
+
 
 class TaskStoreSchemaMixin:
     def __init__(self, path: str | Path) -> None:
@@ -41,19 +43,12 @@ class TaskStoreSchemaMixin:
             row = db.execute(
                 "SELECT version FROM atlas_schema_meta WHERE component='task_runtime'"
             ).fetchone()
-            if row is None:
-                db.execute(
-                    "INSERT INTO atlas_schema_meta (component,version) VALUES ('task_runtime',?)",
-                    (RUNTIME_SCHEMA_VERSION,),
-                )
-            elif int(row["version"]) > RUNTIME_SCHEMA_VERSION:
+            existing_version = int(row["version"]) if row is not None else None
+            if existing_version is not None and existing_version > RUNTIME_SCHEMA_VERSION:
                 raise TaskStoreError(
                     "Task database was created by a newer Atlas runtime schema."
                 )
-            elif int(row["version"]) < RUNTIME_SCHEMA_VERSION:
-                raise TaskStoreError(
-                    "Task database requires a migration not implemented by this runtime."
-                )
+
             db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -89,6 +84,7 @@ class TaskStoreSchemaMixin:
                     ordinal INTEGER NOT NULL,
                     description TEXT NOT NULL,
                     capability TEXT,
+                    capability_version TEXT,
                     status TEXT NOT NULL CHECK (status IN
                         ('pending','running','pass','rework','blocked','failed','skipped')),
                     dependencies_json TEXT NOT NULL,
@@ -120,6 +116,7 @@ class TaskStoreSchemaMixin:
                     task_id TEXT NOT NULL,
                     step_id TEXT NOT NULL,
                     capability TEXT NOT NULL,
+                    capability_version TEXT NOT NULL DEFAULT '1.0.0',
                     provider TEXT,
                     attempt INTEGER NOT NULL CHECK (attempt >= 1),
                     status TEXT NOT NULL CHECK (status IN
@@ -139,6 +136,26 @@ class TaskStoreSchemaMixin:
                 );
                 CREATE INDEX IF NOT EXISTS idx_task_executions_step
                     ON task_executions(step_id, attempt);
+
+                CREATE TABLE IF NOT EXISTS task_context_manifests (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    step_id TEXT NOT NULL,
+                    execution_id TEXT NOT NULL UNIQUE,
+                    capability TEXT NOT NULL,
+                    capability_version TEXT NOT NULL,
+                    assembler_version TEXT NOT NULL,
+                    budget_tokens INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL,
+                    manifest_json TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY (step_id) REFERENCES task_steps(id) ON DELETE CASCADE,
+                    FOREIGN KEY (execution_id) REFERENCES task_executions(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_context_manifests_task
+                    ON task_context_manifests(task_id, step_id, created_at, id);
 
                 CREATE TABLE IF NOT EXISTS task_checkpoints (
                     id TEXT PRIMARY KEY,
@@ -194,3 +211,27 @@ class TaskStoreSchemaMixin:
                 CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, id);
                 """
             )
+
+            step_columns = {
+                item["name"] for item in db.execute("PRAGMA table_info(task_steps)").fetchall()
+            }
+            if "capability_version" not in step_columns:
+                db.execute("ALTER TABLE task_steps ADD COLUMN capability_version TEXT")
+            execution_columns = {
+                item["name"] for item in db.execute("PRAGMA table_info(task_executions)").fetchall()
+            }
+            if "capability_version" not in execution_columns:
+                db.execute(
+                    "ALTER TABLE task_executions ADD COLUMN capability_version TEXT NOT NULL DEFAULT '1.0.0'"
+                )
+
+            if existing_version is None:
+                db.execute(
+                    "INSERT INTO atlas_schema_meta (component,version) VALUES ('task_runtime',?)",
+                    (RUNTIME_SCHEMA_VERSION,),
+                )
+            elif existing_version != RUNTIME_SCHEMA_VERSION:
+                db.execute(
+                    "UPDATE atlas_schema_meta SET version=?,updated_at=CURRENT_TIMESTAMP WHERE component='task_runtime'",
+                    (RUNTIME_SCHEMA_VERSION,),
+                )

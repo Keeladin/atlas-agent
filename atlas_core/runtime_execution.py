@@ -10,6 +10,7 @@ from atlas_core.context import ContextBuilder
 from atlas_core.events import RuntimeEvent
 from atlas_core.providers import ModelRequest, ModelRoutingError
 from atlas_core.tasks import InvalidTransitionError, StepRecord
+from atlas_core.schema_validation import SchemaValidationError, validate_json
 from .runtime_types import RuntimeResult, RecoveryResult
 
 class RuntimeExecutionMixin:
@@ -25,12 +26,13 @@ class RuntimeExecutionMixin:
             return True
 
         try:
-            binding = self.capabilities.get(step.capability)
+            binding = self.capabilities.get(step.capability, step.capability_version)
         except CapabilityRegistryError as exc:
             execution = self.store.begin_execution(
                 step.task_id,
                 step_id=step.id,
                 capability=step.capability,
+                capability_version=step.capability_version or "1.0.0",
             )
             self._emit(
                 step.task_id,
@@ -55,6 +57,7 @@ class RuntimeExecutionMixin:
 
         spec = binding.spec
         task = self.store.get_task(step.task_id)
+
         approved_override = self._approved_for_step(
             step,
             spec.required_authority,
@@ -96,6 +99,7 @@ class RuntimeExecutionMixin:
             step.task_id,
             step_id=step.id,
             capability=spec.id,
+            capability_version=spec.version,
             input_artifact_ids=input_ids,
         )
         self._emit(
@@ -105,18 +109,75 @@ class RuntimeExecutionMixin:
             execution_id=execution.id,
             payload={
                 "capability": spec.id,
+                "capability_version": spec.version,
                 "provider": None,
                 "attempt": execution.attempt,
             },
         )
 
         try:
+            tool_descriptors = ()
+            if spec.allowed_tools:
+                if self.tool_gateway is None:
+                    raise ValueError(
+                        "capability contract declares allowed_tools but no ToolGateway is configured"
+                    )
+                tool_descriptors = tuple(
+                    descriptor.as_context_dict()
+                    for descriptor in self.tool_gateway.descriptors(spec.allowed_tools)
+                )
+            previous_manifest_id = None
+            failure_reason = None
+            if previous:
+                prior_manifest = self.store.context_manifest_for_execution(previous[-1].id)
+                previous_manifest_id = prior_manifest.id if prior_manifest else None
+                if previous[-1].status in {"rework", "abstain", "fail", "blocked"}:
+                    failure_reason = previous[-1].error or previous[-1].status
             pack = self.context_builder.build(
                 step.task_id,
                 step.id,
                 artifact_ids=input_ids,
-                profile=spec.context_profile,
+                execution_id=execution.id,
+                capability=spec,
                 max_chars=spec.budget.max_context_chars,
+                tool_descriptors=tool_descriptors,
+                required_artifact_ids=tuple(step.input_artifact_ids),
+                previous_manifest_id=previous_manifest_id,
+                failure_reason=failure_reason,
+            )
+            try:
+                validate_json(
+                    pack.payload.get("invocation_input"),
+                    spec.input_schema,
+                    path="$.invocation_input",
+                )
+            except SchemaValidationError as exc:
+                raise ValueError(f"input schema validation failed: {exc}") from exc
+            manifest_record = self.store.write_context_manifest(
+                step.task_id,
+                step_id=step.id,
+                execution_id=execution.id,
+                capability=spec.id,
+                capability_version=spec.version,
+                assembler_version=pack.manifest.assembler_version,
+                budget_tokens=pack.manifest.budget_tokens,
+                total_tokens=pack.manifest.total_tokens,
+                manifest=pack.manifest.as_dict(),
+                manifest_id=pack.manifest.manifest_id,
+            )
+            self._emit(
+                step.task_id,
+                "context.manifest.written",
+                step_id=step.id,
+                execution_id=execution.id,
+                payload={
+                    "manifest_id": manifest_record.id,
+                    "sha256": manifest_record.sha256,
+                    "capability": spec.id,
+                    "capability_version": spec.version,
+                    "tokens": pack.manifest.total_tokens,
+                    "budget": pack.manifest.budget_tokens,
+                },
             )
         except Exception as exc:
             self.store.finish_execution(
@@ -160,6 +221,7 @@ class RuntimeExecutionMixin:
                 pack.payload,
                 input_ids,
                 execution.attempt,
+                capability_version=spec.version,
                 direct_input_artifact_ids=direct_ids,
                 dependency_artifact_ids=dependency_ids,
                 idempotency_key=f"{step.task_id}:{step.id}:{spec.id}",
@@ -222,7 +284,7 @@ class RuntimeExecutionMixin:
         except ModelRoutingError as exc:
             return CapabilityOutcome("blocked", error=str(exc))
 
-        estimated_input_tokens = max(1, (pack.chars + 3) // 4)
+        estimated_input_tokens = pack.tokens
         estimated_output_tokens = max(
             1,
             ((spec.budget.max_output_chars or 8_000) + 3) // 4,
@@ -275,6 +337,8 @@ class RuntimeExecutionMixin:
                     metadata={
                         "task_id": step.task_id,
                         "step_id": step.id,
+                        "context_manifest_id": pack.manifest.manifest_id,
+                        "capability_version": spec.version,
                     },
                 )
             )
@@ -316,6 +380,7 @@ class RuntimeExecutionMixin:
             step.task_id,
             step_id=step.id,
             capability=spec.id,
+            capability_version=spec.version,
             provider="human",
             input_artifact_ids=input_ids,
         )

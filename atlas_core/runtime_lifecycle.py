@@ -133,7 +133,7 @@ class RuntimeLifecycleMixin:
         serial: list[StepRecord] = []
         for step in ready:
             try:
-                spec = self.capabilities.get(step.capability or "").spec
+                spec = self.capabilities.get(step.capability or "", step.capability_version).spec
                 is_parallel = spec.parallel_safe
             except CapabilityRegistryError:
                 is_parallel = False
@@ -144,7 +144,6 @@ class RuntimeLifecycleMixin:
             try:
                 progressed = self._execute_step(step) or progressed
             except InvalidTransitionError:
-                # Another process may have claimed this step after readiness was read.
                 continue
 
         if parallel:
@@ -181,7 +180,6 @@ class RuntimeLifecycleMixin:
         return total
 
     def resume_blocked(self, task_id: str) -> int:
-        """Make safely retryable blocked steps pending for a new explicit run."""
         if self.store.get_task(task_id).status in {"completed", "failed", "cancelled"}:
             return 0
         pending_approval_steps = {
@@ -194,7 +192,7 @@ class RuntimeLifecycleMixin:
             if step.status != "blocked" or step.id in pending_approval_steps:
                 continue
             try:
-                spec = self.capabilities.get(step.capability or "").spec
+                spec = self.capabilities.get(step.capability or "", step.capability_version).spec
             except CapabilityRegistryError:
                 continue
             attempts = self.store.list_executions(task_id, step_id=step.id)
@@ -221,7 +219,6 @@ class RuntimeLifecycleMixin:
         return resumed
 
     def recover_interrupted(self, task_id: str) -> RecoveryResult:
-        """Explicitly resolve executions left running by an interrupted process."""
         task = self.store.get_task(task_id)
         if task.status in {"completed", "cancelled"}:
             return RecoveryResult(task_id, 0, 0, task.status)
@@ -232,7 +229,7 @@ class RuntimeLifecycleMixin:
             if execution.status != "running":
                 continue
             try:
-                binding = self.capabilities.get(execution.capability)
+                binding = self.capabilities.get(execution.capability, execution.capability_version)
                 spec = binding.spec
             except CapabilityRegistryError:
                 spec = None

@@ -1,113 +1,132 @@
-# Atlas Architecture — Runtime and Topology v0.2
+# Atlas Architecture — Runtime and Topology v1.0
 
-Status: **approved for full implementation**
+**Status:** Canonical Atlas 2.0 architecture  
+**Scope:** General runtime, capability boundaries, durable state and current interface/deployment edges
 
-This is the canonical Atlas 2.0 general-runtime architecture. It is based on the Atlas
-Constitution, the working `atlas-agent` vertical slices, lessons from the original `atlas`
-repository, and useful runtime patterns surveyed from Everything Claude Code.
+This document defines the current Atlas 2.0 runtime architecture.
 
-It does **not** replace or rewrite the frozen Morning Workflow or Mobile Capture behaviour.
-Those remain domain responsibilities and are integrated through capability boundaries.
+It is governed by the Atlas Constitution and implemented by the `atlas_core/` runtime. Domain responsibilities such as Morning Workflow and Mobile Capture retain their own behavioural contracts but integrate through Atlas capability/interface boundaries.
+
+---
 
 ## 1. Product definition
 
 Atlas is one persistent operational agent.
 
-Models, tools, APIs, deterministic programs, specialist prompts, parsers, retrieval systems,
-MCP servers and cloud services are capabilities Atlas may invoke. They do not become
-independent Atlas identities and they do not own durable operational state.
+Models, tools, APIs, deterministic programs, parsers, retrieval systems, specialist contexts and cloud services are capabilities Atlas may invoke. They do not become independent Atlas identities and they do not own durable operational state.
 
-The runtime owns objectives, evidence, authority, execution state and completion. A
-conversation is an interface to Atlas, not the source of truth.
+The runtime owns objectives, state, evidence, authority, execution history and completion.
+
+Conversation is an interface to Atlas, not the source of truth.
+
+---
 
 ## 2. Architectural invariants
 
-1. **One Atlas.** Specialists are bounded capabilities or contexts, not persistent personas.
+1. **One Atlas.** Specialists are bounded capabilities/contexts, not persistent personas.
 2. **Tasks are durable.** Substantive work survives model calls, context limits and process restarts.
-3. **Task depth is not tool-round depth.** Safety budgets limit execution frames and total resource use, not arbitrary conversational rounds.
-4. **Deterministic work stays deterministic.** Calculation, filtering, state transitions, schema validation and known business rules prefer ordinary code.
+3. **Task depth is not tool-round depth.** Long work is many bounded execution frames.
+4. **Deterministic work stays deterministic.** Calculation, filtering, schema validation, state transitions and known rules prefer ordinary software.
 5. **Capabilities have contracts.** Inputs, outputs, side effects, authority, budgets, retry behaviour and verification are explicit.
 6. **Models are providers, not architecture.** Provider selection may change without changing task semantics.
-7. **Context is assembled, not accumulated.** Each bounded execution receives only the state and evidence required for its current responsibility.
-8. **State lives outside model context.** Operational truth is persisted structurally.
-9. **Evidence and derived claims remain distinguishable.** Observed, retrieved, calculated, inferred, suggested and executed facts are different epistemic classes.
-10. **Verification precedes completion.** A model saying `done` is not evidence that success criteria were met.
-11. **Authority is explicit.** Read, interpret, recommend, modify internal state, communicate and external execution are distinct permission levels.
-12. **Checkpoints make long work resumable.**
-13. **Learning is proposed, not silently installed.** One-off corrections do not become global rules automatically.
-14. **Complex infrastructure must be earned by a real responsibility.**
-15. **Existing domain workflows are capabilities, not the agent runtime.**
+7. **Context is assembled, not accumulated.** Each execution receives a bounded projection of durable state.
+8. **State lives outside model context.**
+9. **Evidence and claims remain distinguishable.**
+10. **Verification precedes completion.**
+11. **Authority is explicit and per bounded action.**
+12. **Retries create new execution truth.** Previous attempts are not rewritten.
+13. **Checkpoints make long work resumable.**
+14. **Learning/rules are proposed, not silently installed.**
+15. **Complex infrastructure must be earned by a real responsibility.**
+16. **Existing domain workflows are capabilities/interfaces, not competing runtimes.**
+
+---
 
 ## 3. Canonical topology
 
-```text
-USER / EVENT / SCHEDULE / MOBILE / API
-                  |
-                  v
-             INTERFACES
-                  |
-                  v
-        +-------------------+
-        |     TASK PLANE    |
-        | objective         |
-        | success criteria  |
-        | constraints       |
-        | authority         |
-        | durable status    |
-        +---------+---------+
-                  |
-                  v
-        +-------------------+
-        |    TASK RUNTIME   |
-        | ready work        |
-        | dependencies      |
-        | task budgets      |
-        | checkpoints       |
-        | retries           |
-        | parallel-safe     |
-        +----+---------+----+
-             |         |
-             v         +------------------------------+
-      CONTEXT BUILDER                                 |
-             |                                        |
-             v                                        |
-      CAPABILITY REGISTRY                             |
-             |                                        |
-    +--------+-----------+-------------+              |
-    |        |           |             |              |
-    v        v           v             v              |
- deterministic       tool/API      model         human gate
-    |        |           |             |              |
-    |        |           |             v              |
-    |        |           |       MODEL ROUTER         |
-    |        |           |   local / cloud providers  |
-    +--------+-----------+-------------+              |
-             |                                        |
-             v                                        |
-          ARTIFACTS                                   |
-             |                                        |
-             v                                        |
-         CLAIMS / RECEIPTS                            |
-             |                                        |
-             v                                        |
-        VERIFICATION ---------------------------------+
-             |
-       pass / rework /
-       abstain / fail /
-          blocked
-             |
-             v
-       TASK STATE UPDATE
-             |
-       more work? ---- yes ---> TASK RUNTIME
-             |
-             no
-             v
-    COMPLETION VERIFIER
-             |
-             v
-       PRESENT / COMMIT
+```mermaid
+flowchart TB
+    I[User / Event / Schedule / File / API]
+    CLI[CLI\nimplemented]
+    MOBILE[Supervisor Mobile Capture\nimplemented offline]
+    WEB[Atlas Companion PWA\nplanned]
+    SYNC[Authenticated Mobile Sync API\nplanned]
+
+    I --> CLI
+    I -.-> WEB
+    MOBILE -. future sync .-> SYNC
+
+    CLI --> TP
+    WEB -.-> TP
+    SYNC -.-> TP
+
+    subgraph CORE[Atlas 2.0 Core]
+        TP[Task Plane\nobjective • criteria • constraints • authority]
+        RT[TaskRuntime\ndependencies • budgets • retries • checkpoints]
+        CB[ContextBuilder\nbounded projection]
+        CR[Capability Registry\nversioned CapabilitySpec]
+        TG[Tool Gateway\nToolDescriptor + MCP bridge]
+        MR[Model Router\nlocal / cloud providers]
+        VF[Capability Verification]
+        CG[Completion Gate]
+        PR[Presentation]
+
+        TP --> RT
+        RT --> CB
+        CB --> CR
+        CR --> TG
+        CR --> MR
+        CR --> VF
+        TG --> VF
+        MR --> VF
+        VF --> RT
+        RT --> CG
+        CG --> PR
+    end
+
+    subgraph STATE[Durable State]
+        TS[(SQLite Task Store\ntasks • steps • executions\nartifacts • claims • approvals\ncheckpoints • events)]
+        KM[(Knowledge Store\nSQLite / FTS5)]
+        PS[(Provider Eval Scores)]
+        CM[(Context Manifests)]
+    end
+
+    RT <--> TS
+    CB <--> TS
+    CB --> CM
+    CR <--> KM
+    MR <--> PS
+
+    subgraph DOMAIN[Current Domain Responsibilities]
+        MW[Morning Workflow\ndeterministic capability]
+        MC[Mobile Capture\nIndexedDB + validation + report assembly]
+    end
+
+    CR --> MW
+    MOBILE --> MC
+
+    subgraph EDGE[Capability Provider Edge]
+        LOCAL[Local OpenAI-compatible model service]
+        CLOUD[Cloud provider adapters\ndisabled until configured]
+        MCP[MCP client / transport\ninjected at edge]
+    end
+
+    MR --> LOCAL
+    MR -.-> CLOUD
+    TG -.-> MCP
 ```
+
+### Interpretation
+
+- The **TaskRuntime owns work**.
+- The **Capability Registry owns executable responsibility contracts**.
+- The **Model Router sits below capability semantics**.
+- The **ContextBuilder owns model/capability context assembly**.
+- Durable state is not stored in a conversation or model context.
+- Mobile Capture is an offline interface/domain surface, not a second Atlas agent.
+- MCP is an adapter protocol at the tool edge, not Atlas's internal ontology.
+
+---
 
 ## 4. Durable object model
 
@@ -116,7 +135,7 @@ USER / EVENT / SCHEDULE / MOBILE / API
 The durable owner of meaningful work:
 
 - objective;
-- explicit success criteria;
+- success criteria;
 - constraints;
 - authority scope;
 - status;
@@ -131,284 +150,319 @@ The durable owner of meaningful work:
 
 ### Success criterion
 
-Each criterion is independently persisted and may be:
+Each required criterion is independently represented and can remain unresolved until evidence is sufficient.
 
-`pending | accepted | rejected | unknown`
-
-An accepted criterion references evidence artifacts. Completion is impossible while required
-criteria remain unresolved.
+Completion is impossible while required criteria remain unresolved.
 
 ### Step
 
-A bounded unit of work:
+A bounded unit of task work with:
 
 - dependencies;
 - desired capability;
 - explicit input artifacts;
 - status;
-- metadata including which criteria it may satisfy.
+- metadata/criterion mapping.
 
-Independent ready steps may run concurrently only when their capability contract declares
-`parallel_safe`.
+Independent ready steps may execute in parallel only when their contracts and runtime policy allow it safely.
 
 ### Execution
 
-One concrete attempt to satisfy a step:
+One concrete attempt to satisfy one step:
 
-- capability;
-- selected provider/tool;
+- capability + exact version;
+- provider/tool/handler identity;
 - attempt number;
 - inputs;
+- ContextManifest when applicable;
 - outputs;
-- verifier artifact;
+- verifier result;
 - receipt;
-- metrics;
+- usage/metrics;
 - terminal outcome.
 
 Terminal execution truth is:
 
-`pass | rework | abstain | fail | blocked`
+```text
+pass | rework | abstain | fail | blocked
+```
 
-A retry creates a **new execution record**; it never rewrites the previous outcome.
+A retry creates a new execution row.
 
 ### Artifact
 
-Immutable task input or output with SHA-256 identity and metadata. Large binary storage may be
-moved to a content-addressed file store later without changing task semantics.
+An immutable task input or output with content identity and metadata.
+
+Artifacts are the primary durable boundary for capability inputs, outputs and evidence-bearing task material.
 
 ### Claim
 
-A durable statement with one epistemic class:
+A durable statement with an epistemic class such as:
 
-`observed | retrieved | calculated | inferred | suggested | executed`
+```text
+observed | retrieved | calculated | inferred | suggested | executed
+```
 
-Observed/retrieved/calculated/executed claims require evidence references. This prevents model
-prose from silently becoming operational truth.
+Evidence requirements depend on the claim class.
 
 ### Approval
 
-A durable, per-action authority decision. A task may be capable of an action without having
-permission to perform it. Approval can unblock one bounded action without globally elevating
-Atlas authority.
+A durable authority decision for one bounded action.
+
+A task may be capable of an action without being authorised to perform it.
 
 ### Checkpoint
 
-A durable task snapshot at a logical execution boundary. Checkpoints reference artifact hashes
-and IDs rather than duplicating large payloads.
+A durable logical boundary that allows long-running work to resume without depending on process memory.
+
+### ContextManifest
+
+An immutable record of what context was assembled for a bounded capability/model invocation, what was omitted, why, and under which capability version/policy.
+
+---
 
 ## 5. Capability contract
 
-Every executable responsibility has one capability specification:
+Every executable responsibility has a versioned `CapabilitySpec`.
+
+A capability can define:
 
 ```text
 id
+version
 human description
 executor kind
 input schema
 output schema / artifact kind
 required authority
 side effects
-context profile
-eligible providers
-privacy rule
-budget
-retry policy
 idempotency
+context policy
+allowed tools
+eligible providers
+privacy/data classification
+execution/tool/cost budgets
+retry policy
 parallel safety
 verifier
 metadata / criterion mapping
+deprecation / replacement
 ```
 
-Executor kinds:
+Executor kinds include deterministic code, tools, model-backed work, composite responsibilities and human gates.
 
-- `deterministic`;
-- `tool`;
-- `model`;
-- `composite`;
-- `human`.
+Capabilities describe **what responsibility is being executed**. Providers/tools describe **how that responsibility is satisfied**.
 
-The existing Morning Workflow is exposed as a deterministic composite capability without
-rewriting the parser or changing its behavioural contract.
+---
 
 ## 6. Runtime lifecycle
 
-```text
-INGEST REQUEST/EVENT
-        |
-        v
-FORM DURABLE TASK
-        |
-        v
-PLAN IF NECESSARY
-        |
-        v
-DEPENDENCY GRAPH
-        |
-        v
-SELECT READY STEP(S)
-        |
-        v
-ASSEMBLE BOUNDED CONTEXT
-        |
-        v
-CHECK AUTHORITY
-        |
-        +--> insufficient --> durable approval / waiting
-        |
-        v
-SELECT CAPABILITY / PROVIDER
-        |
-        v
-EXECUTE BOUNDED FRAME
-        |
-        v
-STORE OUTPUT + RECEIPT + CLAIMS
-        |
-        v
-VERIFY
-  |       |       |       |
- pass   rework  abstain  fail/blocked
-  |       |       |       |
-  +-------+-------+-------+
-          |
-      checkpoint
-          |
-          v
-   more ready work?
-     |          |
-    yes         no
-     |          |
- runtime     completion gate
-                |
-           criteria/evidence
-                |
-          complete / wait / fail
+```mermaid
+flowchart TD
+    A[Ingest request / event] --> B[Form durable Task]
+    B --> C{Planning required?}
+    C -- yes --> D[Bounded planning execution]
+    C -- no --> E[Task graph / ready work]
+    D --> E
+    E --> F[Select ready Step]
+    F --> G[Create Execution record]
+    G --> H[Build + persist ContextManifest]
+    H --> I{Authority sufficient?}
+    I -- no --> J[Create durable Approval / wait]
+    J --> K{Approved?}
+    K -- no --> X[Blocked / denied]
+    K -- yes --> L[Resolve capability executor]
+    I -- yes --> L
+    L --> M[Execute bounded frame]
+    M --> N[Persist artifact / claims / receipt / metrics]
+    N --> O[Verify]
+    O -->|pass| P[Checkpoint + transition]
+    O -->|rework| Q[New execution attempt]
+    O -->|abstain| Q
+    O -->|fail| R[Fail or escalate by policy]
+    O -->|blocked| X
+    Q --> G
+    P --> S{More ready work?}
+    S -- yes --> F
+    S -- no --> T[Completion gate]
+    T -->|criteria + evidence satisfied| U[Complete]
+    T -->|more work required| E
+    T -->|waiting / blocked| X
+    U --> V[Present / commit result]
 ```
 
-Task depth can be thousands of frames. Each frame remains bounded and independently auditable.
-The execution row is created atomically before any handler/model/tool runs. Explicit recovery can
-convert interrupted idempotent work into a retryable new attempt, while interrupted non-idempotent
-side effects fail closed because external state may be unknown. Optional task/capability cost
-budgets preflight priced provider calls and normalized provider usage is retained on executions.
+The execution row exists before the handler/model/tool call. Interrupted work is therefore visible rather than disappearing into process memory.
 
-## 7. Context topology
+Idempotent interrupted work may be explicitly recovered into another attempt. Non-idempotent external work fails closed when external state may be unknown.
 
-Contexts such as `research`, `plan`, `execute`, `review`, `verify` and `present` are operating
-profiles, not agents.
+---
 
-For each execution frame Atlas builds a fresh context projection from durable state. Direct step
-inputs and dependency outputs remain separately identified inside the capability request. Oversized
-artifacts are represented by identity/hash/metadata rather than silently truncating the task's
-objective, criteria or constraints. A deterministic capability may explicitly retrieve its direct
-artifact by ID; a later reasoning step may request omitted content through retrieval.
+## 7. Execution depth and budgets
 
-The context window is a workspace, not a database.
+Atlas does not use an arbitrary conversational `max_tool_rounds` as the definition of task depth.
 
-## 8. Verification topology
+The runtime uses bounded execution frames with resource ceilings. Current `RuntimeBudget` supports:
+
+- `max_executions`;
+- `max_cycles`;
+- `max_model_calls`;
+- `max_parallel_workers`;
+- optional `max_cost_usd`.
+
+These are ceilings, not quotas. A task that is complete after four executions should stop after four even if its budget allows hundreds.
+
+Provider failover or escalation does not reset task history.
+
+---
+
+## 8. Context topology
+
+Contexts such as planning, reasoning, review or presentation are operating profiles, not agents.
+
+For each model/capability execution Atlas builds a fresh bounded projection from durable state.
+
+The ContextBuilder is the only component authorised to assemble task facts into model/capability context.
+
+The ContextManifest records:
+
+- task/step/execution identity;
+- capability ID/version;
+- budget/policy;
+- included material;
+- dropped material and reasons;
+- estimates/accounting;
+- rework linkage where applicable;
+- immutable content hash.
+
+Provider adapters may translate this projection into provider-specific wire format but may not invent hidden task context.
+
+**The context window is a workspace, not a database.**
+
+---
+
+## 9. Verification topology
 
 Verification is capability-specific and deterministic where possible.
 
 Examples:
 
-- Morning pack: structural output contract and existing acceptance suite;
-- indexing: chunk/page coverage and source reconstruction;
-- coding: tests/static checks/diff review;
-- external communication: successful provider receipt/message identity;
-- analytical recommendation: evidence-grounding checks.
+- Morning pack → required output structure and acceptance suite;
+- knowledge ingestion → durable chunks + provenance;
+- coding → tests/static checks/diff review;
+- external communication → provider receipt/message identity;
+- analytical work → evidence-grounding/contract checks.
 
-Task completion is an independent gate over accepted step outputs, success criteria and pending
-approvals.
+Task completion is an independent gate over accepted evidence and success criteria.
 
-## 9. Model/provider topology
+---
 
-Model providers live under capabilities.
+## 10. Model/provider topology
 
-The runtime includes provider adapters for:
+Model providers live beneath intelligence capabilities.
 
-- local/OpenAI-compatible chat endpoints (including LM Studio-style endpoints);
-- OpenAI Responses API;
-- Anthropic Messages API;
-- Gemini Generate Content API;
-- other OpenAI-compatible gateways such as xAI through configuration.
+The current provider layer supports configuration for:
 
-Cloud providers are disabled by default in example configuration and credentials are read from
-environment variables. The example includes current OpenAI (`gpt-5.6` alias), Gemini
-(`gemini-3.6-flash`) and xAI (`grok-4.5`) identifiers plus an explicit Anthropic model placeholder
-that must be set from the account's current model catalogue. Provider identities and model IDs are
-configuration, not business logic.
+- local/OpenAI-compatible chat endpoints;
+- OpenAI Responses-style providers;
+- Anthropic Messages-style providers;
+- Gemini Generate Content-style providers;
+- other OpenAI-compatible gateways.
 
-Routing considers:
+Cloud providers are disabled until explicitly configured with credentials/current model IDs.
 
-- capability competence score;
-- eval-score overrides;
-- local/cloud privacy constraint;
-- provider allowlists;
+Routing can consider:
+
+- capability eligibility;
+- Atlas eval score;
+- privacy/local-only requirements;
+- allowlists;
 - context capacity;
-- priority and latency rank.
+- priority;
+- latency rank;
+- configured cost information.
 
-A failed/abstaining model attempt remains durable execution truth. A subsequent retry may route to
-another provider without hiding the failed attempt.
+Provider identity is configuration, not business logic.
 
-## 10. Evals
+---
 
-Atlas includes a capability eval harness with:
+## 11. Evals
 
-- deterministic or model/human graders supplied by the caller;
-- repeated attempts;
+Atlas includes a capability evaluation harness with repeated attempts and reliability measures such as:
+
 - `pass@1`;
-- `pass@k` (at least one success in k);
-- `pass^k` (all k attempts succeed).
+- `pass@k`;
+- `pass^k`.
 
-Measured scores override neutral provider eligibility seeds in routing and are persisted in SQLite
-by provider + capability, so earned competence survives restarts. Model roles are therefore earned
-through Atlas-specific evals rather than prestige, size, or a hard-coded static hierarchy.
+Measured provider/capability scores persist in SQLite and can override neutral eligibility seeds in routing.
 
-## 11. Local knowledge and retrieval
+Models therefore earn roles through Atlas-specific measured performance rather than fixed prestige or parameter count.
 
-Atlas includes a SQLite-first knowledge plane for extracted text. `knowledge.ingest_text` chunks and
-persists source material with document/chunk hashes and provenance; `knowledge.search` returns
-source-grounded chunks through the same capability/artifact/claim runtime. FTS5 is used when
-available, with a deterministic SQLite fallback. This is sufficient to exercise large-manual
-ingestion and bounded iterative retrieval without introducing a vector service before measured
-semantic-retrieval need exists. Embedding/vector retrieval can later implement the same retrieval
-contract without changing task ownership.
+---
 
-## 12. Tool and MCP boundary
+## 12. Local knowledge and retrieval
 
-Native tools and APIs pass through a normalized Tool Gateway. Side-effecting tools must return a
-receipt; success without a receipt is rejected at the boundary.
+Atlas currently uses SQLite-first knowledge storage.
 
-MCP is an **adapter**, not Atlas's internal ontology. `MCPToolBridge` accepts a transport client,
-discovers tools, and exposes them through the same Tool Gateway/capability contracts used by native
-tools.
+`knowledge.ingest_text` persists chunked text with hashes and provenance. `knowledge.search` returns source-grounded matches through the same capability/artifact runtime.
 
-The wire transport itself is intentionally not embedded in core runtime because Atlas may use
-stdio, HTTP, vendor-hosted or connector-provided MCP clients. Transport choice belongs at the edge.
+FTS5 is used when available with a deterministic SQLite fallback.
 
-## 13. Authority and safety
+Semantic/vector retrieval is deliberately deferred until retrieval evals demonstrate a need.
+
+If introduced later, it must implement the same retrieval/evidence boundary rather than becoming a second memory architecture.
+
+---
+
+## 13. Tool and MCP boundary
+
+Native tools, APIs and MCP-exposed tools pass through the normalized Tool Gateway.
+
+Side-effecting tool success requires a durable receipt.
+
+MCP remains an edge adapter:
+
+```text
+Capability
+   ↓
+Tool Gateway
+   ├── native tool
+   ├── API
+   ├── CLI
+   └── MCP bridge
+```
+
+The runtime does not assume one MCP transport or a permanent fleet of MCP servers.
+
+---
+
+## 14. Authority and safety
 
 Authority levels are monotonic:
 
 ```text
 read
-  -> interpret
-  -> recommend
-  -> modify_internal
-  -> communicate
-  -> execute_external
+  → interpret
+  → recommend
+  → modify_internal
+  → communicate
+  → execute_external
 ```
 
-A capability declares its minimum required level. Insufficient authority creates a durable approval
-request and pauses the step. Approval applies to that bounded action rather than silently raising
-the whole task's authority.
+A capability declares the minimum authority it needs.
 
-Non-idempotent side effects are not automatically retried merely because a model or verifier asks
-for rework.
+Insufficient authority creates a durable approval request and pauses the bounded step.
 
-## 14. Events and observability
+Approval does not globally elevate the task.
 
-Runtime lifecycle events are persisted in SQLite and may also be published to an in-process event
-bus:
+Non-idempotent side effects are not automatically retried.
+
+---
+
+## 15. Events and observability
+
+Runtime lifecycle events are persisted and may also be published to an in-process event bus.
+
+Examples:
 
 ```text
 task.started
@@ -424,108 +478,127 @@ approval.applied
 retry.blocked
 ```
 
-Audit, telemetry, cost accounting, notifications and future learning proposals may consume events
-without becoming orchestration logic.
+Audit, notifications, cost accounting and future telemetry may consume these events without becoming orchestration logic.
 
-OpenTelemetry can later subscribe at this boundary without changing execution semantics.
+---
 
-## 15. Current implementation layout
+## 16. Current implementation layout
 
 ```text
 atlas_core/
-  tasks/          durable SQLite task/step/execution/artifact/claim/approval/event state
-  capabilities/   contracts, registry, canonical intelligence capabilities
-  providers/      provider contracts, routing, durable eval scores, configuration and HTTP adapters
-  knowledge/      SQLite FTS ingestion/search with chunk provenance
-  integrations/   adapters around existing vertical responsibilities
-  authority.py    authority ladder and decisions
-  context.py      bounded frame context assembly
-  runtime.py      task execution engine and interrupted-frame recovery
-  verification.py capability + completion verification
-  planner.py      strict durable planning execution -> task graph
-  presentation.py deterministic evidence-backed task presentation
-  tools.py        normalized tools + MCP bridge
-  evals.py        capability reliability harness
-  events.py       isolated runtime event fan-out
-  bootstrap.py    runtime assembly
-  __main__.py     CLI for plan/run/recover/approve/result/knowledge/Morning
+├── tasks/                 durable runtime records and SQLite stores
+├── capabilities/          CapabilitySpec + registry
+├── providers/             provider contracts, routing, adapters, eval scores
+├── knowledge/             SQLite/FTS ingestion and retrieval
+├── integrations/          domain capability adapters
+├── authority.py           authority ladder and decisions
+├── context.py             ContextBuilder + ContextManifest
+├── runtime.py             TaskRuntime public facade
+├── runtime_types.py       RuntimeBudget / result types
+├── runtime_lifecycle.py   task lifecycle / recovery coordination
+├── runtime_execution.py   bounded execution mechanics
+├── runtime_finish.py      verification / completion transitions
+├── verification.py        capability and completion verification
+├── planner.py             durable planning → task graph
+├── presentation.py        evidence-backed result presentation
+├── tools.py               Tool Gateway + MCP bridge
+├── evals.py               capability reliability harness
+├── events.py              event fan-out
+├── schema_validation.py   contract schema enforcement
+├── bootstrap.py           runtime assembly
+└── __main__.py            CLI
+
+atlas_morning/             deterministic Morning Workflow
+atlas_mobile/              offline-first Mobile Capture PWA
 ```
 
-Existing:
+---
+
+## 17. Existing domain responsibilities
+
+### Morning Workflow
+
+The frozen TMM Morning Workflow is exposed through:
 
 ```text
-atlas_morning/    frozen legacy/import morning workflow (kept intact)
-atlas_mobile/     offline-first mobile capture surface (kept intact)
+operations.morning_pack.generate
 ```
 
-## 16. Deliberate external boundaries
+Atlas TaskRuntime owns the task/execution/evidence shell while the domain specification owns conservative reporting meaning.
 
-The full runtime topology is implemented without pretending that every possible external system is
-already configured.
+### Mobile Capture
 
-These remain edge integrations for valid reasons:
+`atlas_mobile/` provides the implemented offline-first supervisor reporting surface:
 
-- **Live cloud calls require user credentials and current model IDs.** Adapters and configuration
-  exist; providers stay disabled until configured.
-- **MCP wire transport depends on the actual MCP server/transport selected.** The bridge contract is
-  implemented; transport is injected rather than hardcoded.
-- **Semantic/vector retrieval is not required by the current Morning/Mobile responsibilities.** The
-  artifact/claim model is ready for it without forcing a vector database into the runtime.
-- **Temporal/Celery are not required to achieve durable task depth locally.** SQLite task state and
-  checkpoints already survive process restarts. A workflow backend can replace the execution
-  scheduler later if a real workload proves local scheduling insufficient.
-- **A new web/chat UI is not required to establish runtime truth.** The runtime exposes Python and
-  CLI entry points; UI should be built against the stable task contract rather than define it.
+- activity-at-a-time capture;
+- deterministic validation;
+- IndexedDB persistence;
+- service-worker shell;
+- End Report assembly;
+- WhatsApp-ready text;
+- phone-offline acceptance.
 
-These are not incomplete hidden subsystems; they are explicit adapters around the canonical core.
+Authenticated server sync is not yet implemented.
 
-## 17. Validation requirements
+---
 
-The architecture is not considered sound merely because modules import.
+## 18. External/deployment boundaries
 
-Regression requirements include:
+The core runtime is implemented without pretending every external surface is already configured.
 
-- current Morning/Mobile tests remain unchanged and passing;
-- durable state survives database reopen;
-- dependency graph controls readiness;
-- artifacts are immutable and hashed;
-- execution records are terminal once written;
-- rework creates new attempts rather than rewriting history;
-- authority can pause and resume one bounded action;
-- context overflow preserves artifact references instead of inventing/truncating truth;
-- model routing respects privacy and eval score;
-- provider abstention can fail over without hiding the failed attempt;
-- tasks can execute well beyond the old five-round ceiling;
-- side-effecting tools require execution receipts;
-- checkpoints never duplicate large artifact payloads.
+Still edge/future work:
 
-## 18. What was reused and what was rejected
+- production always-on server packaging;
+- Atlas HTTP/API surface;
+- authentication/authorization for remote interfaces;
+- Atlas Companion PWA;
+- authenticated Mobile Capture synchronization;
+- server-to-phone bootstrap state;
+- host-resource management capabilities;
+- semantic/vector retrieval if justified by evals.
 
-### From `atlas-agent`
+These should attach to the stable task/capability runtime rather than redefine it.
 
-Keep: outcome-first specifications, deterministic processing, preserved raw evidence, acceptance
-tests, offline-first discipline and refusal to infer missing operational facts.
+---
 
-### From original `atlas`
+## 19. Validation requirements
 
-Keep conceptually: capability identity, provider separation, execution artifacts, verification,
-runtime truth, authority and normalized outcomes.
+Architecture is considered implemented only where regression behaviour supports it.
 
-Reject as topology: conversational Director owning execution depth, fixed Reasoning Mesh station
-sequence, arbitrary tool-round completion and accumulated migration scaffolding.
+The repository test suite covers the current runtime invariants including durable state, dependency readiness, immutable artifacts/executions, authority gates, context manifests, schema enforcement, provider routing, side-effect receipts, deep task execution, Morning Workflow behaviour and Mobile Capture fixtures.
 
-### From Everything Claude Code
+CI runs:
 
-Adapt: bounded specialist contexts, verification loops, eval-driven development, context management,
-lifecycle hooks/events and safe parallelism.
+```bash
+python -W error::ResourceWarning -m unittest discover -s tests -q
+python -m compileall -q atlas_core atlas_morning tests
+node atlas_mobile/run_fixtures.js
+```
 
-Reject: multiple persistent named-agent identities as Atlas's product ontology.
+---
 
-## 19. North-star definition
+## 20. Deliberate non-goals
 
-> Atlas is a local-first persistent operational agent whose durable runtime owns objectives, state,
-> evidence, authority and completion, and dynamically assembles deterministic capabilities, tools
-> and benchmarked local or cloud intelligence into bounded verified execution frames.
+Atlas 2.0 is intentionally not built around:
 
-The resident model is not Atlas. The cloud expert is not Atlas. The Morning Workflow is not Atlas.
-The runtime that owns the responsibility and its durable truth is Atlas.
+- persistent named agent swarms;
+- a giant system prompt carrying system truth;
+- a permanent fixed Reasoning Mesh;
+- arbitrary conversational tool-round limits defining task completion;
+- a vector database before retrieval evals justify it;
+- a permanent broad MCP fleet;
+- Kubernetes/Kafka/microservices added speculatively;
+- Temporal/Celery merely to claim durability;
+- silent self-learning rules;
+- automatic high-consequence authority;
+- a browser UI that defines runtime truth.
+
+---
+
+## 21. North star
+
+> **Atlas is a local-first persistent operational agent whose durable runtime owns objectives, state, evidence, authority and completion, and dynamically assembles deterministic capabilities, tools and benchmarked local or cloud intelligence into bounded verified execution frames.**
+
+The resident model is not Atlas. A cloud expert is not Atlas. The Morning Workflow is not Atlas. The mobile app is not Atlas.
+
+**Atlas is the persistent system that owns the work.**

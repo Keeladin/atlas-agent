@@ -1,0 +1,92 @@
+{
+  "providers": {
+    "local:resident": {
+      "kind": "openai_compatible_chat",
+      "model": "atlas",
+      "base_url": "http://127.0.0.1:1234",
+      "local": true,
+      "enabled": true,
+      "max_context_chars": 30000,
+      "priority": 80,
+      "latency_rank": 10,
+      "capabilities": {
+        "planning.general": 0.70,
+        "reasoning.general": 0.75
+      }
+    },
+    "local:heavy": {
+      "kind": "openai_compatible_chat",
+      "model": "qwen3.5-35b-a3b",
+      "base_url": "http://127.0.0.1:1234",
+      "local": true,
+      "enabled": false,
+      "max_context_chars": 60000,
+      "priority": 90,
+      "latency_rank": 30,
+      "capabilities": {
+        "planning.general": 0.85,
+        "reasoning.deep_analysis": 0.88,
+        "coding.software_engineering": 0.80
+      }
+    },
+    "openai:expert": {
+      "kind": "openai_responses",
+      "model": "gpt-5.6",
+      "api_key_env": "OPENAI_API_KEY",
+      "enabled": false,
+      "local": false,
+      "priority": 100,
+      "latency_rank": 45,
+      "capabilities": {
+        "planning.general": 0.95,
+        "reasoning.general": 0.96,
+        "reasoning.deep_analysis": 0.97,
+        "coding.software_engineering": 0.95
+      }
+    },
+    "anthropic:expert": {
+      "kind": "anthropic_messages",
+      "model": "SET_CURRENT_CLAUDE_MODEL_ID",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "enabled": false,
+      "local": false,
+      "priority": 100,
+      "latency_rank": 45,
+      "capabilities": {
+        "planning.general": 0.95,
+        "reasoning.deep_analysis": 0.96,
+        "coding.software_engineering": 0.96
+      }
+    },
+    "google:expert": {
+      "kind": "gemini_generate_content",
+      "model": "gemini-3.6-flash",
+      "api_key_env": "GEMINI_API_KEY",
+      "enabled": false,
+      "local": false,
+      "priority": 90,
+      "latency_rank": 30,
+      "capabilities": {
+        "planning.general": 0.90,
+        "reasoning.general": 0.90,
+        "reasoning.deep_analysis": 0.91,
+        "documents.multimodal": 0.94
+      }
+    },
+    "xai:expert": {
+      "kind": "openai_compatible_chat",
+      "model": "SET_CURRENT_GROK_MODEL_ID",
+      "base_url": "https://api.x.ai",
+      "api_key_env": "XAI_API_KEY",
+      "enabled": false,
+      "local": false,
+      "priority": 90,
+      "latency_rank": 35,
+      "capabilities": {
+        "reasoning.general": 0.90,
+        "reasoning.deep_analysis": 0.91,
+        "coding.software_engineering": 0.88
+      }
+    }
+  }
+}

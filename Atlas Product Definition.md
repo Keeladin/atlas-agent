@@ -1,77 +1,157 @@
-Atlas Product Definition — Draft v0.1
-Purpose
-Atlas is a persistent operational agent whose job is to reduce recurring administrative, informational, and decision-making friction.
-Its value should come from owning useful responsibilities over time, not merely answering prompts.
-The first version should prove that Atlas can take responsibility for a small number of real workflows before we expand the platform.
-Responsibility 1 — Maintain the current operational picture
-Atlas should maintain an up-to-date representation of what is happening now.
-For the first practical implementation, this could mean the engineering environment:
-current machine status;
-active breakdowns;
-unresolved actions;
-incidents and safety items;
-work completed during recent shifts;
-important changes since the previous reporting cycle;
-information that still needs confirmation.
-The user should not have to reconstruct this picture manually every time it is needed.
-Definition of done
-When asked, Atlas can answer:
-“What is the current engineering situation?”
+# Atlas Product Definition
 
-from persisted operational state rather than requiring the user to re-upload or re-explain everything.
-Eventually this responsibility may also run automatically before recurring events such as the morning meeting.
-Responsibility 2 — Own follow-up and outstanding work
-Atlas should maintain a durable record of things that still require attention.
-These may include:
-open maintenance actions;
-safety actions;
-inspection findings;
-training requirements;
-commitments;
-outstanding information;
-reminders;
-follow-up dates;
-decisions waiting for someone else.
-An action should survive beyond the conversation in which it was created.
-Definition of done
-Atlas can reliably answer questions such as:
-“What still needs my attention?”
+**Status:** Current product definition  
+**Scope:** Atlas 2.0
 
-“What was supposed to be completed this week?”
+Atlas is a local-first persistent operational agent whose job is to reduce recurring administrative, informational and decision-making friction by owning useful responsibilities over time.
 
-“Which items have been outstanding longest?”
+Its value comes from durable outcomes rather than merely answering prompts.
 
-And it can surface relevant items when their context becomes important.
-Responsibility 3 — Build operational memory
-Atlas should accumulate useful history instead of treating each event as isolated.
-For equipment, this could eventually connect:
-machine → fault → symptoms → repair → parts → downtime → people involved → previous occurrence → relevant technical information
-Documents and manuals should form part of this memory, but simply indexing documents is not enough.
-The goal is to connect technical reference material with actual operational history.
-Definition of done
-Atlas can answer questions such as:
-“Has this machine had this problem before?”
+## Product promise
 
-“What was done last time?”
+Atlas should increasingly remove the need to reconstruct context, manually bridge routine work, repeatedly explain the same operational picture, or supervise every small step of a task.
 
-“Are we seeing a recurring failure pattern?”
+The defining experience is:
 
-“Which part of the manual is relevant to this fault?”
+> Give Atlas a responsibility, and Atlas owns the durable work required to reach a verified outcome within the authority it has been granted.
 
-Its answers should distinguish recorded facts from inference.
-Responsibility 4 — Produce useful outputs and complete bounded work
-Atlas should not stop at analysis when the required outcome is something it is authorised to produce or execute.
-Depending on authority, this may include:
-generating reports;
-creating documents;
-updating internal records;
-assembling meeting briefs;
-drafting or sending communications;
-retrieving supporting information;
-producing action lists;
-preparing forms or logs.
-The user should not have to manually bridge every step between knowing what needs to happen and getting it done.
-Definition of done
-For an authorised bounded task, Atlas can move from:
-request or trigger → gather context → perform work → produce/execute result → record what happened
-without unnecessary prompting between each step.
+## Responsibility 1 — Maintain useful operational state
+
+Atlas should maintain an up-to-date structured representation of the operational facts that matter to the responsibilities it owns.
+
+For the current engineering use case this can include, as capabilities are added:
+
+- current and last-reported machine state;
+- active breakdowns and unresolved work;
+- incidents and safety items;
+- work completed during recent shifts;
+- important changes since the previous reporting cycle;
+- information still requiring confirmation.
+
+Current implementation provides the durable runtime and the Morning Workflow capability; richer cross-day operational state remains product work rather than a claim of present completion.
+
+### Definition of done
+
+Atlas can answer operational questions from durable state and evidence without requiring the user to reconstruct the same picture from source material every time.
+
+## Responsibility 2 — Own durable tasks and follow-up
+
+Substantive work must survive the conversation in which it was requested.
+
+Atlas represents meaningful work as durable tasks containing objectives, success criteria, constraints, authority, steps, executions, artifacts, evidence, approvals, checkpoints and event history.
+
+Examples of responsibilities that fit this model include:
+
+- maintenance actions;
+- safety actions;
+- inspection findings;
+- training requirements;
+- commitments;
+- outstanding information;
+- reminders and follow-up dates;
+- decisions waiting on another person or system;
+- long-running research, indexing or analysis.
+
+### Definition of done
+
+Atlas can resume, inspect and complete work from durable task truth rather than relying on a chat transcript or model memory.
+
+## Responsibility 3 — Build durable knowledge and operational memory
+
+Atlas should become more useful because it has been operating over time.
+
+The current knowledge plane provides SQLite-first text ingestion, chunk provenance and FTS retrieval. Future operational memory may connect facts such as:
+
+```text
+machine
+  → fault
+  → symptoms
+  → repair
+  → parts
+  → reported state
+  → previous occurrence
+  → relevant technical source
+```
+
+Document indexing by itself is not the end goal. The goal is evidence-backed retrieval that can be connected to real operational work.
+
+### Definition of done
+
+Atlas can retrieve relevant history and source material while distinguishing recorded fact from inference.
+
+## Responsibility 4 — Complete bounded work
+
+Atlas should not stop at analysis when the authorised outcome is something it can reliably produce or execute.
+
+Depending on available capabilities and granted authority, this can include:
+
+- generating reports;
+- indexing or retrieving knowledge;
+- creating artifacts;
+- updating internal state;
+- preparing meeting briefs;
+- drafting or sending communications;
+- invoking tools or APIs;
+- running deterministic workflows;
+- producing action lists, forms or logs.
+
+The current runtime enforces this through:
+
+```text
+Task → Capability → Artifact → Verification
+```
+
+### Definition of done
+
+An authorised bounded task can move from request or trigger to durable task formation, execution, verification and presentation without unnecessary prompting between each step.
+
+## Responsibility 5 — Use intelligence as a replaceable capability
+
+No model is Atlas.
+
+Atlas may route planning, reasoning, coding, document interpretation or other intelligence capabilities to local or cloud providers. Provider choice is governed by capability contracts, privacy rules, context capacity, routing policy and progressively Atlas-specific evaluation scores.
+
+A different provider may satisfy the same capability without changing task semantics.
+
+## Responsibility 6 — Remain useful across interfaces
+
+Conversation is one interface, not the product boundary.
+
+Current and intended interfaces include:
+
+- CLI for engineering and recovery;
+- offline-first supervisor Mobile Capture;
+- a future authenticated Atlas Companion PWA;
+- future APIs, schedules, events and integrations.
+
+All interfaces must enter the same durable Atlas runtime rather than create separate agent identities or competing stores of truth.
+
+## Current product state
+
+Implemented on `main`:
+
+- durable TaskRuntime;
+- SQLite task / step / execution / artifact / claim / approval / checkpoint / event state;
+- versioned capability contracts;
+- bounded ContextBuilder and immutable ContextManifest;
+- verification and completion gates;
+- explicit authority and approvals;
+- tool gateway and MCP adapter boundary;
+- local/cloud provider routing and eval score persistence;
+- SQLite/FTS knowledge plane;
+- Morning Workflow integration;
+- offline-first Mobile Capture surface with phone-offline acceptance.
+
+Not yet implemented as canonical production surfaces:
+
+- general Atlas browser / Companion PWA;
+- authenticated Mobile Capture server synchronization;
+- production always-on server packaging;
+- resource-management capabilities for shared host workloads;
+- semantic/vector retrieval unless future evals justify it.
+
+## Product boundary
+
+Atlas is not a collection of autonomous named agents, a giant system prompt, a chat history, a fixed reasoning mesh, or a wrapper around one model.
+
+**Atlas is the persistent operational system that owns objectives, state, evidence, authority, execution and completion while composing the smallest set of capabilities needed to remove real recurring friction.**

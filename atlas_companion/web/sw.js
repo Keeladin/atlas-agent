@@ -1,5 +1,5 @@
-const CACHE="atlas-companion-v2";
-const ASSETS=["/","/styles.css","/app.js","/manifest.webmanifest"];
+const CACHE="atlas-companion-v3";
+const ASSETS=["/","/styles.css?v=3","/app.js?v=3","/manifest.webmanifest"];
 self.addEventListener("install",event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting())));
 self.addEventListener("activate",event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));
 self.addEventListener("fetch",event=>{

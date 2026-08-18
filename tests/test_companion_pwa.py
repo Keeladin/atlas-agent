@@ -41,6 +41,7 @@ class CompanionPwaTests(unittest.TestCase):
         status, body = self.call("POST", "/api/tasks", b'{"objective":"new","criteria":["done"]}'); self.assertEqual(status, "201 Created")
     def test_serves_shell_without_api(self):
         status, body = self.call("GET", "/"); self.assertEqual(status, "200 OK"); self.assertIn(b"Atlas Companion", body)
+        self.assertIn(b"Operational picture", body); self.assertIn(b"Machine and runtime", body)
 
 
 class TelemetryParsingTests(unittest.TestCase):

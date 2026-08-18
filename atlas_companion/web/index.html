@@ -1,1 +1,83 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Atlas Companion</title><link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/styles.css"><body><header><div><h1>Atlas Companion</h1><p>Local interface for durable Atlas tasks.</p></div><div id="status-strip" aria-live="polite">Loading runtime health…</div></header><main><nav><button data-screen="work">Work</button><button data-screen="health">Health</button></nav><section id="work-screen"><form id="new-task"><label>Objective<input name="objective" required></label><label>Success criteria <small>(one per line)</small><textarea name="criteria" required></textarea></label><button>Create and run</button></form><p id="message" role="status"></p><section><h2>Recent tasks</h2><div id="tasks"></div></section><section id="detail"><h2>Task detail</h2><p>Select a task to view durable status, results, and approvals.</p></section></section><section id="health-screen" hidden><h2>Health</h2><p class="hint">Live host and runtime telemetry. Missing host metrics are shown as unavailable.</p><div id="health" class="health-grid"></div></section></main><script src="/app.js"></script><script>navigator.serviceWorker?.register('/sw.js')</script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Atlas Companion</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/styles.css?v=3">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="rail">
+      <div class="brand"><span class="brand-mark">A</span><div><small>AtlasAgent</small><strong>Companion</strong></div></div>
+      <nav aria-label="Companion screens">
+        <button class="nav-btn active" data-screen="today"><span>Today</span><small>Operational picture</small></button>
+        <button class="nav-btn" data-screen="work"><span>Work</span><small>Durable tasks</small></button>
+        <button class="nav-btn" data-screen="ask"><span>Ask</span><small>Create a responsibility</small></button>
+        <button class="nav-btn" data-screen="knowledge"><span>Knowledge</span><small>Indexed work</small></button>
+        <button class="nav-btn" data-screen="approvals"><span>Approvals</span><small id="approval-count">Checking…</small></button>
+        <button class="nav-btn" data-screen="health"><span>Health</span><small>Machine and runtime</small></button>
+      </nav>
+      <p class="rail-foot">Same durable runtime as the CLI. Provider traffic and machine telemetry stay on this host.</p>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <div><p class="eyebrow">Companion / <span id="crumb">Today</span></p><h1 id="page-title">Today</h1></div>
+        <div id="status-strip" class="status-strip" aria-live="polite">Loading runtime health…</div>
+      </header>
+
+      <main>
+        <section class="screen active" id="today-screen">
+          <div class="section-heading"><div><h2>Operational picture</h2><p>What Atlas owns right now, grounded in durable task state.</p></div><button class="primary" data-goto="ask">New responsibility</button></div>
+          <div class="metric-grid" id="today-metrics"></div>
+          <div class="two-col">
+            <article class="panel"><div class="panel-head"><h3>Needs attention</h3><button class="link-btn" data-goto="approvals">View approvals</button></div><div id="needs-attention"></div></article>
+            <article class="panel"><div class="panel-head"><h3>Recent durable outcomes</h3><button class="link-btn" data-goto="work">View all work</button></div><div id="recent-outcomes"></div></article>
+          </div>
+        </section>
+
+        <section class="screen" id="work-screen">
+          <div class="section-heading"><div><h2>Work</h2><p>Tasks survive the conversation. Active means ready—not necessarily executing.</p></div><button class="primary" data-goto="ask">Create task</button></div>
+          <div class="filters" id="work-filters">
+            <button class="filter active" data-filter="all">All</button><button class="filter" data-filter="open">Open</button><button class="filter" data-filter="completed">Completed</button><button class="filter" data-filter="failed">Failed</button>
+          </div>
+          <div class="work-layout"><div class="panel task-list" id="tasks"></div><article class="panel task-detail" id="detail"><div class="empty"><strong>Select a task</strong><p>Inspect steps, executions, evidence, approvals, and the presented result.</p></div></article></div>
+        </section>
+
+        <section class="screen" id="ask-screen">
+          <div class="section-heading"><div><h2>Ask Atlas</h2><p>This creates a durable task. A model response alone is never completion.</p></div></div>
+          <form id="new-task" class="panel form-panel">
+            <label><span>Responsibility</span><textarea name="objective" placeholder="Explain what Atlas should own and produce…" required></textarea></label>
+            <div class="form-grid">
+              <label><span>Success criteria <small>(one per line)</small></span><textarea name="criteria" placeholder="Produce an evidence-grounded result" required></textarea></label>
+              <label><span>Authority</span><select name="authority"><option value="read">Read</option><option value="interpret" selected>Interpret</option><option value="modify_internal">Modify internal</option><option value="recommend">Recommend</option></select><small class="field-help">Atlas will still stop at any authority gate required by the plan.</small></label>
+            </div>
+            <div class="form-actions"><button class="primary" type="submit">Create and run</button><p id="message" role="status"></p></div>
+          </form>
+        </section>
+
+        <section class="screen" id="knowledge-screen">
+          <div class="section-heading"><div><h2>Knowledge</h2><p>Durable indexing and retrieval work recorded by Atlas.</p></div></div>
+          <div class="metric-grid" id="knowledge-metrics"></div>
+          <article class="panel"><div class="panel-head"><h3>Knowledge tasks</h3><button class="link-btn" data-goto="ask">Create knowledge task</button></div><div id="knowledge-tasks"></div></article>
+        </section>
+
+        <section class="screen" id="approvals-screen">
+          <div class="section-heading"><div><h2>Approvals</h2><p>Authority is explicit. Approval grants permission; it does not fake completion.</p></div></div>
+          <div id="approvals-list" class="stack"><article class="panel muted-panel">Loading approval records…</article></div>
+        </section>
+
+        <section class="screen" id="health-screen">
+          <div class="section-heading"><div><h2>Health</h2><p>Live host, runtime, provider, container, network, and repository state.</p></div><button class="secondary" id="refresh-health">Refresh</button></div>
+          <div id="health" class="health-grid"></div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="/app.js?v=3"></script>
+  <script>navigator.serviceWorker?.register('/sw.js?v=3',{updateViaCache:'none'})</script>
+</body>
+</html>

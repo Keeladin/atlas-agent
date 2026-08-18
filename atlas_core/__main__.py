@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from atlas_core.bootstrap import build_runtime
+from atlas_core.knowledge import source_content_sha256
 from atlas_core.planner import TaskPlanner
 from atlas_core.presentation import TaskPresenter
 
@@ -70,9 +71,13 @@ def main() -> None:
     if args.command == "cancel":
         task = store.set_task_status(args.task_id, "cancelled"); store.create_checkpoint(task.id, reason="task cancelled from CLI"); print(f"{task.id}\t{task.status}"); return
     if args.command == "index-text":
-        source = Path(args.path); text = source.read_text(encoding="utf-8")
+        source = Path(args.path).expanduser()
+        if not source.is_file():
+            raise SystemExit(f"index-text source is missing or not a file: {source}")
+        text = source.read_text(encoding="utf-8")
+        resolved = str(source.resolve())
         task = store.create_task(objective=f"Index local knowledge source {source.name}", success_criteria=("The source is durably indexed with chunk provenance.",), authority_scope="modify_internal", metadata={"interface": "cli", "workflow": "knowledge_ingest"})
-        request = store.put_artifact(task.id, kind="knowledge_ingest_request", payload={"title": args.title or source.name, "source_uri": args.source_uri or str(source.resolve()), "text": text, "chunk_chars": args.chunk_chars, "overlap_chars": args.overlap_chars})
+        request = store.put_artifact(task.id, kind="knowledge_ingest_request", payload={"title": args.title or source.name, "source_path": resolved, "source_uri": args.source_uri or resolved, "content_sha256": source_content_sha256(text), "byte_size": source.stat().st_size, "chunk_chars": args.chunk_chars, "overlap_chars": args.overlap_chars})
         store.add_step(task.id, description="Chunk and index extracted text.", capability="knowledge.ingest_text", capability_version=runtime.capabilities.get("knowledge.ingest_text").spec.version, input_artifact_ids=(request.id,), metadata={"accept_all_criteria": True})
         _print_result(runtime.run_until_blocked(task.id)); return
     if args.command == "search":

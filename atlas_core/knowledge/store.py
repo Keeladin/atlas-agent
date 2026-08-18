@@ -56,6 +56,14 @@ def _load(value: str | None) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def normalize_knowledge_text(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def source_content_sha256(text: str) -> str:
+    return hashlib.sha256(normalize_knowledge_text(text).encode("utf-8")).hexdigest()
+
+
 def chunk_text(
     text: str,
     *,
@@ -66,7 +74,7 @@ def chunk_text(
         raise ValueError("chunk_chars must be >= 256")
     if overlap_chars < 0 or overlap_chars >= chunk_chars:
         raise ValueError("overlap_chars must be >= 0 and smaller than chunk_chars")
-    source = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    source = normalize_knowledge_text(text)
     if not source:
         return ()
 
@@ -194,8 +202,7 @@ class KnowledgeStore:
         )
         if not chunks:
             raise ValueError("Knowledge document text must not be empty.")
-        normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
-        content_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        content_hash = source_content_sha256(text)
         document_id = f"doc_{content_hash[:24]}"
 
         with self._db() as db:

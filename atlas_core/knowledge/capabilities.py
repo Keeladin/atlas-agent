@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from pathlib import Path
 
 from atlas_core.capabilities import (
     CapabilityOutcome,
@@ -12,7 +12,7 @@ from atlas_core.capabilities import (
 from atlas_core.tasks import TaskStore
 from atlas_core.verification import VerificationResult, VerifierRegistry
 
-from .store import KnowledgeStore
+from .store import KnowledgeStore, source_content_sha256
 
 
 def _payload(store: TaskStore, request):
@@ -23,6 +23,37 @@ def _payload(store: TaskStore, request):
     if not isinstance(value, dict):
         raise ValueError("Knowledge input artifact must be an object.")
     return value
+
+
+def _read_source_path(source_path: str) -> str:
+    path = Path(source_path).expanduser()
+    try:
+        path = path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise ValueError(f"Knowledge source path is missing: {path}") from exc
+    if not path.is_file():
+        raise ValueError(f"Knowledge source path is not a file: {path}")
+    return path.read_text(encoding="utf-8")
+
+
+def _ingest_text(data: dict) -> str:
+    source_path = data.get("source_path")
+    inline = data.get("text")
+    if source_path:
+        text = _read_source_path(str(source_path))
+    elif isinstance(inline, str) and inline:
+        text = inline
+    else:
+        raise ValueError("Knowledge ingest requires source_path or text.")
+    expected = data.get("content_sha256")
+    if expected:
+        actual = source_content_sha256(text)
+        if actual != str(expected):
+            raise ValueError(
+                "Knowledge source hash mismatch: "
+                f"expected {expected}, got {actual}"
+            )
+    return text
 
 
 def _search_verifier(spec, output, context):
@@ -44,7 +75,7 @@ def register_knowledge_capabilities(
         data = _payload(task_store, request)
         result = knowledge_store.ingest_text(
             title=str(data.get("title") or ""),
-            text=str(data.get("text") or ""),
+            text=_ingest_text(data),
             source_uri=(str(data["source_uri"]) if data.get("source_uri") else None),
             metadata=(dict(data["metadata"]) if isinstance(data.get("metadata"), dict) else {}),
             chunk_chars=int(data.get("chunk_chars", 4000)),
@@ -107,16 +138,20 @@ def register_knowledge_capabilities(
     capabilities.register(
         CapabilitySpec(
             id="knowledge.ingest_text",
+            version="1.1.0",
             description="Persist and chunk extracted text into Atlas full-text knowledge with provenance.",
             executor_kind="deterministic",
             required_authority="modify_internal",
             input_schema={
                 "type": "object",
-                "required": ["title", "text"],
+                "required": ["title"],
                 "properties": {
                     "title": {"type": "string", "minLength": 1},
+                    "source_path": {"type": "string", "minLength": 1},
                     "text": {"type": "string", "minLength": 1},
                     "source_uri": {"type": ["string", "null"]},
+                    "content_sha256": {"type": "string", "minLength": 1},
+                    "byte_size": {"type": "integer", "minimum": 0},
                     "metadata": {"type": "object"},
                     "chunk_chars": {"type": "integer", "minimum": 1},
                     "overlap_chars": {"type": "integer", "minimum": 0},

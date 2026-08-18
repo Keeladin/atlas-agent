@@ -115,10 +115,14 @@ class OpenAICompatibleChatProvider:
             messages.append({"role": "system", "content": request.system})
         messages.append({"role": "user", "content": request.input})
         headers = {"Authorization": f"Bearer {key}"} if key else {}
+        payload: dict[str, Any] = {"model": self.spec.model, "messages": messages}
+        response_format = request.metadata.get("response_format")
+        if isinstance(response_format, dict):
+            payload["response_format"] = response_format
         raw = _post_json(
             self.base_url.rstrip("/") + "/v1/chat/completions",
             headers,
-            {"model": self.spec.model, "messages": messages},
+            payload,
             self.timeout_seconds,
         )
         choices = raw.get("choices") if isinstance(raw.get("choices"), list) else []

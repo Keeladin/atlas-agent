@@ -207,6 +207,7 @@ class TaskPlanner:
                         "step_id": planning_step.id,
                         "context_manifest_id": manifest_record.id,
                         "capability_version": self.planning_capability.version,
+                        "response_format": {"type": "json_object"},
                     },
                 )
             )

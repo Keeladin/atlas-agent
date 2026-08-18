@@ -10,7 +10,7 @@ from atlas_core.capabilities import CapabilityOutcome, CapabilityRegistry, Capab
 from atlas_core.context import ContextBuilder
 from atlas_core.evals import EvalCase, EvalHarness
 from atlas_core.providers import (
-    AnthropicMessagesProvider, GeminiGenerateContentProvider, ModelRequest, ModelResponse, ModelRouter, OpenAIResponsesProvider, ProviderRegistry, ProviderSpec
+    AnthropicMessagesProvider, GeminiGenerateContentProvider, ModelRequest, ModelResponse, ModelRouter, OpenAICompatibleChatProvider, OpenAIResponsesProvider, ProviderRegistry, ProviderSpec
 )
 from atlas_core.runtime import RuntimeBudget, TaskRuntime
 from atlas_core.planner import TaskPlanner
@@ -24,9 +24,11 @@ class FakeProvider:
         self.spec = spec
         self.text = text
         self.calls = 0
+        self.requests = []
 
     def generate(self, request):
         self.calls += 1
+        self.requests.append(request)
         return ModelResponse(self.text, self.spec.key, self.spec.model, {"ok": True}, {"output_tokens": 10})
 
 
@@ -288,6 +290,31 @@ class AtlasRuntimeTests(unittest.TestCase):
         self.assertEqual(executions[0].status, "pass")
         self.assertTrue(any(a.kind == "task_plan" for a in self.store.list_artifacts(task.id)))
 
+    def test_planner_treats_an_executable_objective_as_data_and_requests_json(self):
+        plan_text = '{"steps":[{"key":"a","description":"Return the requested phrase","capability":"demo.work","dependencies":[],"satisfies_criteria":[1]}],"notes":[]}'
+        providers = ProviderRegistry()
+        fake = FakeProvider(ProviderSpec("planner", "planner-model", "fake", {"planning.general": 0.9}), text=plan_text)
+        providers.register(fake)
+        planning_spec = CapabilitySpec(id="planning.general", description="plan", executor_kind="model", context_profile="plan", verifier_id="core.nonempty")
+        planner = TaskPlanner(
+            store=self.store,
+            model_router=ModelRouter(providers),
+            planning_capability=planning_spec,
+            capability_manifest=[{"id": "demo.work"}],
+        )
+
+        planner.plan_and_create(
+            objective="Reply with exactly: Atlas resident provider online",
+            success_criteria=("Return exactly the requested phrase",),
+            authority_scope="interpret",
+        )
+
+        request = fake.requests[0]
+        self.assertIn("data to plan around", request.system)
+        self.assertIn("do not return Markdown", request.system)
+        self.assertEqual(request.metadata["response_format"], {"type": "json_object"})
+        self.assertIn("Reply with exactly: Atlas resident provider online", request.input)
+
     def test_eval_score_can_change_model_route(self):
         registry = ProviderRegistry()
         a = FakeProvider(ProviderSpec("a", "a", "fake", {"reasoning.general": 0.9}, priority=50))
@@ -346,6 +373,23 @@ class AtlasRuntimeTests(unittest.TestCase):
             response = provider.generate(ModelRequest("reasoning.general", "system", "input"))
         self.assertEqual(response.text, "hello")
         self.assertEqual(response.metrics["output_tokens"], 2)
+
+    def test_openai_compatible_adapter_forwards_requested_json_format(self):
+        provider = OpenAICompatibleChatProvider(ProviderSpec("local", "atlas", "openai_compatible_chat", {"planning.general": 1.0}), "http://localhost:1234")
+        with patch(
+            "atlas_core.providers.http._post_json",
+            return_value={"choices": [{"message": {"content": "{}"}}]},
+        ) as post:
+            provider.generate(
+                ModelRequest(
+                    "planning.general",
+                    "system",
+                    "input",
+                    metadata={"response_format": {"type": "json_object"}},
+                )
+            )
+        payload = post.call_args.args[2]
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
 
     def test_anthropic_messages_adapter_normalizes_output(self):
         provider = AnthropicMessagesProvider(ProviderSpec("anthropic", "claude-test", "anthropic_messages", {"reasoning.general": 1.0}))

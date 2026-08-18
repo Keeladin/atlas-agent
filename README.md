@@ -12,7 +12,7 @@ The runtime owns the objective, task state, evidence, authority, execution histo
 
 ## Status
 
-Atlas 2.0 is under active development. The durable task runtime and its core governance contracts are implemented on `main`; several external interfaces and deployment pieces are intentionally still edge work.
+Atlas 2.0 is under active development. The durable runtime and core governance contracts are implemented on `main`; several external interfaces and deployment pieces remain intentionally separate edge work.
 
 | Area | Current state |
 |---|---|
@@ -26,14 +26,15 @@ Atlas 2.0 is under active development. The durable task runtime and its core gov
 | Local / cloud model provider routing | **Implemented** |
 | Provider eval score persistence | **Implemented** |
 | SQLite / FTS knowledge plane | **Implemented** |
-| Morning Workflow integration | **Implemented** |
-| Offline-first Mobile Capture development surface | **Implemented and phone-offline tested** |
+| Morning Workflow runtime integration | **Implemented** |
+| Offline-first Mobile Capture PWA | **Implemented and phone-offline tested** |
 | General Atlas browser / Companion PWA | **Not yet implemented** |
 | Mobile report server sync + authentication | **Not yet implemented** |
-| Production always-on server packaging | **Not yet committed as a canonical deployment** |
-| Semantic / vector retrieval | **Deliberately deferred until evals justify it** |
+| Production always-on server packaging | **Not yet canonicalized** |
+| Host resource-management capability | **Direction only** |
+| Semantic / vector retrieval | **Deferred until evals justify it** |
 
-The project deliberately avoids pretending that planned edge integrations already exist.
+The project deliberately avoids presenting planned edge integrations as finished code.
 
 ---
 
@@ -47,7 +48,7 @@ Task → Capability → Artifact → Verification
 
 A model response is not completion. A tool call is not completion. A conversation ending is not completion.
 
-Atlas completes work when the durable task state and its required evidence satisfy the task's explicit success criteria.
+Atlas completes work when durable task state and required evidence satisfy explicit success criteria.
 
 ### Architectural invariants
 
@@ -62,28 +63,29 @@ Atlas completes work when the durable task state and its required evidence satis
 9. **Evidence and derived claims remain distinguishable.**
 10. **Verification precedes completion.**
 11. **Authority is explicit.** Capability does not imply permission.
-12. **Learning is proposed, not silently installed.**
-13. **Complex infrastructure must earn its place through real work.**
+12. **Retries preserve previous execution truth.**
+13. **Learning is proposed, not silently installed.**
+14. **Complex infrastructure must earn its place through real work.**
 
-The full design philosophy lives in [Atlas Constitution](./Atlas%20Constitution.md).
+The governing principles live in [Atlas Constitution](./Atlas%20Constitution.md).
 
 ---
 
 # System topology
 
-The following diagram represents the current Atlas 2.0 architectural topology. Dashed paths mark external surfaces that are planned or intentionally injected at the edge rather than pretending to be complete today.
+Solid paths represent implemented runtime relationships. Dashed paths represent planned or injected edge surfaces.
 
 ```mermaid
 flowchart TB
     U[User / Event / Schedule / File / API]
     CLI[CLI\nimplemented]
-    MPWA[Mobile Capture PWA\noffline-first, implemented]
-    WEB[Atlas Companion / Web UI\nplanned]
-    SYNC[Mobile Sync API\nplanned]
+    MPWA[Supervisor Mobile Capture PWA\noffline-first, implemented]
+    WEB[Atlas Companion PWA\nplanned]
+    SYNC[Authenticated Mobile Sync API\nplanned]
 
     U --> CLI
     U -.-> WEB
-    MPWA -. sync when available .-> SYNC
+    MPWA -. sync when coverage returns .-> SYNC
 
     CLI --> TP
     WEB -.-> TP
@@ -126,39 +128,39 @@ flowchart TB
     CR <--> KM
     MR <--> PS
 
-    subgraph VERTICALS[Existing Responsibilities]
-        MW[Morning Workflow\ndeterministic composite capability]
-        MOBILE[Mobile Capture\nlocal IndexedDB + validation + WhatsApp rendering]
+    subgraph DOMAIN[Current Responsibilities]
+        MW[Morning Workflow\ndeterministic capability]
+        MOBILE[Mobile Capture\nIndexedDB + validation + report assembly]
     end
 
     CR --> MW
     MPWA --> MOBILE
 
-    subgraph PROVIDERS[Intelligence / External Capability Edge]
-        LOCAL[Local OpenAI-compatible model service\nLM Studio-style endpoint]
-        CLOUD[Cloud provider adapters\nOpenAI • Anthropic • Gemini • compatible gateways]
-        MCP[MCP transport/client\ninjected when selected]
+    subgraph EDGE[Intelligence / Tool Edge]
+        LOCAL[Local OpenAI-compatible model service]
+        CLOUD[Cloud provider adapters\ndisabled until configured]
+        MCP[MCP client / transport\ninjected when selected]
     end
 
     MR --> LOCAL
-    MR -. disabled until configured .-> CLOUD
-    TG -. adapter boundary .-> MCP
+    MR -.-> CLOUD
+    TG -.-> MCP
 ```
 
 ### What the topology means
 
 - **The runtime owns the task**, not the resident model.
-- **Capabilities sit below task semantics.** A task can route to deterministic code, a tool, a model, a composite workflow or a human gate.
+- **Capabilities sit below task semantics.** A task can route to deterministic code, a tool, a model, a composite responsibility or a human gate.
 - **The model router sits below capabilities.** A capability may be satisfied by different providers without changing the task contract.
 - **State is structural and durable.** The context window is a workspace, not a database.
-- **Mobile is an interface, not another agent.** The current capture surface works locally/offline; server sync is a separate future boundary.
+- **Mobile is an interface/domain surface, not another agent.**
 - **MCP is an edge protocol, not Atlas's internal ontology.**
 
 ---
 
 # Runtime lifecycle
 
-Atlas executes substantive work as a durable graph of bounded frames.
+Atlas executes substantive work as a durable graph of bounded execution frames.
 
 ```mermaid
 flowchart TD
@@ -206,7 +208,25 @@ A retry creates a **new execution record**. Atlas does not rewrite a failed atte
 
 Interrupted idempotent work can be explicitly recovered. Interrupted non-idempotent side effects fail closed because external state may be unknown.
 
-This is why Atlas can execute deeply without depending on an arbitrary conversational `max_tool_rounds` ceiling.
+---
+
+# Execution depth and budgets
+
+Task depth belongs to TaskRuntime rather than a conversational Director or arbitrary `max_tool_rounds` limit.
+
+Current runtime budget ceilings include:
+
+```text
+max_executions
+max_cycles
+max_model_calls
+max_parallel_workers
+max_cost_usd (optional)
+```
+
+A ceiling is not a target. Atlas stops as soon as the task is verified complete.
+
+Provider escalation does not erase prior attempts or reset task history.
 
 ---
 
@@ -225,170 +245,168 @@ flowchart LR
     T --> CP[Checkpoints]
     T --> EV[Events]
     A --> C
-    CL --> A
+    CL --> C
 ```
 
-### Task
+The durable task is the owner of substantive work. Individual model calls and tool calls are attempts inside that task rather than the task itself.
 
-The durable owner of meaningful work: objective, criteria, constraints, authority, status, steps, evidence and history.
+---
 
-### Step
+# Capability contracts
 
-A bounded unit of work with dependencies, a desired capability, explicit inputs and criterion mapping.
+Every executable responsibility is described by a versioned `CapabilitySpec`.
 
-### Execution
+A capability can define:
 
-One concrete attempt to satisfy a step. It records the exact capability version and concrete provider/tool used.
+- ID/version/description;
+- executor kind;
+- input/output schemas;
+- required authority;
+- side effects and idempotency;
+- context policy;
+- eligible providers;
+- allowed tools;
+- privacy/data classification;
+- execution/tool/cost budgets;
+- retry policy;
+- parallel safety;
+- verifier;
+- deprecation/replacement metadata.
 
-### Artifact
+Durable planned steps can pin an exact capability version. Executions record the exact version used.
 
-Immutable task input or output with SHA-256 identity and provenance metadata.
+---
 
-### Claim
+# Context topology
 
-A durable statement classified as:
+The ContextBuilder is the sole authority for assembling task context for normal capability/model invocation.
 
 ```text
-observed | retrieved | calculated | inferred | suggested | executed
+Durable task state
+        ↓
+ContextBuilder
+        ↓
+immutable ContextManifest
+        ↓
+bounded provider/capability projection
+        ↓
+execution
 ```
 
-Observed, retrieved, calculated and executed claims require evidence references.
+Provider adapters may translate the projection into provider wire format but may not add hidden task facts.
 
-### Approval
+The ContextManifest records included and dropped material, reasons, budget/accounting and capability identity before invocation.
 
-A durable per-action authority decision. Approval can unblock one bounded action without globally elevating Atlas authority.
-
-### ContextManifest
-
-Every normal capability/model invocation receives a manifest built by `ContextBuilder` and persisted **before invocation**. It is immutable for that execution and records the exact bounded projection Atlas supplied, including included/dropped candidates and token accounting.
+**The context window is a workspace, not a database.**
 
 ---
 
-# Capability and tool governance
+# Authority
 
-Every executable responsibility is described by a versioned `CapabilitySpec` rather than by a free-floating prompt or named agent.
-
-A capability may declare:
-
-- stable ID and SemVer version;
-- bounded objective and description;
-- input/output schemas;
-- allowed tools;
-- authority requirement;
-- side-effect classification;
-- idempotency and retry policy;
-- context profile and `ContextPolicy`;
-- eligible providers and privacy constraints;
-- verifier;
-- execution/tool/cost budgets;
-- deprecation and replacement metadata.
-
-Planned steps may pin an exact capability version. Every execution records the exact version actually used.
-
-`ToolDescriptor` provides the equivalent least-privilege contract for native, API, CLI and MCP tool surfaces. Credentials are not stored in descriptors.
-
----
-
-# Authority model
-
-Capability and permission are separate concerns.
+Authority levels are monotonic:
 
 ```mermaid
 flowchart LR
-    R[read] --> I[interpret] --> REC[recommend] --> MI[modify_internal] --> COM[communicate] --> EX[execute_external]
+    A[read] --> B[interpret]
+    B --> C[recommend]
+    C --> D[modify_internal]
+    D --> E[communicate]
+    E --> F[execute_external]
 ```
 
-A task carries an authority scope. A capability declares the authority it requires. If the task does not have sufficient authority, Atlas creates a durable approval request and waits rather than silently escalating itself.
+A capability can exist without the task being authorised to use it at the required level.
 
-Non-idempotent external side effects are not automatically retried merely because a model or verifier requests rework.
+Insufficient authority creates a durable approval and pauses the bounded action.
+
+Approval applies to that action rather than silently elevating the whole task.
 
 ---
 
-# Model/provider topology
-
-Models are providers underneath capabilities.
+# Provider topology
 
 ```mermaid
-flowchart TB
-    CAP[Capability request] --> ROUTER[ModelRouter]
-    ROUTER --> SCORE[Capability eval scores]
-    ROUTER --> PRIV[Privacy / allowlist / context / cost constraints]
-    SCORE --> SELECT[Provider selection]
-    PRIV --> SELECT
-    SELECT --> L[Local OpenAI-compatible provider]
-    SELECT -. if explicitly configured .-> O[OpenAI adapter]
-    SELECT -. if explicitly configured .-> A[Anthropic adapter]
-    SELECT -. if explicitly configured .-> G[Gemini adapter]
-    SELECT -. if explicitly configured .-> X[Other OpenAI-compatible gateway]
-    L --> OUT[Execution output]
-    O --> OUT
-    A --> OUT
-    G --> OUT
-    X --> OUT
-    OUT --> VERIFY[Capability verifier]
+flowchart LR
+    C[Capability request] --> R[Model Router]
+    R --> L[Local OpenAI-compatible provider]
+    R -. configured / allowed .-> O[OpenAI-style provider]
+    R -. configured / allowed .-> A[Anthropic-style provider]
+    R -. configured / allowed .-> G[Gemini-style provider]
+    R -. configured / allowed .-> X[Other compatible gateway]
+
+    S[(Provider eval scores)] --> R
 ```
 
-Routing may consider capability competence, persisted eval scores, privacy, provider allowlists, context capacity, priority, latency and cost constraints.
+Routing can consider capability eligibility, Atlas eval score, privacy, allowlists, context capacity, priority, latency and configured cost information.
 
-The example provider registry is [`config/runtime-providers.example.json`](./config/runtime-providers.example.json). It enables only the local resident provider by default. Cloud providers remain disabled until the operator deliberately configures credentials and provider/model details.
+Cloud providers are disabled until explicitly configured.
 
-Provider/model identities are configuration, not business logic.
+See [`config/runtime-providers.example.json`](./config/runtime-providers.example.json) for the current example registry shape.
 
 ---
 
-# Local knowledge
+# Knowledge and retrieval
 
 Atlas currently uses a SQLite-first knowledge plane.
 
-`knowledge.ingest_text`:
+`knowledge.ingest_text` chunks and persists extracted text with hashes/provenance. `knowledge.search` retrieves source-grounded chunks through the same capability/artifact runtime.
 
-- chunks extracted UTF-8 text;
-- stores document/chunk hashes;
-- preserves source provenance;
-- records the work through the normal task/artifact/claim runtime.
+FTS5 is preferred when available with deterministic SQLite fallback.
 
-`knowledge.search`:
-
-- uses FTS5 where available;
-- falls back to deterministic SQLite search;
-- returns source-grounded chunks through the same capability boundary.
-
-A vector database is intentionally **not** required by the current responsibilities. Semantic/vector retrieval can later implement the same retrieval contract if measured retrieval evals show that FTS is insufficient.
+Semantic/vector retrieval is deliberately deferred until retrieval evals show a real need.
 
 ---
 
-# Existing vertical responsibilities
+# Tools and MCP
+
+Native tools, APIs, CLI adapters and MCP-discovered tools pass through Atlas's normalized tool boundary.
+
+Side-effecting success requires a receipt.
+
+MCP is an adapter, not Atlas ontology:
+
+```text
+Capability
+   ↓
+Tool Gateway
+   ├── native Python
+   ├── API
+   ├── CLI
+   └── MCP bridge
+```
+
+Transport is selected at the edge rather than embedded in core runtime semantics.
+
+---
+
+# Current domain responsibilities
 
 ## Morning Workflow
 
-The existing Morning Workflow remains a deterministic responsibility and is exposed through the runtime as:
+The current TMM Morning Workflow remains a deterministic responsibility exposed as:
 
 ```text
 operations.morning_pack.generate
 ```
 
-Atlas 2.0 wraps the responsibility through the capability/task boundary without rewriting the frozen parser or changing its behavioural contract.
+Atlas 2.0 wraps it through the task/capability/evidence boundary without changing its conservative reporting semantics.
 
-Relevant documents:
-
-- [Morning Workflow — Behavioural Specification](./Atlas%20Morning%20Workflow%20—%20Behavioural%20Specification.md)
-- [Morning Workflow — Implementation Plan](./Atlas%20Morning%20Workflow%20—%20Implementation%20Plan.md)
+See [Morning Workflow — Behavioural Specification](./Atlas%20Morning%20Workflow%20%E2%80%94%20Behavioural%20Specification.md).
 
 ## Mobile Capture
 
-`atlas_mobile/` contains the offline-first mobile reporting development surface:
+`atlas_mobile/` contains the implemented offline-first supervisor reporting surface:
 
 - activity-at-a-time capture;
 - deterministic green/orange/red validation;
 - IndexedDB persistence;
-- service-worker application shell caching;
+- service-worker shell caching;
 - End Report assembly;
 - WhatsApp-ready plain-text rendering and copy;
-- offline reopen/persistence behaviour.
+- phone-offline acceptance.
 
-The current phone-offline acceptance cycle is recorded in [`atlas_mobile/PHONE-OFFLINE-ACCEPTANCE.md`](./atlas_mobile/PHONE-OFFLINE-ACCEPTANCE.md).
+Authenticated server synchronization is **not yet implemented**.
 
-The current implementation does **not** yet provide authenticated synchronization into the Atlas server runtime. Sync remains an explicit edge responsibility rather than being faked inside the offline capture code.
+See [Mobile Capture V1 — Behavioural Contract](./Mobile%20Capture%20V1%20%E2%80%94%20Behavioural%20Contract.md) and [`atlas_mobile/PHONE-OFFLINE-ACCEPTANCE.md`](./atlas_mobile/PHONE-OFFLINE-ACCEPTANCE.md).
 
 ---
 
@@ -397,29 +415,34 @@ The current implementation does **not** yet provide authenticated synchronizatio
 ```text
 atlas-agent/
 ├── atlas_core/
-│   ├── tasks/          durable task/step/execution/artifact/claim/approval/event state
-│   ├── capabilities/   CapabilitySpec contracts + version-aware registry
-│   ├── providers/      provider contracts, routing, adapters and eval scores
-│   ├── knowledge/      SQLite / FTS ingestion and retrieval
-│   ├── integrations/   adapters around existing responsibilities
-│   ├── authority.py    authority ladder and decisions
-│   ├── context.py      bounded context assembly + ContextManifest
-│   ├── runtime.py      task execution engine + interrupted-frame recovery
+│   ├── tasks/                durable runtime records and SQLite stores
+│   ├── capabilities/         CapabilitySpec contracts + registry
+│   ├── providers/            provider contracts, routing, adapters, eval scores
+│   ├── knowledge/            SQLite / FTS ingestion and retrieval
+│   ├── integrations/         domain responsibility adapters
+│   ├── authority.py
+│   ├── context.py
+│   ├── runtime.py            TaskRuntime public facade
+│   ├── runtime_types.py
+│   ├── runtime_lifecycle.py
+│   ├── runtime_execution.py
+│   ├── runtime_finish.py
 │   ├── verification.py
 │   ├── planner.py
 │   ├── presentation.py
-│   ├── tools.py        normalized tool gateway + MCP bridge
+│   ├── tools.py
 │   ├── evals.py
 │   ├── events.py
+│   ├── schema_validation.py
 │   ├── bootstrap.py
-│   └── __main__.py     CLI
+│   └── __main__.py
 │
-├── atlas_morning/      frozen Morning Workflow implementation
-├── atlas_mobile/       offline-first mobile capture surface
-├── config/             example runtime provider configuration
-├── docs/architecture/  governance reconciliation + advisory material
-├── tests/              runtime and behavioural regression coverage
-└── .github/workflows/  CI
+├── atlas_morning/            frozen Morning Workflow implementation
+├── atlas_mobile/             offline-first Mobile Capture PWA
+├── config/                   runtime/provider configuration examples
+├── docs/architecture/        current runtime governance
+├── tests/                    runtime + behavioural regressions
+└── .github/workflows/        CI
 ```
 
 ---
@@ -430,10 +453,8 @@ atlas-agent/
 
 - Python **3.12**
 - Git
-- Node.js only if you want to run the Mobile fixture suite
-- Optional: an OpenAI-compatible local model endpoint for planning/model capabilities
-
-The CI environment does not install a Python dependency bundle before running the current regression suite.
+- Node.js if running the Mobile fixture suite
+- Optional OpenAI-compatible local model endpoint for planning/model capabilities
 
 ## Clone
 
@@ -458,7 +479,7 @@ python -m compileall -q atlas_core atlas_morning tests
 node atlas_mobile/run_fixtures.js
 ```
 
-These are the same classes of checks run by GitHub Actions on `main` and pull requests.
+These are the same classes of checks run by GitHub Actions.
 
 ## Initialize a runtime database
 
@@ -467,28 +488,26 @@ mkdir -p instance
 python -m atlas_core --db instance/atlas.db tasks
 ```
 
-The runtime initializes its durable SQLite stores when assembled.
-
 ---
 
 # CLI
 
-The current CLI is the canonical engineering interface into the runtime while a general browser interface is still pending.
+The current CLI is the canonical engineering interface while the general browser interface is still pending.
 
 ```text
 python -m atlas_core [--db PATH] [--providers CONFIG] COMMAND
 ```
 
-Available commands:
+Commands:
 
 ```text
-morning      Run the existing Morning Workflow through TaskRuntime
+morning      Run the Morning Workflow through TaskRuntime
 plan         Create a durable task and bounded capability plan
 run          Run or resume a durable task
 recover      Resolve executions left running by an interrupted process
 approve      Approve one pending authority gate
 deny         Deny one pending authority gate
-result       Render durable task truth as a user-facing report
+result       Render durable task truth as a report
 index-text   Index a UTF-8 text file into local knowledge
 search       Search local full-text knowledge
 cancel       Cancel a non-terminal task
@@ -504,7 +523,7 @@ python -m atlas_core \
   index-text "Atlas Constitution.md"
 ```
 
-Then search it:
+Search it:
 
 ```bash
 python -m atlas_core \
@@ -518,7 +537,7 @@ python -m atlas_core \
 cp config/runtime-providers.example.json config/runtime-providers.local.json
 ```
 
-The example local resident provider expects an OpenAI-compatible endpoint at:
+The example resident provider expects an OpenAI-compatible endpoint at:
 
 ```text
 http://127.0.0.1:1234
@@ -530,7 +549,7 @@ with model identifier:
 atlas
 ```
 
-Verify your model service independently, for example:
+Verify the endpoint independently, for example:
 
 ```bash
 curl http://127.0.0.1:1234/v1/models
@@ -546,7 +565,7 @@ python -m atlas_core \
   --criterion "Produce a clear evidence-grounded explanation"
 ```
 
-Then inspect and run the durable task:
+Then inspect/run/present:
 
 ```bash
 python -m atlas_core --db instance/atlas.db status <TASK_ID>
@@ -563,7 +582,7 @@ python -m atlas_core --db instance/atlas.db result <TASK_ID>
 
 # Validation and CI
 
-The GitHub Actions workflow currently performs:
+GitHub Actions currently runs:
 
 ```bash
 python -W error::ResourceWarning -m unittest discover -s tests -q
@@ -576,7 +595,7 @@ Architectural regression requirements include:
 - durable state survives database reopen;
 - dependency graphs control readiness;
 - artifacts remain immutable and hashed;
-- execution history is not rewritten by retries;
+- retries do not rewrite previous execution truth;
 - authority can pause and resume one bounded action;
 - capability version pinning survives durable execution;
 - ContextManifest exists before provider/handler invocation;
@@ -586,7 +605,7 @@ Architectural regression requirements include:
 - side-effect constraints fail closed;
 - planning uses ContextBuilder;
 - provider routing respects privacy and eval score;
-- tasks can execute beyond a shallow conversational tool-round ceiling;
+- tasks can execute beyond shallow conversational tool-round ceilings;
 - Morning and Mobile behavioural suites remain green.
 
 ---
@@ -595,12 +614,13 @@ Architectural regression requirements include:
 
 Atlas 2.0 is intentionally **not** built around:
 
-- a collection of persistent named autonomous agents;
-- a giant system prompt that carries operational truth;
+- persistent named autonomous-agent swarms;
+- a giant system prompt carrying operational truth;
 - a permanent fixed Reasoning Mesh;
 - model-specific business logic;
 - a vector database before retrieval evals justify one;
-- Kafka, Kubernetes, microservices or workflow infrastructure added speculatively;
+- a permanent broad MCP fleet;
+- Kafka, Kubernetes or microservices added speculatively;
 - Temporal or Celery merely to claim durable execution depth;
 - silent self-learning rules;
 - automatic high-consequence authority;
@@ -612,7 +632,7 @@ The project prefers the smallest system that reliably owns a real responsibility
 
 # Near-term deployment direction
 
-The current runtime is deliberately interface-agnostic. A likely always-on deployment can place the same core behind browser/mobile interfaces without changing task semantics.
+The runtime is interface-agnostic. The intended always-on direction places the same core behind browser/mobile interfaces without changing task semantics.
 
 **This is deployment direction, not a claim that these server/API components are already implemented in `main`.**
 
@@ -646,21 +666,24 @@ The intended property is simple: **the operational Atlas runtime can remain aliv
 
 ---
 
-# Architecture documents and precedence
+# Documentation map and precedence
 
 When documents disagree, use this order:
 
 1. [Atlas Constitution](./Atlas%20Constitution.md)
-2. [Atlas Architecture — Runtime and Topology](./Atlas%20Architecture%20—%20Runtime%20and%20Topology.md)
-3. [Atlas Runtime Governance Reconciliation](./docs/architecture/Atlas%20Runtime%20Governance%20Reconciliation.md)
-4. Advisory source documents
+2. [Atlas Architecture — Runtime and Topology](./Atlas%20Architecture%20%E2%80%94%20Runtime%20and%20Topology.md)
+3. [Atlas Runtime Governance](./docs/architecture/Atlas%20Runtime%20Governance%20Reconciliation.md)
+4. Domain behavioural contracts
 
-Additional product/domain references:
+Current product/domain references:
 
 - [Atlas Product Definition](./Atlas%20Product%20Definition.md)
 - [Atlas Product Direction](./Atlas%20Product%20Direction.md)
-- [Mobile Capture V1 — Behavioural Contract](./Mobile%20Capture%20V1%20—%20Behavioural%20Contract.md)
-- [Mobile functionality](./Mobile%20functionality.md)
+- [Morning Workflow — Behavioural Specification](./Atlas%20Morning%20Workflow%20%E2%80%94%20Behavioural%20Specification.md)
+- [Mobile Capture V1 — Behavioural Contract](./Mobile%20Capture%20V1%20%E2%80%94%20Behavioural%20Contract.md)
+- [Phone Offline Acceptance](./atlas_mobile/PHONE-OFFLINE-ACCEPTANCE.md)
+
+There are intentionally no historical advisory/proposal documents in the canonical documentation chain.
 
 ---
 

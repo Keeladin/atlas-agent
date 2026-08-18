@@ -1,9 +1,10 @@
 # Atlas 2.0 — Inference Apprenticeship
 
 **Status:** Proposal for implementation consideration  
+**Revision:** 0.2  
 **Date:** 18 August 2026  
 **Authority:** Non-canonical until explicitly accepted  
-**Scope:** Improving local model inference proficiency through teacher-guided distillation without changing Atlas policy, authority, tools, task semantics, or operational truth
+**Scope:** Improve local-model inference proficiency through teacher-guided distillation without changing Atlas policy, authority, tools, task semantics, evidence rules, or operational truth.
 
 ---
 
@@ -11,10 +12,10 @@
 
 Atlas is designed so that the runtime, not the model, owns durable work.
 
-The model is an intelligence provider inside a larger system that owns:
+The runtime owns:
 
-- task state;
-- evidence;
+- durable task state;
+- evidence and claims;
 - authority;
 - capability contracts;
 - verification;
@@ -22,21 +23,21 @@ The model is an intelligence provider inside a larger system that owns:
 - operational memory;
 - completion criteria.
 
-This creates an opportunity that would be much harder in a model-centric architecture: Atlas can improve the proficiency of its local inference provider without changing the architecture or allowing the model to silently change Atlas itself.
+The model is an intelligence provider inside that system.
 
-This document explores a future **Inference Apprenticeship** subsystem in which a smaller local resident model periodically learns from a stronger teacher model during idle compute windows.
+This creates a useful future path: Atlas may improve the proficiency of its local resident inference model while leaving Atlas itself architecturally and operationally unchanged.
 
-The intent is not to teach tools, install policies, create new permissions, or make Atlas self-governing.
+The proposed **Inference Apprenticeship** subsystem would allow a smaller local resident model to learn from a stronger teacher model, preferably during idle compute windows.
 
-The intent is narrower:
+The goal is narrow:
 
-> **Make the local inference model measurably better at reasoning, technical comprehension, synthesis, planning, uncertainty calibration and instruction following while all Atlas governance remains external and unchanged.**
+> **Make the local inference provider measurably better at reasoning, technical comprehension, synthesis, planning, uncertainty calibration and instruction following while all Atlas governance remains external and unchanged.**
+
+This is not tool learning, policy learning, authority learning or autonomous self-governance.
 
 ---
 
-## 2. Core boundary
-
-The design must preserve a hard separation between **inference competence** and **Atlas governance**.
+## 2. Hard boundary: competence may improve; governance may not drift
 
 ```text
 ATLAS RUNTIME
@@ -57,9 +58,9 @@ LOCAL MODEL
 └── inference proficiency only
 ```
 
-The apprenticeship system may improve how well the local model thinks.
+The apprenticeship system may improve how well the model reasons.
 
-It must not allow the local model to decide:
+It must not allow the model or training process to decide:
 
 - what Atlas is authorised to do;
 - what operational policy means;
@@ -68,55 +69,8 @@ It must not allow the local model to decide:
 - what capabilities exist;
 - what permissions a capability receives;
 - what success criteria govern a task;
-- which learned behaviour becomes durable policy.
-
-Those remain runtime-owned and explicitly governed.
-
----
-
-## 3. What may be learned
-
-The student model may be trained to improve general inference qualities such as:
-
-- multi-step reasoning;
-- technical comprehension;
-- extracting relevant signal from noisy information;
-- planning and decomposition;
-- evidence synthesis;
-- contradiction detection;
-- instruction following;
-- uncertainty calibration;
-- appropriate abstention;
-- concise versus detailed response control;
-- long-context reasoning;
-- identifying missing information;
-- comparing competing explanations;
-- producing structured conclusions;
-- detecting weak assumptions;
-- domain-language comprehension where the underlying training material is suitable and permitted.
-
-These are proficiency improvements to the inference engine.
-
-They are not changes to Atlas authority or policy.
-
----
-
-## 4. What must not be learned as policy
-
-The apprenticeship system must not silently train durable operational rules into the student as a substitute for explicit runtime policy.
-
-Examples of prohibited policy-learning targets include:
-
-- "Atlas may send this class of email without approval.";
-- "This machine may be restarted automatically.";
-- "Interpret this operational status differently from the documented rule.";
-- "Ignore this verifier because it often blocks completion.";
-- "Raise the authority level for this capability.";
-- "This user normally approves this action, therefore future approval is unnecessary.";
-- "Change the operational-day boundary.";
-- "Treat an inferred fact as observed evidence.".
-
-The runtime must remain able to replace the student model with another provider without changing these rules.
+- whether approvals can be skipped;
+- whether a learned behaviour becomes runtime policy.
 
 A useful test is:
 
@@ -124,40 +78,62 @@ A useful test is:
 
 ---
 
-## 5. Teacher and student roles
+## 3. What may be learned
 
-The proposed system has two distinct model roles.
+The student model may be trained to improve inference qualities such as:
 
-### 5.1 Student
+- multi-step reasoning;
+- technical comprehension;
+- signal extraction from noisy information;
+- planning and decomposition;
+- evidence synthesis;
+- contradiction detection;
+- instruction following;
+- uncertainty calibration;
+- appropriate abstention;
+- long-context reasoning;
+- identifying missing information;
+- comparing competing explanations;
+- structured conclusions;
+- weak-assumption detection;
+- domain-language comprehension where training material is permitted and suitable.
+
+These are improvements to the intelligence provider, not changes to Atlas governance.
+
+---
+
+## 4. Teacher and student roles
+
+### Student
 
 The student is the local model Atlas intends to improve and potentially use as its normal resident inference provider.
 
-Example role:
+Example:
 
 ```text
 local:resident-v12
 ```
 
-A training run produces a separate candidate:
+A training run must produce a separate candidate:
 
 ```text
 local:candidate-v13
 ```
 
-The current resident model is never modified in place.
+The current resident is never modified in place.
 
-### 5.2 Teacher
+### Teacher
 
-The teacher is a stronger model used to create, improve, critique or rank training examples.
+The teacher is a stronger model used to create, improve, critique or rank candidate training targets.
 
-The teacher may be:
+It may be:
 
-- a larger cloud model;
+- a stronger cloud model;
 - a larger local model;
 - a temporarily available high-capability model;
-- a model from a different family chosen to reduce correlated errors.
+- a different model family chosen to reduce correlated errors.
 
-The teacher does not become Atlas and does not receive additional authority merely because it is stronger.
+The teacher does not become Atlas and receives no extra authority because it is stronger.
 
 Its role is educational:
 
@@ -169,33 +145,360 @@ prompt / problem
        └── teacher solution / critique / refinement
                       │
                       ▼
-              verified training example
+              candidate training target
 ```
 
+Teacher output is not automatically ground truth.
+
+Training admission requires verification or independent moderation appropriate to the task.
+
+The design must not depend on access to a teacher model's hidden chain of thought. Final answers, structured solutions, explicit critiques, concise rationales and independently verifiable targets are sufficient.
+
 ---
 
-## 6. Distillation approach
+## 5. Existing Atlas evaluation machinery is the foundation
 
-The exact training method should remain an implementation choice because model families, licences, quantisation formats and training tooling will change.
+Atlas already implements evaluation infrastructure in `atlas_core/evals.py`.
 
-Likely candidate methods include adapter-based fine-tuning such as LoRA or QLoRA where compatible with the selected base model.
+The current primitives include:
 
-The architectural requirement is more important than the training library:
+- `EvalCase`;
+- `EvalAttempt`;
+- `EvalReport`;
+- `EvalHarness`;
+- repeated attempts per case;
+- `pass@1`;
+- `pass@k`;
+- all-k reliability (`pass^k` / `pass_all_k`);
+- persisted provider/capability competence scoring through the model router score store.
 
-1. the base resident model remains recoverable;
-2. training produces a versioned candidate artifact;
+The apprenticeship feature must **extend this machinery rather than create a second evaluation framework**.
+
+A future inference eval suite should therefore be understood as:
+
+> **a versioned collection of EvalCases, graders, inference dimensions and scoring policy executed through the existing EvalHarness.**
+
+Illustrative concept:
+
+```text
+InferenceEvalSuite v1
+├── reasoning cases
+├── technical-comprehension cases
+├── planning cases
+├── uncertainty cases
+├── instruction-following cases
+├── long-context cases
+├── regression cases
+└── graders + scoring policy
+
+              │
+              ▼
+        existing EvalHarness
+              │
+              ▼
+      versioned EvalReport(s)
+```
+
+No parallel evaluation ontology is required unless the existing harness later proves structurally insufficient.
+
+---
+
+## 6. Baseline before training
+
+Before generating training data, Atlas must establish a reproducible proficiency baseline for the current resident.
+
+The same resident should be evaluated repeatedly under controlled inference settings so Atlas understands normal stochastic variation.
+
+```text
+resident-v12
+    │
+    ▼
+versioned eval suite
+    │
+    ▼
+k repeated attempts
+    │
+    ├── pass@1
+    ├── pass@k
+    ├── pass^k
+    ├── per-dimension scores
+    ├── recurring failure patterns
+    └── observed score variance
+```
+
+This is essential because a small numerical improvement may be ordinary sampling noise rather than genuine learning.
+
+A promotion system must first demonstrate that it can reliably distinguish:
+
+1. the same model from itself under expected variance;
+2. an intentionally degraded candidate from the resident;
+3. a meaningfully stronger candidate from the resident.
+
+If the measurement system cannot do those three things reliably, model training must not proceed to automatic promotion.
+
+---
+
+## 7. Inference dimensions
+
+The first serious apprenticeship suite should measure dimensions rather than collapse everything into one score.
+
+A useful initial scorecard is:
+
+| Dimension | Purpose |
+|---|---|
+| Reasoning | Multi-step deduction and constraint handling |
+| Technical comprehension | Interpret procedures, manuals and technical descriptions |
+| Planning | Decompose objectives coherently |
+| Synthesis | Combine evidence without inventing or losing important relationships |
+| Uncertainty | Recognise insufficient evidence |
+| Abstention | Decline appropriately rather than fabricate |
+| Instruction following | Respect explicit constraints |
+| Long-context use | Identify and use relevant information in larger contexts |
+| Error detection | Find contradictions, invalid assumptions and flawed reasoning |
+| Structured output | Produce valid required structures reliably |
+
+A single aggregate score may be useful for dashboards, but promotion decisions must retain the underlying dimensions.
+
+---
+
+## 8. Objective grading first; judge models as graders, not a second framework
+
+No single model should both teach the student and declare the student successful.
+
+### Deterministic graders
+
+Use ordinary code whenever correctness can be measured objectively.
+
+Examples:
+
+- exact-answer checks;
+- calculations;
+- schema compliance;
+- contradiction checks;
+- required-field checks;
+- structured-output validity;
+- latency;
+- token use;
+- VRAM use;
+- context limits;
+- failure and timeout rates.
+
+These graders should plug directly into the existing `EvalHarness` runner/grader contract.
+
+### Independent judge graders
+
+Where inference quality genuinely requires judgment, an independent judge model may implement the grader boundary.
+
+Pairwise evaluation should preferably be blind:
+
+```text
+Prompt
+Answer A
+Answer B
+```
+
+The judge need not know which answer belongs to the resident or candidate.
+
+Where practical, the judge for a promotion batch should not be the same model that produced the teacher targets.
+
+### Higher-confidence moderation
+
+For important promotion decisions Atlas may combine:
+
+- deterministic graders;
+- one independent model judge;
+- a second model family;
+- capability-specific verifiers;
+- fixed aggregation rules.
+
+The aggregation policy must be versioned and fixed before the candidate is scored.
+
+---
+
+## 9. Curriculum comes from both benchmarks and real work
+
+Night school should not merely train on arbitrary benchmark questions.
+
+Atlas's daytime work should help identify what the resident actually struggles with.
+
+Useful durable signals include:
+
+- verifier-requested rework;
+- resident failure;
+- repeated abstention where a stronger model succeeds;
+- expert escalation;
+- incorrect confidence;
+- judge preference for a stronger provider;
+- recurring reasoning weakness within a task class;
+- structured-output failures;
+- long-context misses.
+
+This produces a closed loop:
+
+```text
+DAY
+real Atlas task
+      │
+      ▼
+resident inference
+      │
+      ▼
+pass / rework / abstain / fail / escalation
+      │
+      ▼
+durable competence observation
+      │
+      ▼
+recurring weakness
+      │
+      ▼
+curriculum candidate
+
+NIGHT
+teacher-guided examples
+      │
+      ▼
+verified training data
+      │
+      ▼
+candidate model
+
+EXAM
+hidden eval + regression + shadowing
+      │
+      ▼
+promote or reject
+```
+
+Real-work observations must influence curriculum selection without turning operational facts or policies into training truth.
+
+---
+
+## 10. Curriculum construction
+
+Curriculum material may include:
+
+- benchmark-style reasoning problems;
+- technical passages with interpretation questions;
+- planning problems;
+- evidence-synthesis tasks;
+- uncertainty and abstention cases;
+- contradiction-detection tasks;
+- long-context comprehension exercises;
+- instruction-following edge cases;
+- difficult examples where the resident previously failed or required rework;
+- synthetic examples produced by the teacher and independently checked.
+
+A rotating curriculum may be useful, but fixed weekday subjects are not an architectural requirement.
+
+Curriculum selection should increasingly be driven by measured weakness rather than arbitrary schedule.
+
+---
+
+## 11. Training-data admission
+
+Teacher output must not automatically become training truth.
+
+Every candidate example needs a reproducible admission path.
+
+```text
+candidate example
+      │
+      ▼
+provenance recorded
+      │
+      ▼
+objective checks where possible
+      │
+      ▼
+independent grading where judgment is needed
+      │
+      ▼
+accepted for training?
+   /           \
+ no             yes
+ │               │
+reject        immutable dataset entry
+```
+
+Useful admission checks include:
+
+- deterministic correctness where available;
+- verifier success;
+- agreement with known evidence;
+- independent judge preference;
+- absence of policy/authority content;
+- data-licensing suitability;
+- privacy suitability;
+- no hidden credentials or secrets;
+- no unsupported claims presented as truth.
+
+Only accepted examples enter the training corpus.
+
+---
+
+## 12. Data separation and leakage control
+
+At minimum, maintain three logically separate datasets.
+
+### Training set
+
+Examples the candidate may learn from.
+
+### Validation set
+
+Examples used for training/development decisions.
+
+### Hidden promotion set
+
+Examples never exposed to training and used only for generalisation/promotion evidence.
+
+```text
+TRAIN
+teacher-guided examples
+       │
+       ▼
+student learns
+
+VALIDATION
+training decisions
+
+HIDDEN PROMOTION EVAL
+never exposed to training
+       │
+       ▼
+promotion evidence
+```
+
+Evaluation leakage is a failed experiment, not a bookkeeping inconvenience.
+
+The hidden suite should be versioned and periodically refreshed with genuinely unseen problems.
+
+---
+
+## 13. Distillation/training approach
+
+The exact training backend should remain an implementation choice because model families, licences, quantisation formats and tooling will change.
+
+Likely initial approaches include adapter-based fine-tuning such as LoRA or QLoRA where compatible with the chosen resident model.
+
+The architectural requirements are:
+
+1. the current resident remains recoverable;
+2. training produces a separate versioned candidate artifact;
 3. the training dataset is reproducible and provenance-linked;
-4. the candidate is evaluated independently before use;
-5. promotion is atomic and reversible;
-6. failed candidates are never silently substituted into production.
+4. training configuration is recorded;
+5. the candidate is independently evaluated before production use;
+6. promotion is atomic and reversible;
+7. failed candidates are never silently substituted into production.
 
 ---
 
-## 7. Night-school operating window
+## 14. Night-school operating window
 
-A practical initial policy is a scheduled apprenticeship window from **20:00 to 03:00 local time**.
+A practical initial schedule is an apprenticeship opportunity window from **20:00 to 03:00 local time**.
 
-The schedule is an opportunity window, not permission to monopolise resources.
+The window is not permission to monopolise resources.
 
 ```text
 20:00
@@ -221,227 +524,13 @@ checkpoint periodically
 stop / checkpoint / release resources
 ```
 
-Normal Atlas work always has higher priority than model training.
+Normal Atlas work always outranks apprenticeship work.
 
-The apprenticeship workload must therefore be:
-
-- interruptible where the training backend permits it;
-- checkpointed;
-- resource-bounded;
-- lower priority than production inference;
-- pausable when user-facing or operational work needs the GPU;
-- resumable only when the resulting training state remains valid.
-
-A future host Resource Manager could enforce this directly.
+Training should therefore be interruptible where practical, checkpointed, resource-bounded and pausable when production workloads require the host.
 
 ---
 
-## 8. Curriculum construction
-
-The apprenticeship system should not simply collect arbitrary conversations and fine-tune on them.
-
-Training material should be deliberately selected to improve defined inference dimensions.
-
-A curriculum may contain:
-
-- benchmark-style reasoning problems;
-- technical passages with interpretation questions;
-- planning problems;
-- evidence-synthesis tasks;
-- uncertainty and abstention cases;
-- contradiction-detection tasks;
-- long-context comprehension exercises;
-- instruction-following edge cases;
-- difficult examples where the resident previously failed or required rework;
-- synthetic examples produced by the teacher and then independently checked.
-
-A possible rotating curriculum could be:
-
-```text
-Monday      reasoning
-Tuesday     technical comprehension
-Wednesday   planning and decomposition
-Thursday    uncertainty / abstention
-Friday      synthesis and long context
-Saturday    mixed proficiency
-Sunday      regression and consolidation
-```
-
-This rotation is illustrative, not a required implementation detail.
-
----
-
-## 9. Training-data admission
-
-Teacher output must not automatically become training truth.
-
-Every candidate example needs an admission path.
-
-```text
-candidate example
-      │
-      ▼
-source / provenance recorded
-      │
-      ▼
-objective checks where possible
-      │
-      ▼
-independent evaluation where judgment is needed
-      │
-      ▼
-accepted for training?
-   /           \
- no             yes
- │               │
-reject        immutable dataset entry
-```
-
-Useful admission signals include:
-
-- deterministic correctness;
-- verifier success;
-- agreement with known evidence;
-- independent judge preference;
-- absence of policy or authority content;
-- data-licensing suitability;
-- privacy suitability;
-- no hidden credentials or secrets;
-- no unsupported claims presented as truth.
-
-Only accepted examples enter the training corpus.
-
----
-
-## 10. Data separation and leakage control
-
-At minimum, the apprenticeship system should maintain three logically distinct datasets:
-
-### Training set
-
-Examples the candidate is allowed to learn from.
-
-### Validation set
-
-Examples used during development or training decisions.
-
-### Hidden promotion set
-
-Examples the candidate never sees during training and that are used only to determine whether it genuinely generalised.
-
-```text
-TRAIN
-teacher-guided examples
-       │
-       ▼
-student learns
-
-VALIDATION
-training decisions
-
-HIDDEN EVAL
-never exposed to training
-       │
-       ▼
-promotion evidence
-```
-
-Evaluation leakage must be treated as a failed experiment, not a minor bookkeeping issue.
-
-The promotion suite should also include periodically refreshed unseen problems so that a candidate cannot improve merely by overfitting a fixed benchmark.
-
----
-
-## 11. Moderation model
-
-No single model should both teach the student and declare the student successful.
-
-Moderation should have multiple layers.
-
-### 11.1 Deterministic evaluators
-
-Use ordinary code whenever correctness can be measured objectively.
-
-Examples:
-
-- exact-answer checks;
-- calculations;
-- schema compliance;
-- contradiction checks;
-- required-field checks;
-- latency;
-- token use;
-- VRAM use;
-- context limits;
-- resource consumption;
-- structured-output validity.
-
-### 11.2 Independent judge model
-
-Where inference quality genuinely requires judgment, use a judge that is independent from the teacher for that training batch where practical.
-
-Pairwise evaluation should preferably be blind:
-
-```text
-Prompt
-Answer A
-Answer B
-```
-
-The judge should not need to know which answer came from the resident or candidate.
-
-### 11.3 Judge jury for important evals
-
-For higher-confidence promotion decisions, Atlas may combine:
-
-- deterministic scoring;
-- one independent cloud or local judge;
-- a second model family;
-- capability-specific verifiers.
-
-The aggregation policy must be fixed and durable before the candidate is scored.
-
-### 11.4 TaskRuntime as procedural moderator
-
-Atlas TaskRuntime should govern the experiment rather than a model deciding the process dynamically.
-
-TaskRuntime should enforce:
-
-- dataset identity;
-- model identity;
-- teacher identity;
-- training configuration;
-- evaluation configuration;
-- hidden-set separation;
-- promotion thresholds;
-- resource budgets;
-- rollback requirements;
-- immutable experiment evidence.
-
----
-
-## 12. Outcome measurement
-
-Candidates must be compared against the current resident using the same evaluation conditions.
-
-### 12.1 Inference dimensions
-
-A useful initial scorecard may include:
-
-| Dimension | Purpose |
-|---|---|
-| Reasoning | Multi-step deduction and constraint handling |
-| Technical comprehension | Interpret procedures, manuals and technical descriptions |
-| Planning | Decompose objectives coherently |
-| Synthesis | Combine evidence without losing provenance or introducing contradictions |
-| Uncertainty | Recognise insufficient evidence |
-| Abstention | Decline when appropriate rather than fabricate |
-| Instruction following | Respect explicit constraints |
-| Long-context use | Identify and use relevant information in larger contexts |
-| Error detection | Find contradictions, invalid assumptions and flawed reasoning |
-| Structured output | Produce valid required structures reliably |
-
-### 12.2 Regression suite
+## 15. Regression testing
 
 Improvement in one dimension must not conceal damage elsewhere.
 
@@ -454,13 +543,17 @@ Critical regression checks should include:
 - degraded abstention;
 - catastrophic forgetting;
 - inability to perform baseline reasoning tasks;
-- materially increased resource cost outside accepted limits.
+- materially increased latency/resource cost outside accepted limits.
 
-### 12.3 Generalisation
+A candidate with a large gain in one category may still be rejected if it regresses on a critical dimension.
 
-A healthy candidate should show improvement not only on training-like examples but on unseen examples.
+---
 
-A result such as:
+## 16. Generalisation and variance
+
+A candidate should improve beyond training-like examples.
+
+Example of weak evidence:
 
 ```text
 training-like tasks   +20%
@@ -468,9 +561,9 @@ hidden eval            +1%
 fresh unseen tasks      0%
 ```
 
-suggests overfitting.
+This suggests memorisation or overfitting.
 
-A result such as:
+Stronger evidence looks more like:
 
 ```text
 training-like tasks   +16%
@@ -478,32 +571,38 @@ hidden eval            +7%
 fresh unseen tasks     +6%
 ```
 
-is much stronger evidence of improved inference proficiency.
+Candidate gains must also exceed the resident's measured normal variance.
 
-### 12.4 Efficiency
+Promotion thresholds should therefore consider confidence intervals or another explicit statistical treatment once the sample sizes justify it, rather than treating every raw percentage difference as meaningful.
 
-Quality is not the only requirement for a resident local model.
+---
+
+## 17. Efficiency measurement
+
+Resident quality is not the only goal.
 
 Track at least:
 
 - time to first token;
 - total response latency;
 - output tokens;
-- tokens per successful task;
+- tokens per successful eval case;
 - VRAM use;
 - RAM use where material;
 - GPU utilisation;
-- energy or GPU-time estimates where practical;
+- GPU-time or energy estimate where practical;
 - maximum usable context;
 - failure/timeout rate.
 
+A slightly stronger model that becomes operationally impractical may not be a successful resident candidate.
+
 ---
 
-## 13. Shadow evaluation on real work
+## 18. Shadow evaluation on real work
 
-Passing an offline benchmark should not immediately make a candidate the production resident.
+Passing offline evals should not immediately make a candidate the production resident.
 
-A candidate should first be able to operate in shadow mode.
+A candidate should first operate in shadow mode.
 
 ```text
 real Atlas inference request
@@ -513,38 +612,38 @@ real Atlas inference request
           └── candidate → shadow result only
                               │
                               ▼
-                           verify
+                            grade
 ```
 
-The candidate result must have no operational effect during shadowing.
+The candidate output has no operational effect during shadowing.
 
 Useful shadow metrics include:
 
 - verification pass rate;
 - rework rate;
 - correct abstention rate;
-- judge preference versus resident;
+- independent judge preference;
 - latency;
 - token use;
-- structured-output success;
+- structured-output reliability;
 - performance by inference dimension.
 
-Shadow evaluation answers the most important practical question:
+Shadowing answers the practical question:
 
-> **Is the candidate better at the work Atlas actually encounters, not merely better at a benchmark?**
+> **Is the candidate better at the work Atlas actually encounters, not merely better at the benchmark?**
 
 ---
 
-## 14. Promotion policy
+## 19. Promotion policy
 
-The apprenticeship system may eventually support automatic model promotion, but only under a policy defined outside the models.
+Automatic model promotion may eventually be acceptable because replacing one inference provider with another does not change Atlas authority or policy.
 
-This does not constitute self-granted authority because model promotion does not change Atlas permissions or task semantics.
+Promotion rules must be defined outside the teacher/student models.
 
-An example promotion policy might require:
+A candidate might require:
 
 ```text
-hidden overall eval improves by required margin
+hidden eval improves beyond required margin and measured variance
 AND
 zero critical regression failures
 AND
@@ -554,25 +653,25 @@ uncertainty / abstention does not materially regress
 AND
 shadow workload outperforms current resident
 AND
-resource usage remains inside budget
+resource use remains inside budget
 AND
-candidate artifact is reproducible and rollback-safe
+candidate artifact is reproducible
+AND
+rollback target exists
 ```
 
-Threshold values should be configuration/policy, not model judgment.
-
-A candidate that fails any hard gate is rejected or retained for analysis.
+Thresholds are runtime/configuration policy, not model judgment.
 
 ---
 
-## 15. Versioning and rollback
+## 20. Versioning and rollback
 
-Every promoted resident must remain a versioned model artifact.
+Every resident and candidate must be versioned.
 
 ```text
 resident-v12
      │
-     ├── remains available for rollback
+     ├── retained for rollback
      │
      ▼
 candidate-v13
@@ -582,33 +681,35 @@ promotion gates
    /       \
  fail      pass
   │          │
-discard   resident-v13
+reject    resident-v13
 ```
 
-Promotion should record:
+Promotion evidence should record:
 
 - base model identity;
 - parent resident version;
 - training dataset hash/version;
-- teacher model/provider;
+- teacher provider/model;
 - training method/configuration;
-- training seed where applicable;
 - candidate artifact hash;
 - eval-suite version;
-- scores by dimension;
-- shadow-eval results;
+- per-dimension scores;
+- baseline variance information;
+- regression results;
+- shadow results;
+- judge results where used;
 - promotion decision;
 - rollback target.
 
-The previous production resident should be retained until the new version has demonstrated adequate stability.
+The previous resident should be retained until the replacement has demonstrated sufficient stability.
 
 ---
 
-## 16. Suggested durable objects
+## 21. Suggested durable records
 
-If implemented, the feature should use durable Atlas state rather than loose training scripts as the source of truth.
+The implementation should reuse Atlas task/artifact/eval primitives wherever possible rather than introduce parallel infrastructure prematurely.
 
-Possible objects include:
+If repeated queries justify first-class records later, likely concepts include:
 
 ### ApprenticeshipRun
 
@@ -637,8 +738,9 @@ student_output_artifact
 teacher_output_artifact
 accepted_target_artifact
 source_type
+source_execution_ids
 provenance
-admission_verifier
+admission_grader
 admission_result
 privacy_classification
 content_hash
@@ -664,6 +766,8 @@ candidate_model_id
 resident_model_id
 eval_suite_version
 per_dimension_scores
+resident_baseline
+variance_metrics
 regression_results
 shadow_results
 efficiency_metrics
@@ -671,185 +775,120 @@ judge_results
 promotion_decision
 ```
 
-These names are illustrative. They should be reconciled with existing Atlas task/artifact/eval primitives before implementation rather than creating unnecessary parallel infrastructure.
+These are illustrative. Existing Atlas task, artifact, execution and eval primitives should remain the default storage model until a dedicated table clearly earns its place.
 
 ---
 
-## 17. Integration with existing Atlas architecture
+## 22. Integration with current Atlas architecture
 
-The feature should reuse existing architectural concepts wherever possible.
+### Existing EvalHarness
+
+The apprenticeship evaluation path extends `atlas_core.evals.EvalHarness`; it does not replace it.
 
 ### Durable tasks
 
-A night-school session can be a durable Atlas task with bounded steps rather than a separate hidden daemon that mutates models outside runtime governance.
+A training or evaluation session may be represented as a durable Atlas task with bounded steps rather than an invisible daemon mutating model state outside TaskRuntime governance.
 
 ### Artifacts
 
-Prompts, teacher outputs, accepted training examples, candidate adapters/models, scorecards and reports should be immutable evidence-bearing artifacts.
-
-### Evals
-
-Existing provider/capability evaluation concepts can be extended into inference-proficiency evaluation rather than inventing an unrelated scoring subsystem.
+Prompts, teacher outputs, accepted training targets, datasets, candidate adapters/models, eval reports and promotion reports should be immutable evidence-bearing artifacts where practical.
 
 ### Providers
 
-Teacher, resident, judge and candidate are provider roles/configurations. They do not become new Atlas agents.
-
-### Authority
-
-Training does not grant or expand operational authority. Access to external paid teacher providers, training datasets or protected data may still require normal Atlas authority and privacy controls.
+Resident, candidate, teacher and judge are provider roles. They do not create new Atlas identities.
 
 ### Verification
 
-Promotion is a verification problem. A candidate is not "better" because the training task completed; it is better only if the defined evidence gates are satisfied.
+Candidate promotion is verification-driven. A model does not declare itself improved.
+
+### Authority
+
+Inference apprenticeship does not add authority. The student and teacher operate under the same runtime boundaries as other model providers.
 
 ---
 
-## 18. Privacy, licensing and data governance
+## 23. Risks requiring explicit treatment
 
-A future implementation must explicitly address training-data rights and privacy.
+### Teacher error amplification
 
-Training data should not automatically include everything Atlas has seen.
-
-Before an example can enter a training corpus, the system may need to determine:
-
-- whether the underlying material may be used for model training;
-- whether it contains personal information;
-- whether it contains company-confidential information;
-- whether it contains secrets or credentials;
-- whether use with a cloud teacher is permitted;
-- whether the trained adapter/model could memorise material that should not be embedded in weights;
-- whether deletion obligations exist.
-
-Where data sensitivity is uncertain, the safe default should be exclusion or use with an approved local teacher only.
-
----
-
-## 19. Failure modes
-
-Important risks include:
-
-### Teacher error
-
-A larger model is not automatically correct. Incorrect teacher outputs can teach errors at scale.
-
-**Mitigation:** independent verification and admission filtering.
-
-### Teacher/student error correlation
-
-If teacher, student and judge are closely related models, they may share the same blind spots.
-
-**Mitigation:** use deterministic graders and model-family diversity where valuable.
+A strong teacher can still be wrong. Training data admission must filter weak or unsupported targets.
 
 ### Benchmark overfitting
 
-Repeatedly optimising against one fixed suite can improve the score without improving real reasoning.
-
-**Mitigation:** hidden sets, refreshed unseen problems and real shadow workloads.
+A fixed suite may become a training target rather than a genuine measure. Hidden and refreshed cases are required.
 
 ### Catastrophic forgetting
 
-Improving a narrow domain may damage general abilities.
+Task-specific gains may damage broad reasoning or instruction following. Regression suites are mandatory.
 
-**Mitigation:** broad regression suite and conservative promotion gates.
+### Judge bias
 
-### Training drift
+Model judges may prefer their own style or family. Blind pairwise grading and multiple grader types reduce this risk.
 
-Repeated generations can amplify quirks from earlier teacher outputs.
+### Dataset contamination
 
-**Mitigation:** retain base-model comparison, dataset provenance and periodic fresh teacher/reference data.
+Training, validation and promotion sets must remain separated and provenance-linked.
+
+### Privacy and licensing
+
+Operational data must not be sent to external teachers without appropriate policy, and training data must be legally suitable for the chosen model/training workflow.
 
 ### Resource contention
 
-Training can make production Atlas unavailable or sluggish.
+Night school must yield immediately to higher-priority Atlas or user workloads.
 
-**Mitigation:** lower-priority scheduled windows, resource preflight, checkpointing and immediate yield to production work.
+### False improvement
 
-### Cost runaway
-
-Large cloud teachers can generate substantial cost if curriculum generation is unconstrained.
-
-**Mitigation:** explicit teacher-call/token/cost budgets per apprenticeship run.
-
-### Privacy leakage
-
-Sensitive operational material could be transmitted to a cloud teacher or memorised into model weights.
-
-**Mitigation:** dataset classification, provider privacy rules and explicit exclusion boundaries.
-
-### False promotion
-
-No evaluation system is perfect.
-
-**Mitigation:** shadow mode, conservative thresholds, retained previous resident and rapid rollback.
+Small score changes may be ordinary inference variance. Baseline repeatability is required before candidate gains are trusted.
 
 ---
 
-## 20. Benefits
+## 24. Suggested implementation phases
 
-If effective, Inference Apprenticeship could provide several strategic benefits.
+### Phase A — Extend the existing evaluation foundation
 
-### Increasing local competence
+**Do not train anything yet.**
 
-The resident model may become materially better at the kinds of inference Atlas actually needs instead of remaining a static generic model.
-
-### Reduced cloud dependence
-
-Cloud models can increasingly serve as teachers and escalation providers rather than being required for ordinary work.
-
-### Better economics over time
-
-Teacher cost is concentrated into deliberate training/evaluation periods while repeated production inference can shift toward the local resident.
-
-### Better use of idle hardware
-
-The server GPU can perform bounded improvement work during periods when Atlas has no higher-priority workload.
-
-### Model roles remain earned
-
-Candidates do not become residents because they are newer. They earn promotion through measured performance.
-
-### Architecture remains stable
-
-The durable Atlas runtime need not change when the resident model improves. The intelligence provider changes beneath the same task, capability, authority and verification contracts.
-
-### Evidence-based self-improvement
-
-The system can improve without adopting uncontrolled silent policy learning.
-
----
-
-## 21. Suggested implementation phases
-
-### Phase A — Evaluation foundation
-
-Do not train anything yet.
+Use the existing `EvalHarness` and current durable provider/capability score path.
 
 Build or extend:
 
-- inference-proficiency eval families;
-- frozen regression suite;
-- hidden-eval handling;
-- pairwise blind judging;
-- per-model score persistence;
-- resident-versus-candidate reporting.
+- a versioned inference eval-suite definition built from `EvalCase`s;
+- objective graders;
+- optional independent judge graders;
+- per-dimension reporting;
+- resident baseline runs;
+- repeated-run variance measurement;
+- resident-versus-candidate comparison reports;
+- hidden-set separation;
+- regression-suite definitions.
 
-**Exit condition:** Atlas can reliably determine whether one model is better than another on defined inference dimensions.
+Existing per-provider/capability score persistence should be reused, not rebuilt.
 
-### Phase B — Teacher dataset pipeline
+**Exit condition:** the current resident has a reproducible, versioned proficiency baseline, and the existing EvalHarness-based system can reliably distinguish the resident from deliberately better/worse candidates beyond normal inference variance.
+
+### Phase B — Daytime competence telemetry and curriculum selection
+
+Record or derive bounded inference-quality signals from real Atlas executions, including rework, failure, abstention, escalation and verification outcomes.
+
+Turn repeated weaknesses into curriculum candidates without changing runtime policy.
+
+**Exit condition:** Atlas can identify evidence-backed inference weaknesses and build a proposed curriculum from them.
+
+### Phase C — Teacher dataset pipeline
 
 Add:
 
-- curriculum definition;
+- curriculum execution;
 - teacher invocation;
-- example provenance;
-- admission filtering;
+- student-attempt capture where useful;
+- deterministic/independent admission grading;
 - immutable dataset versioning;
 - privacy/licensing checks.
 
 **Exit condition:** Atlas can produce a high-quality reproducible distillation dataset without training a model.
 
-### Phase C — Manual candidate training
+### Phase D — Manual candidate training
 
 Integrate one supported student model and one training backend.
 
@@ -857,81 +896,98 @@ Training may initially be manually launched while Atlas records all artifacts an
 
 **Exit condition:** a candidate adapter/model can be produced reproducibly and evaluated against the resident.
 
-### Phase D — Shadow candidate execution
+### Phase E — Shadow candidate execution
 
 Allow candidates to answer selected real inference requests without affecting production output.
 
 **Exit condition:** shadow performance can be measured against real Atlas workload.
 
-### Phase E — Automated night-school scheduling
+### Phase F — Automated night-school scheduling
 
-Introduce the 20:00–03:00 low-priority window, resource preflight, checkpointing and training-task interruption.
+Introduce the 20:00–03:00 low-priority opportunity window, resource preflight, checkpointing and training interruption.
 
-**Exit condition:** Atlas can run apprenticeship work without interfering with production responsibilities.
+**Exit condition:** Atlas can perform apprenticeship work without interfering with production responsibilities.
 
-### Phase F — Policy-governed automatic promotion
+### Phase G — Policy-governed automatic promotion
 
-Only after the previous phases are reliable, allow candidates to be promoted automatically when all fixed promotion gates pass.
+Only after previous phases are reliable, permit automatic promotion when every fixed gate passes.
 
-**Exit condition:** promotion and rollback are deterministic, auditable and safe.
-
----
-
-## 22. Open implementation questions
-
-Before approval for implementation, the following should be resolved empirically:
-
-1. Which resident base model is legally and technically suitable for adapter training?
-2. Can the intended training method operate practically within the available GPU VRAM and nightly time window?
-3. Which teacher provider gives the best cost/quality ratio for curriculum generation?
-4. Which eval dimensions most strongly predict actual Atlas workload performance?
-5. How large must the hidden suite be before promotion decisions are trustworthy?
-6. How many shadow executions should be required before promotion?
-7. What degree of improvement is meaningful enough to justify a new resident version?
-8. What regression thresholds should be hard blockers?
-9. Which operational data may be used for training, and which must always remain outside model weights?
-10. Should one general resident adapter be preferred initially over multiple specialised adapters?
-11. How should teacher/model-family diversity be introduced without making the system unnecessarily expensive?
-12. How should candidate model artifacts and old residents be retained, compressed or garbage-collected over time?
+**Exit condition:** promotion and rollback are deterministic, auditable, reproducible and safe.
 
 ---
 
-## 23. Recommended initial decision
+## 25. Non-goals
 
-Inference Apprenticeship is compatible with the current Atlas 2.0 architecture **provided the implementation remains an inference-provider improvement mechanism rather than a policy-learning mechanism**.
+This proposal does **not** introduce:
 
-The concept should not begin with autonomous training.
+- silent policy learning;
+- ProposedRule infrastructure;
+- automatic authority elevation;
+- AuthorityGrant infrastructure;
+- self-modifying runtime governance;
+- tool-policy learning;
+- approval bypass;
+- operational truth stored only in model weights;
+- continual mutation of the production model in place.
 
-The first implementation work, if approved, should be the **evaluation foundation** because reliable measurement is required before distillation has engineering meaning.
+Those concerns remain outside Inference Apprenticeship.
 
-The correct sequence is:
+---
+
+## 26. Implementation decision criteria
+
+The feature should be considered worth implementing only if the evaluation foundation first demonstrates that:
+
+1. Atlas can measure resident inference proficiency reproducibly;
+2. score variance is understood well enough to identify real improvement;
+3. current `EvalHarness` primitives can support the required comparison without a parallel framework;
+4. teacher-generated targets can be admitted with adequate correctness/privacy controls;
+5. candidate gains can be measured on unseen cases;
+6. likely local training methods are practical on the intended hardware;
+7. the expected benefit justifies engineering and compute cost.
+
+The first experiment should therefore remain deliberately narrow:
+
+> **Can Atlas measurably improve the resident model's inference proficiency through teacher-guided distillation without changing anything else about Atlas?**
+
+If the answer is yes, later automation can be earned from evidence.
+
+---
+
+## 27. Proposed north-star loop
 
 ```text
-MEASURE
-   ↓
-TEACH
-   ↓
-TRAIN
-   ↓
-EVALUATE
-   ↓
-SHADOW
-   ↓
-PROMOTE OR REJECT
+DAY
+real work
+  ↓
+measure resident performance
+  ↓
+identify inference weaknesses
+  ↓
+build curriculum
+
+NIGHT
+stronger teacher
+  ↓
+verified training targets
+  ↓
+student training
+  ↓
+candidate model
+
+EXAM
+existing EvalHarness
+  + hidden cases
+  + regression graders
+  + independent judge graders where needed
+  + shadow work
+  ↓
+promotion decision
+
+NEXT DAY
+better resident if and only if evidence supports promotion
 ```
 
-Not:
+The architectural intent can be summarised as:
 
-```text
-TRAIN
-   ↓
-"seems smarter"
-   ↓
-replace production model
-```
-
----
-
-## 24. Proposed north-star statement
-
-> **Atlas may improve the proficiency of its local inference providers through bounded, evidence-backed teacher-guided apprenticeship, but learning never grants authority, rewrites policy, or bypasses runtime verification. A candidate model earns production use through independent evaluation, real-work shadowing and reversible promotion.**
+> **Atlas itself stays stable. Its inference provider is allowed to earn improvement.**

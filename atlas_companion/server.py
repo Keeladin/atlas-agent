@@ -10,11 +10,26 @@ from atlas_core.bootstrap import build_runtime
 from atlas_core.planner import TaskPlanner
 from atlas_core.presentation import TaskPresenter
 from atlas_core.tasks import InvalidTransitionError, TaskStoreError, UnknownRecordError
+from atlas_companion.telemetry import TelemetryCollector
 
 class CompanionService:
     """HTTP adapter; task state and execution stay in TaskRuntime."""
-    def __init__(self, *, db_path: str | Path, provider_config: str | Path | None = None): self.runtime=build_runtime(db_path=db_path, provider_config=provider_config)
+    def __init__(self, *, db_path: str | Path, provider_config: str | Path | None = None, companion_bind: str | None = None):
+        self.db_path = Path(db_path); self.runtime=build_runtime(db_path=db_path, provider_config=provider_config)
+        self.telemetry = TelemetryCollector(db_path=db_path, repo_path=Path.cwd(), provider_url=self._provider_url(provider_config), companion_bind=companion_bind)
     def tasks(self): return [asdict(t) for t in reversed(self.runtime.store.list_tasks())]
+    def health(self):
+        tasks = self.runtime.store.list_tasks()
+        active = sum(task.status in {"planned", "active", "waiting"} for task in tasks)
+        running = sum(execution.status == "running" for task in tasks for execution in self.runtime.store.list_executions(task.id))
+        return self.telemetry.collect(active_tasks=active, running_executions=running, provider_configured=self.runtime.model_router is not None)
+    @staticmethod
+    def _provider_url(provider_config):
+        if not provider_config: return None
+        try:
+            providers=json.loads(Path(provider_config).read_text()).get("providers", {})
+            return next((value.get("base_url") for value in providers.values() if value.get("enabled") and value.get("local")), None)
+        except (OSError, json.JSONDecodeError): return None
     def detail(self, task_id):
         p=TaskPresenter(self.runtime.store).build(task_id)
         return {"snapshot":self.runtime.store.snapshot(task_id,include_artifact_payloads=True),"presentation":p.as_dict(),"markdown":p.render_markdown()}
@@ -38,6 +53,7 @@ class CompanionApp:
         try:
             method,path=environ["REQUEST_METHOD"],urlparse(environ["PATH_INFO"]).path
             if method=="GET" and path=="/api/tasks": return self._json(start_response,HTTPStatus.OK,self.service.tasks())
+            if method=="GET" and path=="/api/health": return self._json(start_response,HTTPStatus.OK,self.service.health())
             if method=="GET" and path.startswith("/api/tasks/"): return self._json(start_response,HTTPStatus.OK,self.service.detail(path.rsplit("/",1)[-1]))
             if method=="POST" and path=="/api/tasks": return self._json(start_response,HTTPStatus.CREATED,self.service.create_and_run(self._body(environ)))
             if method=="POST" and path.endswith("/run") and path.startswith("/api/tasks/"): return self._json(start_response,HTTPStatus.OK,self.service.run(path.split("/")[3]))
@@ -60,6 +76,6 @@ class CompanionApp:
 
 def main():
     p=argparse.ArgumentParser(description="Atlas Companion PWA (LAN-local TaskRuntime interface)"); p.add_argument("--db",default="instance/atlas.db"); p.add_argument("--providers"); p.add_argument("--host",default="127.0.0.1",help="Use a LAN address only on a trusted network."); p.add_argument("--port",type=int,default=8787); a=p.parse_args()
-    app=CompanionApp(CompanionService(db_path=a.db,provider_config=a.providers),Path(__file__).resolve().parent/"web")
+    app=CompanionApp(CompanionService(db_path=a.db,provider_config=a.providers,companion_bind=f"{a.host}:{a.port}"),Path(__file__).resolve().parent/"web")
     with make_server(a.host,a.port,app,handler_class=WSGIRequestHandler) as server: print(f"Atlas Companion PWA listening on http://{a.host}:{a.port}"); server.serve_forever()
 if __name__=="__main__": main()

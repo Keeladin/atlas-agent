@@ -1,12 +1,14 @@
 # Mobile Capture V1 — Behavioural Contract
 
-Status: **proposed for review. Not authorised to implement.**
+**Status:** Implemented and accepted for V1 offline behaviour  
+**Surface:** `atlas_mobile/`  
+**Server synchronization:** Not yet implemented
 
-The WhatsApp parser remains the frozen legacy/import path. This contract is only how **new** supervisor reports should be born so Atlas does not reconstruct information that could have been captured at source.
+The legacy WhatsApp parser remains the historical/import path. Mobile Capture V1 is how **new** supervisor reports should be born so Atlas does not have to reconstruct information that could have been captured correctly at source.
 
-North star: minimum supervisor effort; enough structure that morning reconstruction is no longer required for reports created in Atlas.
+North star: **minimum supervisor effort with enough structure to preserve operational meaning.**
 
-No UI framework, database, sync stack, authentication, or model is chosen here.
+The current V1 is offline-first and has passed an actual phone-offline acceptance cycle. Authentication and synchronization into the Atlas server runtime remain separate future work.
 
 ---
 
@@ -14,307 +16,386 @@ No UI framework, database, sync stack, authentication, or model is chosen here.
 
 One **activity** is one bounded piece of work or observation.
 
-The supervisor records one activity, reaches **Green**, presses **Next**, and the form resets. They repeat until **End Report**.
+The supervisor records one activity, reaches an acceptable validation state, presses **Next**, and the form resets for the next activity.
 
-Same machine, next job → another activity. Do not merge on identity.
+Same machine, next job → another activity.
+
+Do not merge activities merely because the machine identity is the same.
 
 ---
 
-## 2. Three independent facts (Machine)
+## 2. Activity categories
 
-These must not be inferred from each other:
+V1 distinguishes:
 
-| Concept | What it records | What it must not imply |
+- **Machine** — work or observation associated with a machine/item requiring explicit machine-state semantics;
+- **Other operational** — relevant non-machine operational work;
+- **Attendance** — attendance information kept separate from machine work.
+
+The UI must not force machine-only fields onto other operational or attendance activities.
+
+---
+
+## 3. Three independent facts for Machine activities
+
+These facts must never be inferred from each other.
+
+| Concept | Records | Must not imply |
 |---|---|---|
-| **1. Activity time** | When work was done, or that there was no work interval | Whether the job finished, or whether the machine is operational |
-| **2. Job outcome** | Whether *this* work was finished | Machine state. Incomplete does not pick a machine state. Completed does not mean Running. |
-| **3. Machine state** | How the machine was left | How long they worked, or whether the job is closed |
+| **Activity time** | When work occurred, or that this is a no-times standing/status observation | Whether the job finished or the machine is operational |
+| **Job outcome** | Whether this activity's work was completed | Machine state |
+| **Machine state** | How the machine was left | Whether the work was completed or how long it took |
 
-Example:
+Examples:
 
-- End 14:00 + **Completed** + **Running / operational** → repaired at 14:00 and confirmed operational.
-- End 14:00 + **Incomplete / continue** + **Still under repair / standing** → worked until 14:00; repair not finished.
+```text
+End 14:00 + Completed + Running / operational
+```
 
-A time near the end of shift **never** implies success or failure. 14:00 is only a clock.
+means the activity finished and the machine was explicitly left operational.
 
----
+```text
+End 14:00 + Completed + Not tested
+```
 
-## 3. Activity kinds
+means the work was completed but operation was not confirmed.
 
-Exactly three:
+```text
+End 14:00 + Incomplete / continue + Still under repair / standing
+```
 
-| Kind | Use |
-|---|---|
-| **Machine** | Work or status on a named equipment identity |
-| **Other operational** | Farm gates, empty parts/scotch car, stop-and-fix, standing-at-location notes, logistics |
-| **Attendance** | Who is absent / all at work |
+means work stopped at 14:00 and remains incomplete.
 
-This exists so “Absent”, farm gates, and empty cars never receive machine-state semantics.
-
----
-
-## 4. Fields
-
-| Field | Machine | Other operational | Attendance |
-|---|---|---|---|
-| Subject | Required (pick known identity or type a new one) | Required (short label) | Not a machine. Names if anyone is absent |
-| Work / what happened | **Required** free text | **Required** free text | Names or “all at work” |
-| Time mode | Required: **clocks** or **no-times** | Required (often no-times) | Not required |
-| Start time | Required in clocks mode | Per mode | — |
-| End time | Required in clocks mode | Per mode | — |
-| **Job outcome** | **Required** on timed Machine activities. Not used on no-times standing/status. **No default.** | Optional / N/A | Not used |
-| **Machine state** | **Required** on every Machine activity, including no-times. **No default.** | Optional / N/A | Not used |
-| Unresolved / follow-up | Optional unless an open condition (below) | Optional | — |
-| Continue vs new issue | Required only if an unresolved prior for that subject is visible on the device | Same if applicable | — |
-| People | Optional free text | Optional | — |
-| Extra detail | Optional free text | Optional | — |
-| Media | Out of this contract | Out of this contract | — |
-
-Work / what happened is never a dropdown.
-
-**Not in this contract:** breakdown vs proactive vs statutory, downtime vs labour interval, required location, parts catalogue, artisan roles, productivity, **SOS/EOS as capture options**.
+Clocks never choose outcome or state.
 
 ---
 
-## 5. Job outcome (timed Machine activities)
+## 4. Machine activity fields
 
-Closed list. No default. Not inferred from clocks or from machine state.
+A Machine activity captures the minimum required structure:
 
-| Outcome | Meaning |
-|---|---|
-| **Completed** | This activity’s work was finished. Does **not** mean tested. Does **not** mean Running. |
-| **Incomplete / continue** | This activity’s work was not finished. Does **not** choose the machine state. |
+- machine/item;
+- time mode;
+- start/end clocks when in timed mode;
+- what happened / work performed;
+- job outcome for timed work;
+- explicit machine state;
+- follow-up/unresolved note when required or useful;
+- optional free-text detail.
 
-Incomplete at 14:00 is still Incomplete. The clock does not upgrade it to Completed because shift-end is near.
+Work/what-happened remains natural text rather than being reduced to a rigid catalogue.
 
-No-times standing/status observations have **no job outcome**. There is no work interval to complete.
-
----
-
-## 6. Machine state (every Machine activity — required)
-
-Every Machine activity requires an **explicit** machine state before Next, including standing/status observations.
-
-This is intentional. A recurring failure in the WhatsApp corpus is that the supervisor describes the work and does not say how the machine was left. Capture must close that gap.
-
-**Do not default machine state to Running.**  
-**Do not default job outcome.**  
-**Do not set one field from the other.**
-
-### Closed list
-
-| State | Meaning |
-|---|---|
-| **Running / operational** | Confirmed operational. Only this value means the machine was left running / confirmed working. |
-| **Not tested** | Not tested (e.g. no operator). Compatible with Completed or Incomplete. |
-| **Still under repair / standing** | Not in finished service: repair ongoing, parked, workshop, or otherwise standing. |
-| **Awaiting parts** | Waiting on material. |
-| **Other** | Only if none of the above fit. Requires a short free-text note. Orange until they confirm Other is necessary. |
-
-**Completed ≠ Running.** Hose replaced, not tested → Job outcome Completed + Machine state Not tested (or Still under repair / standing). Never auto-Running.
-
-If machine state is Not tested, Still under repair / standing, Awaiting parts, or Other — or job outcome is Incomplete / continue — Atlas **asks** for a one-line follow-up. Skipping that note is orange, not red.
-
-Other operational: no required machine state or job outcome.  
-Attendance: neither field is used.
+V1 does **not** require fields for breakdown/proactive/statutory classification, downtime classification, parts catalogue, artisan roles or productivity metrics.
 
 ---
 
-## 7. Times (mobile capture)
+## 5. Job outcome
 
-SOS and EOS are **legacy WhatsApp conventions**. They are **not** Mobile Capture V1 options. The frozen importer still accepts them on historical/external reports.
+For timed Machine activities, job outcome is a closed explicit choice:
 
-### Modes
+- **Completed** — this activity's work was finished. This does not mean tested and does not mean Running.
+- **Incomplete / continue** — this activity's work was not finished. This does not choose machine state.
 
-1. **Clocks** — explicit **Start time** and **End time**.  
-2. **No times — standing / status observation.**
+There is no default.
 
-There is no Still-busy clock, no SOS, no EOS.
+A no-times standing/status observation has no job outcome because it is not a timed work interval.
 
-If work is still active when the report is compiled, say so with **Job outcome = Incomplete / continue** and the appropriate **machine state**. Do not omit the end clock or type EOS. If they worked 18:00–02:00 and the job is unfinished, end time is 02:00 (or whenever they stopped), outcome Incomplete, state Still under repair / standing (or Awaiting parts, etc.).
+---
 
-### No-times standing / status observations
+## 6. Machine state
 
-A Machine activity with **no clocks is legitimate** when the supervisor is recording a condition, not a timed job.
+Every Machine activity requires an explicit state before it can be accepted.
 
-Corpus: L91 standing at 763 with two flat tyres; L105 “Needs tyre”; ARB4 at 833, compressor keyway missing; standing 813S where DT04 is parked.
+Closed V1 states:
+
+- **Running / operational**;
+- **Not tested**;
+- **Still under repair / standing**;
+- **Awaiting parts**;
+- **Other** — requires a short explanatory note and explicit confirmation.
 
 Rules:
 
-- They must **choose** no-times. Atlas does not infer “forgot times” from blank clocks.
-- Work/observation text and **machine state** are still required. Job outcome is not used.
-- Chosen no-times + text + machine state is **Green**. It is not orange merely because clocks are absent.
+- Never default to Running.
+- Never derive machine state from job outcome.
+- Never derive job outcome from machine state.
+- Completed ≠ Running.
+- Not tested remains a distinct truth state.
 
-If they choose clocks mode and leave start or end empty → Red. That is not a silent fall-through to no-times.
+If the machine is not operationally closed — or the job outcome is Incomplete / continue — Atlas asks for a short follow-up/unresolved note. Missing follow-up can be an orange condition rather than destroying the activity.
 
-### Duration
-
-Calculate a **reported work/activity interval** only when both start and end are numeric clocks and the pair is not orange-suspicious. Never call it downtime.
-
-### Suspicious clocks — structural, not a duration cutoff
-
-Do **not** use a fixed duration threshold (including 8 hours).
-
-| Pattern | Treatment |
-|---|---|
-| End ≥ start (e.g. 09:00–13:30, 20:40–21:45) | Green. Calculate interval. |
-| Start in the evening (~18:00–23:59) and end in the early morning (~00:00–05:59) (e.g. 22:30–01:55, 21:00–00:00) | Ordinary overnight span. Green. Calculate interval. |
-| End earlier than start, and it is **not** that evening→early-morning pattern (e.g. `22h00–20h45`; `10:30–00:10`; `15:00–09:00`) | Orange. Keep written clocks. **Do not rewrite.** Supervisor confirms or edits. Duration withheld until Green. |
-| Unreadable clock; start or end missing in clocks mode | Red. |
-
-Evening/early-morning windows only classify a wrap. They are not shift start/end substitutes.
+Other operational and Attendance activities do not use machine state.
 
 ---
 
-## 8. Multiple activities on one machine
+## 7. Times
 
-**115 of 168** replay days have two or more rows for the same item.
+SOS and EOS are legacy WhatsApp conventions and are **not** Mobile Capture V1 options.
 
-Next always starts a **new** activity. STC12 pump `21h00–00h00` and brakes `01h14–03h00` are two activities. SST21 hose and SST21 sensor the same night are two activities unless Continue is chosen.
+V1 time modes are:
 
-End Report may group by subject for reading. Stored activities stay separate.
+1. **Clocks** — explicit Start time and End time.
+2. **No times — standing / status observation.**
 
----
+There is no Still-busy clock mode, SOS or EOS in Mobile Capture V1.
 
-## 9. Continuation
+If a job is unfinished when work stops, record the actual end clock, choose **Incomplete / continue**, and choose the appropriate machine state.
 
-Ask **Continue previous / New issue** only when the device already has an unresolved activity for that subject (this draft, or a last cached completed report).
+### No-times observations
 
-Unresolved means prior **Incomplete / continue**, or prior machine state Not tested / Still under repair / standing / Awaiting parts / Other, unless a later Continue activity has already closed it with Running / operational.
+No-times is valid when the supervisor is recording a standing/status condition rather than a timed piece of work.
 
-Example: `ARB4 — still under repair: fitting broke / no fitting UG` (2026-04-09).
+Rules:
 
-- **Continue:** this activity is the next step. Later Running / operational **closes** the earlier open thread. That is progression, not a conflict.
-- **New issue:** independent. Same machine is not evidence of continuity (SST21 ×2, 2026-05-05).
+- The supervisor explicitly chooses no-times.
+- Atlas does not infer no-times from blank clocks.
+- Work/observation text is required.
+- Machine state is required.
+- Job outcome is not used.
+- A valid no-times observation may be Green.
 
-If nothing unresolved is visible offline, do not ask and do not invent Continue.
-
-Job outcome Incomplete / continue on *this* activity is not the same question as Continue previous. Incomplete describes this interval. Continue links to an earlier open job.
-
----
-
-## 10. Green / orange / red
-
-Deterministic. No model.
-
-### Red — Next disabled
-
-- Machine or Other: no subject, or empty work text.  
-- Machine: no machine state chosen.  
-- Timed Machine: no job outcome chosen.  
-- Clocks mode: start or end missing, or malformed clock.  
-- Unresolved prior visible and Continue/New not chosen.
-
-### Orange — Next disabled until edit or explicit confirm
-
-- Suspicious clock pattern in §7.  
-- Incomplete, or machine state Not tested / Still under repair / standing / Awaiting parts / Other, with no follow-up note.  
-- Machine state Other (confirm it is necessary).  
-- Newly typed machine identity (confirm spelling once).
-
-No-times, fully filled (text + machine state), is **not** orange.
-
-Atlas never silently corrects clocks, job outcome, or machine state.
-
-### Green — Next enabled
-
-Required fields present; machine state explicitly chosen; job outcome explicitly chosen when required; no red; every orange acknowledged.
+If clocks mode is selected and either clock is missing or malformed, validation is Red.
 
 ---
 
-## 11. What Next requires
+## 8. Validation model
 
-Green.
+Validation is deterministic and happens before **Next**.
 
-Then persist the activity in the **local draft** immediately, reset the form, stay on the same report. Next is not submit, sync, or WhatsApp.
+### Green — valid
 
----
+The activity is structurally valid and internally consistent.
 
-## 12. What End Report assembles
+Next is enabled.
 
-Local, offline, this report only:
+### Orange — requires human confirmation
 
-- Who / operational day / day or night (once at report start).  
-- Activities grouped by subject; each activity keeps its own start/end or no-times, work, job outcome (if any), and machine state.  
-- Chronological order within subject.  
-- Calculated work intervals only where §7 allows.  
-- Last machine state per thread; Continue + later Running closes the earlier open thread.  
-- Unresolved list (Incomplete and/or open machine states + notes).  
-- Attendance, if any.  
-- Other operational activities in their own group.  
-- Plain-text WhatsApp rendering, copyable. That text uses the captured clocks or omits times for no-times entries. It does **not** invent SOS/EOS.
+Orange is for unusual, ambiguous or suspicious but potentially legitimate input.
 
-Review confirms that assembly. They may edit an activity; they should not reconstruct a blob.
+Examples include:
 
-End Report does not require network and does not send WhatsApp. The supervisor copies and pastes into the official group.
+- an unusual cross-midnight time sequence;
+- an `Other` machine state requiring explanation;
+- missing recommended follow-up on unresolved work;
+- a value that may be a typo but could be real.
 
----
+Atlas must not silently correct orange input. The supervisor either edits it or explicitly confirms it.
 
-## 13. Offline
+### Red — invalid
 
-Must work without a server: create draft, add/edit/delete activities, validation, Continue/New against **local + cached** unresolved only, End Report, review, generate and copy WhatsApp text, keep the report on the device.
+Red is used when Atlas cannot safely represent the activity as structured data.
 
-Completed reports sync when coverage returns, with explicit status (local only / syncing / synced). Connectivity is for sync, not for creation.
+Examples include:
 
-Loss of coverage must not drop a Next’d activity, duplicate it, or change a confirmed value.
+- malformed clock;
+- clocks mode with missing start/end;
+- required machine/item missing;
+- required work text missing;
+- required machine state missing;
+- impossible field combination.
 
-Sync technology is out of scope.
+Next remains unavailable until corrected.
 
----
-
-## 14. Report start (once)
-
-Not per activity: supervisor identity, operational day (06:00–05:59), day or night shift.
+The validation goal is to resolve ambiguity **at capture time**, while the person who knows what happened is still present.
 
 ---
 
-## 15. Acceptance examples (must hold)
+## 9. Continuation and unresolved work
 
-| Case | Required behaviour |
-|---|---|
-| 14:00 end + Completed + Running | Green. Interval calculated. Means repaired at 14:00 and confirmed operational. |
-| 14:00 end + Incomplete + Still under repair / standing | Green. Worked until 14:00; job not finished. Time does not imply failure or success. |
-| Hose replaced, not tested | Completed + **Not tested**. Never auto-Running. Follow-up asked. |
-| L91 standing, two flats, no clocks | No-times + machine state Standing (or Awaiting parts). No job outcome. Green. |
-| Work still going at compile time | Clocks for the interval actually worked + Incomplete + appropriate machine state. Not EOS. |
-| ARB4 10:30–00:10 | Orange. Clocks unchanged. Duration withheld until confirm or edit. |
-| TDR10 22h00–20h45 | Orange (backwards, not evening→morning). Duration withheld. |
-| STC12 two intervals | Two activities; each keeps its own work text. |
-| SST21 two unrelated jobs | Two activities; Continue not offered unless one is still open. |
-| ARB4 Incomplete / still under repair → later Completed + Running | Continue + Running closes the thread. Not a conflict. |
-| Farm gates / empty scotch car | Other operational. No required machine state. |
-| Named absences | Attendance. No machine state. |
-| Next with work text but no machine state | Red. |
-| Next with clocks but no job outcome | Red. |
-| SOS or EOS offered as a time control | Contract failure. |
+Mobile Capture is structured so Atlas can eventually connect work across shifts without inferring continuity from free-form prose.
+
+When synchronized operational state is available in a future server integration, the device may show an unresolved prior thread for the selected machine and offer an explicit choice such as:
+
+```text
+Continue previous job
+New issue
+```
+
+That future feature must remain explicit. Atlas must not silently decide that two activities belong to one operational thread merely because the machine identity matches.
+
+The current offline V1 does not depend on server-side unresolved-state lookup.
 
 ---
 
-## 16. Failure of this contract
+## 10. Local report record
 
-The contract has failed if:
+The current PWA stores reports locally in IndexedDB.
 
-- Next is possible on a Machine activity without an explicit machine state;  
-- Next is possible on a timed Machine activity without an explicit job outcome;  
-- Job outcome, machine state, or clocks are inferred from each other;  
-- Completed is treated as Running;  
-- Either field defaults;  
-- A time near shift-end is treated as Completed or Running;  
-- SOS or EOS is a capture option;  
-- Incomplete work is represented by omitting the end clock;  
-- A standing/status observation cannot be saved without fake clocks;  
-- Suspicion is a magic duration number rather than the clock-pattern rules in §7;  
-- Supervisors must fill work-type, downtime, location, or parts to leave the screen;  
-- Capture requires a network.
+A report contains durable client-side identity and structured information including:
 
----
+- report type;
+- report ID;
+- user identity/display/role configuration;
+- operational day;
+- shift;
+- report status;
+- activities;
+- timestamps.
 
-## 17. Relationship to the legacy parser
+Activities are persisted locally as the supervisor works rather than waiting until final submission.
 
-Unchanged. Historical and external WhatsApp reports still enter through the frozen V1 importer, which may still see SOS/EOS in free-form text.
-
-This contract is only for reports created in Atlas. Mobile Capture V1 does not write SOS/EOS.
+Completed reports survive reopen/refresh according to the accepted offline behaviour.
 
 ---
 
-Proposed for review. Not authorised to implement.
+## 11. End Report
+
+When all activities are entered, the supervisor chooses **End Report**.
+
+Atlas assembles the structured activities into a reviewable shift report while preserving separate activities.
+
+The report can:
+
+- group presentation by machine/item where useful;
+- order activities chronologically;
+- preserve multiple jobs for the same machine;
+- calculate valid explicit clock intervals;
+- identify the last explicitly reported machine state;
+- surface unresolved work;
+- keep Other operational and Attendance information distinct;
+- generate WhatsApp-ready plain text.
+
+The supervisor reviews the complete report before using the external output.
+
+---
+
+## 12. WhatsApp relationship
+
+WhatsApp remains the current official external reporting channel.
+
+The implemented first-stage flow is:
+
+```text
+Atlas Mobile Capture
+  → End Report
+  → Review
+  → Generate WhatsApp-ready text
+  → Copy
+  → Supervisor pastes into official WhatsApp group
+```
+
+No automatic WhatsApp sending is required or implied.
+
+Atlas owns the structured source record for reports created in Atlas; WhatsApp remains the external publication channel.
+
+---
+
+## 13. Offline-first requirement
+
+Underground connectivity cannot be assumed.
+
+The following must work without a server connection:
+
+- application shell reopen after installation/caching;
+- activity capture;
+- deterministic validation;
+- draft/report persistence;
+- Next flow;
+- End Report assembly;
+- review;
+- WhatsApp text rendering and copy.
+
+The accepted device test proves the current V1 can reopen and operate after the development-host path is removed and the phone is offline.
+
+See `atlas_mobile/PHONE-OFFLINE-ACCEPTANCE.md`.
+
+---
+
+## 14. Server synchronization boundary
+
+Authenticated synchronization is **not yet implemented**.
+
+When added, it must preserve offline-first behaviour rather than make the PWA server-dependent.
+
+Required sync properties include:
+
+- stable report identity;
+- idempotent retries;
+- no duplicate report if acknowledgement is lost;
+- explicit local/syncing/synced/error state;
+- schema validation at the server boundary;
+- authenticated user/device authority;
+- durable server receipt;
+- no silent modification of a completed local report.
+
+Intended future path:
+
+```text
+Atlas Mobile PWA
+  ↓ when coverage returns
+Authenticated HTTPS sync
+  ↓
+mobile.report.ingest
+  ↓
+TaskRuntime
+  ↓
+artifact / evidence / operational state
+```
+
+Sync technology remains an edge concern; it must not distort the capture contract.
+
+---
+
+## 15. Legacy parser relationship
+
+The existing WhatsApp parser remains valuable for:
+
+- historical data;
+- imported reports;
+- transition/fallback;
+- reports created outside Atlas.
+
+It remains a conservative best-effort interpreter.
+
+The goal is not to make the legacy parser infer every possible reporting style perfectly. New reports should capture important structure at source.
+
+---
+
+## 16. Product constraint
+
+Mobile Capture must not become a large management form.
+
+The intended experience is:
+
+```text
+record what happened
+  → resolve anything unclear
+  → Next
+```
+
+not:
+
+```text
+finish shift
+  → complete another long administrative form
+```
+
+Fields or steps should only be added when a demonstrated operational responsibility justifies the burden.
+
+---
+
+## 17. Current implementation truth
+
+Implemented in `atlas_mobile/`:
+
+- installable PWA shell;
+- service worker;
+- activity-at-a-time capture;
+- machine/user directory data;
+- deterministic validation;
+- IndexedDB persistence;
+- report records;
+- End Report assembly;
+- WhatsApp-ready text rendering;
+- fixture suite;
+- true offline phone acceptance record.
+
+Not yet implemented:
+
+- authenticated Atlas server sync;
+- server-side report ingest capability;
+- server-to-phone unresolved-thread/bootstrap state;
+- device/user auth integration;
+- owner/admin Companion PWA.
+
+These future surfaces must integrate through Atlas 2.0 runtime boundaries rather than turning Mobile Capture into a separate agent or source of server truth.

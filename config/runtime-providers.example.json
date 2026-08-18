@@ -1,0 +1,107 @@
+{
+  "providers": {
+    "local:resident": {
+      "kind": "openai_compatible_chat",
+      "model": "atlas",
+      "base_url": "http://127.0.0.1:1234",
+      "local": true,
+      "enabled": true,
+      "max_context_chars": 30000,
+      "priority": 50,
+      "latency_rank": 10,
+      "metadata": {"score_source": "neutral_seed_until_atlas_evals"},
+      "capabilities": {
+        "planning.general": 0.5,
+        "reasoning.general": 0.5
+      }
+    },
+    "local:heavy": {
+      "kind": "openai_compatible_chat",
+      "model": "qwen3.5-35b-a3b",
+      "base_url": "http://127.0.0.1:1234",
+      "local": true,
+      "enabled": false,
+      "max_context_chars": 60000,
+      "priority": 50,
+      "latency_rank": 30,
+      "metadata": {"score_source": "neutral_seed_until_atlas_evals"},
+      "capabilities": {
+        "planning.general": 0.5,
+        "reasoning.deep_analysis": 0.5,
+        "coding.software_engineering": 0.5
+      }
+    },
+    "openai:expert": {
+      "kind": "openai_responses",
+      "model": "gpt-5.6",
+      "api_key_env": "OPENAI_API_KEY",
+      "enabled": false,
+      "local": false,
+      "max_context_chars": 4000000,
+      "input_cost_per_million": 5.0,
+      "output_cost_per_million": 30.0,
+      "priority": 50,
+      "latency_rank": 45,
+      "metadata": {"score_source": "neutral_seed_until_atlas_evals"},
+      "capabilities": {
+        "planning.general": 0.5,
+        "reasoning.general": 0.5,
+        "reasoning.deep_analysis": 0.5,
+        "coding.software_engineering": 0.5
+      }
+    },
+    "anthropic:expert": {
+      "kind": "anthropic_messages",
+      "model": "SET_CURRENT_CLAUDE_MODEL_ID",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "enabled": false,
+      "local": false,
+      "priority": 50,
+      "latency_rank": 45,
+      "metadata": {"score_source": "neutral_seed_until_atlas_evals"},
+      "capabilities": {
+        "planning.general": 0.5,
+        "reasoning.deep_analysis": 0.5,
+        "coding.software_engineering": 0.5
+      }
+    },
+    "google:expert": {
+      "kind": "gemini_generate_content",
+      "model": "gemini-3.6-flash",
+      "api_key_env": "GEMINI_API_KEY",
+      "enabled": false,
+      "local": false,
+      "max_context_chars": 4000000,
+      "input_cost_per_million": 1.5,
+      "output_cost_per_million": 7.5,
+      "priority": 50,
+      "latency_rank": 30,
+      "metadata": {"score_source": "neutral_seed_until_atlas_evals"},
+      "capabilities": {
+        "planning.general": 0.5,
+        "reasoning.general": 0.5,
+        "reasoning.deep_analysis": 0.5,
+        "documents.multimodal": 0.5
+      }
+    },
+    "xai:expert": {
+      "kind": "openai_compatible_chat",
+      "model": "grok-4.5",
+      "base_url": "https://api.x.ai",
+      "api_key_env": "XAI_API_KEY",
+      "enabled": false,
+      "local": false,
+      "max_context_chars": 1900000,
+      "input_cost_per_million": 2.0,
+      "output_cost_per_million": 6.0,
+      "priority": 50,
+      "latency_rank": 35,
+      "metadata": {"score_source": "neutral_seed_until_atlas_evals"},
+      "capabilities": {
+        "reasoning.general": 0.5,
+        "reasoning.deep_analysis": 0.5,
+        "coding.software_engineering": 0.5
+      }
+    }
+  }
+}

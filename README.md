@@ -28,7 +28,8 @@ Atlas 2.0 is under active development. The durable runtime and core governance c
 | SQLite / FTS knowledge plane | **Implemented** |
 | Morning Workflow runtime integration | **Implemented** |
 | Offline-first Mobile Capture PWA | **Implemented and phone-offline tested** |
-| General Atlas browser / Companion PWA | **Not yet implemented** |
+| Atlas Companion PWA | **Implemented (LAN-local TaskRuntime interface)** |
+| Companion authentication / public bind | **Not yet implemented** |
 | Mobile report server sync + authentication | **Not yet implemented** |
 | Production always-on server packaging | **Not yet canonicalized** |
 | Host resource-management capability | **Direction only** |
@@ -80,15 +81,15 @@ flowchart TB
     U[User / Event / Schedule / File / API]
     CLI[CLI\nimplemented]
     MPWA[Supervisor Mobile Capture PWA\noffline-first, implemented]
-    WEB[Atlas Companion PWA\nplanned]
+    WEB[Atlas Companion PWA\nLAN-local, implemented]
     SYNC[Authenticated Mobile Sync API\nplanned]
 
     U --> CLI
-    U -.-> WEB
+    U --> WEB
     MPWA -. sync when coverage returns .-> SYNC
 
     CLI --> TP
-    WEB -.-> TP
+    WEB --> TP
     SYNC -.-> TP
 
     subgraph CORE[Atlas 2.0 Core]
@@ -138,12 +139,12 @@ flowchart TB
 
     subgraph EDGE[Intelligence / Tool Edge]
         LOCAL[Local OpenAI-compatible model service]
-        CLOUD[Cloud provider adapters\ndisabled until configured]
+        CLOUD[Cloud provider adapters\nxAI manageable in Companion]
         MCP[MCP client / transport\ninjected when selected]
     end
 
     MR --> LOCAL
-    MR -.-> CLOUD
+    MR --> CLOUD
     TG -.-> MCP
 ```
 
@@ -153,7 +154,7 @@ flowchart TB
 - **Capabilities sit below task semantics.** A task can route to deterministic code, a tool, a model, a composite responsibility or a human gate.
 - **The model router sits below capabilities.** A capability may be satisfied by different providers without changing the task contract.
 - **State is structural and durable.** The context window is a workspace, not a database.
-- **Mobile is an interface/domain surface, not another agent.**
+- **Mobile and Companion are interfaces, not other agents.** Companion is the owner/admin surface; Mobile Capture is bounded supervisor reporting.
 - **MCP is an edge protocol, not Atlas's internal ontology.**
 
 ---
@@ -295,6 +296,8 @@ execution
 
 Provider adapters may translate the projection into provider wire format but may not add hidden task facts.
 
+Capability and presentation are separate. A step may still execute `reasoning.general` while the assembled profile is a concise answer, a conversational reply, compose, evidence, or full research, depending on intent. Ordinary factual questions do not receive an Evidence / Uncertainty / Inference report merely because the capability defaults to research.
+
 The ContextManifest records included and dropped material, reasons, budget/accounting and capability identity before invocation.
 
 **The context window is a workspace, not a database.**
@@ -338,9 +341,9 @@ flowchart LR
 
 Routing can consider capability eligibility, Atlas eval score, privacy, allowlists, context capacity, priority, latency and configured cost information.
 
-Cloud providers are disabled until explicitly configured.
+Cloud providers are disabled until explicitly configured. Companion can save xAI credentials outside provider JSON, select a model, and enable that provider as the sole active brain. Local GPU slots load one at a time. Secrets never appear in overlay JSON or `/api/health`.
 
-See [`config/runtime-providers.example.json`](./config/runtime-providers.example.json) for the current example registry shape.
+See [`config/runtime-providers.example.json`](./config/runtime-providers.example.json) for the current example registry shape. Host-local overlays such as `config/runtime-providers.local.json` are not committed.
 
 ---
 
@@ -408,6 +411,35 @@ Authenticated server synchronization is **not yet implemented**.
 
 See [Mobile Capture V1 — Behavioural Contract](./Mobile%20Capture%20V1%20%E2%80%94%20Behavioural%20Contract.md) and [`atlas_mobile/PHONE-OFFLINE-ACCEPTANCE.md`](./atlas_mobile/PHONE-OFFLINE-ACCEPTANCE.md).
 
+## Companion PWA
+
+`atlas_companion/` is the LAN-local owner/admin interface into the same TaskRuntime. It is one persistent agent with spaces of responsibility, not extra personalities.
+
+| Space | What it is |
+|---|---|
+| **Ask** | Conversational front door. Infers criteria and authority. Always creates durable work when something must happen. Transcript persists across refresh. |
+| **Work** | Overview, one-off, recurring (`metadata.workflow`), history, approvals, hard delete |
+| **Personal** | Stub command center (email/calendar/reminders not connected) |
+| **Knowledge** | Library, search, indexing. Indexing jobs are Work. |
+| **Models** | Local sequential load/unload/activate; xAI credentials, model select, exclusive enable |
+| **Settings** | Host health and runtime identity (assembler, pid, enabled providers; no secrets) |
+
+The browser talks only to Companion. Companion talks to TaskRuntime. The browser does not call model-provider endpoints.
+
+This surface is **not authenticated**. Bind it to localhost or a trusted LAN only. It is not a public internet service.
+
+### Run Companion
+
+```bash
+python -m atlas_companion.server \
+  --db instance/atlas.db \
+  --providers config/runtime-providers.local.json \
+  --host 127.0.0.1 \
+  --port 8787
+```
+
+Then open `http://127.0.0.1:8787`. Use a LAN `--host` only on a trusted network.
+
 ---
 
 # Current repository layout
@@ -422,6 +454,7 @@ atlas-agent/
 │   ├── integrations/         domain responsibility adapters
 │   ├── authority.py
 │   ├── context.py
+│   ├── deliverable.py        deliverable contract + presentation profile
 │   ├── runtime.py            TaskRuntime public facade
 │   ├── runtime_types.py
 │   ├── runtime_lifecycle.py
@@ -437,10 +470,12 @@ atlas-agent/
 │   ├── bootstrap.py
 │   └── __main__.py
 │
+├── atlas_companion/          LAN-local Companion PWA
 ├── atlas_morning/            frozen Morning Workflow implementation
 ├── atlas_mobile/             offline-first Mobile Capture PWA
 ├── config/                   runtime/provider configuration examples
 ├── docs/architecture/        current runtime governance
+├── docs/prototypes/          Companion design prototype
 ├── tests/                    runtime + behavioural regressions
 └── .github/workflows/        CI
 ```
@@ -475,7 +510,7 @@ python --version
 
 ```bash
 python -W error::ResourceWarning -m unittest discover -s tests -q
-python -m compileall -q atlas_core atlas_morning tests
+python -m compileall -q atlas_core atlas_companion atlas_morning tests
 node atlas_mobile/run_fixtures.js
 ```
 
@@ -492,7 +527,7 @@ python -m atlas_core --db instance/atlas.db tasks
 
 # CLI
 
-The current CLI is the canonical engineering interface while the general browser interface is still pending.
+The CLI remains the canonical engineering and recovery interface. Companion is the general LAN-local browser interface. Both enter the same TaskRuntime.
 
 ```text
 python -m atlas_core [--db PATH] [--providers CONFIG] COMMAND
@@ -586,7 +621,7 @@ GitHub Actions currently runs:
 
 ```bash
 python -W error::ResourceWarning -m unittest discover -s tests -q
-python -m compileall -q atlas_core atlas_morning tests
+python -m compileall -q atlas_core atlas_companion atlas_morning tests
 node atlas_mobile/run_fixtures.js
 ```
 
@@ -605,8 +640,9 @@ Architectural regression requirements include:
 - side-effect constraints fail closed;
 - planning uses ContextBuilder;
 - provider routing respects privacy and eval score;
+- presentation profile follows intent rather than capability default;
 - tasks can execute beyond shallow conversational tool-round ceilings;
-- Morning and Mobile behavioural suites remain green.
+- Morning, Mobile, and Companion behavioural suites remain green.
 
 ---
 
@@ -632,30 +668,30 @@ The project prefers the smallest system that reliably owns a real responsibility
 
 # Near-term deployment direction
 
-The runtime is interface-agnostic. The intended always-on direction places the same core behind browser/mobile interfaces without changing task semantics.
+The runtime is interface-agnostic. Companion already binds the same TaskRuntime on a trusted LAN. Always-on packaging, authentication, and public HTTPS remain deployment work.
 
-**This is deployment direction, not a claim that these server/API components are already implemented in `main`.**
+**Companion is implemented. Authenticated remote access and production supervision are not.**
 
 ```mermaid
 flowchart TB
-    PHONE[Personal Companion PWA\nplanned]
+    PHONE[Personal Companion PWA\nLAN-local, implemented]
     REPORT[Supervisor Mobile PWA\nimplemented offline / sync planned]
     DEV[Developer workstation\nVS Code / Git / SSH]
 
     EDGE[Authenticated HTTPS edge\nplanned]
 
     subgraph HOST[Always-on Atlas host]
-        API[Atlas HTTP/API surface\nplanned]
+        API[Companion HTTP adapter\nLAN-local, implemented]
         CORE[Atlas TaskRuntime\nimplemented]
         DATA[(Persistent SQLite + artifacts + knowledge)]
         MODEL[Local OpenAI-compatible model service]
         GPU[Optional GPU acceleration]
     end
 
-    PHONE -. HTTPS .-> EDGE
+    PHONE -->|trusted LAN HTTP| API
     REPORT -. HTTPS sync .-> EDGE
     EDGE -.-> API
-    API -.-> CORE
+    API --> CORE
     DEV -->|Git / SSH| HOST
     CORE <--> DATA
     CORE --> MODEL
@@ -693,7 +729,7 @@ There are intentionally no historical advisory/proposal documents in the canonic
 
 The resident model is not Atlas.
 
-The cloud expert is not Atlas.
+The cloud expert is not Atlas. Companion is not Atlas.
 
 The Morning Workflow is not Atlas.
 

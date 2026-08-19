@@ -5,7 +5,7 @@
 
 This document defines the current Atlas 2.0 runtime architecture.
 
-It is governed by the Atlas Constitution and implemented by the `atlas_core/` runtime. Domain responsibilities such as Morning Workflow and Mobile Capture retain their own behavioural contracts but integrate through Atlas capability/interface boundaries.
+It is governed by the Atlas Constitution and implemented by the `atlas_core/` runtime. Domain responsibilities such as Morning Workflow and Mobile Capture retain their own behavioural contracts but integrate through Atlas capability/interface boundaries. Companion is a LAN-local interface into the same runtime, not a second agent.
 
 ---
 
@@ -49,15 +49,15 @@ flowchart TB
     I[User / Event / Schedule / File / API]
     CLI[CLI\nimplemented]
     MOBILE[Supervisor Mobile Capture\nimplemented offline]
-    WEB[Atlas Companion PWA\nplanned]
+    WEB[Atlas Companion PWA\nLAN-local, implemented]
     SYNC[Authenticated Mobile Sync API\nplanned]
 
     I --> CLI
-    I -.-> WEB
+    I --> WEB
     MOBILE -. future sync .-> SYNC
 
     CLI --> TP
-    WEB -.-> TP
+    WEB --> TP
     SYNC -.-> TP
 
     subgraph CORE[Atlas 2.0 Core]
@@ -319,6 +319,16 @@ Provider failover or escalation does not reset task history.
 
 Contexts such as planning, reasoning, review or presentation are operating profiles, not agents.
 
+Capability and presentation are separate. The capability used for a step (for example `reasoning.general`) does not by itself choose the user-facing profile. ContextBuilder selects a presentation profile from the task objective:
+
+- casual conversation → conversational reply;
+- factual Q&A → concise direct answer;
+- analysis or high-stakes claims → Evidence / Uncertainty / Inference;
+- explicitly requested deep analysis → full research profile;
+- narrative/artifact requests → compose.
+
+Ordinary questions must not receive a research report merely because the executing capability defaults to research.
+
 For each model/capability execution Atlas builds a fresh bounded projection from durable state.
 
 The ContextBuilder is the only component authorised to assemble task facts into model/capability context.
@@ -368,7 +378,7 @@ The current provider layer supports configuration for:
 - Gemini Generate Content-style providers;
 - other OpenAI-compatible gateways.
 
-Cloud providers are disabled until explicitly configured with credentials/current model IDs.
+Cloud providers are disabled until explicitly configured with credentials/current model IDs. Companion stores xAI credentials outside provider JSON, can select a live model, and treats an enabled cloud provider as the sole active brain. Local GPU inference loads one model at a time. Secrets must not appear in overlay JSON or health identity.
 
 Routing can consider:
 
@@ -493,6 +503,7 @@ atlas_core/
 ├── integrations/          domain capability adapters
 ├── authority.py           authority ladder and decisions
 ├── context.py             ContextBuilder + ContextManifest
+├── deliverable.py         deliverable contract + presentation profile
 ├── runtime.py             TaskRuntime public facade
 ├── runtime_types.py       RuntimeBudget / result types
 ├── runtime_lifecycle.py   task lifecycle / recovery coordination
@@ -508,6 +519,7 @@ atlas_core/
 ├── bootstrap.py           runtime assembly
 └── __main__.py            CLI
 
+atlas_companion/           LAN-local Companion PWA
 atlas_morning/             deterministic Morning Workflow
 atlas_mobile/              offline-first Mobile Capture PWA
 ```
@@ -540,6 +552,10 @@ Atlas TaskRuntime owns the task/execution/evidence shell while the domain specif
 
 Authenticated server sync is not yet implemented.
 
+### Companion PWA
+
+`atlas_companion/` is the implemented LAN-local owner/admin interface. Ask, Work, Knowledge, Models and Settings enter TaskRuntime. Personal and notifications remain stubs. The adapter is unauthenticated and must stay on localhost or a trusted LAN.
+
 ---
 
 ## 18. External/deployment boundaries
@@ -549,13 +565,12 @@ The core runtime is implemented without pretending every external surface is alr
 Still edge/future work:
 
 - production always-on server packaging;
-- Atlas HTTP/API surface;
-- authentication/authorization for remote interfaces;
-- Atlas Companion PWA;
+- authentication/authorization for remote Companion access;
 - authenticated Mobile Capture synchronization;
 - server-to-phone bootstrap state;
 - host-resource management capabilities;
-- semantic/vector retrieval if justified by evals.
+- semantic/vector retrieval if justified by evals;
+- Personal connectors and async Ask so long work does not block HTTP.
 
 These should attach to the stable task/capability runtime rather than redefine it.
 
@@ -599,6 +614,6 @@ Atlas 2.0 is intentionally not built around:
 
 > **Atlas is a local-first persistent operational agent whose durable runtime owns objectives, state, evidence, authority and completion, and dynamically assembles deterministic capabilities, tools and benchmarked local or cloud intelligence into bounded verified execution frames.**
 
-The resident model is not Atlas. A cloud expert is not Atlas. The Morning Workflow is not Atlas. The mobile app is not Atlas.
+The resident model is not Atlas. A cloud expert is not Atlas. The Morning Workflow is not Atlas. Companion is not Atlas. The mobile app is not Atlas.
 
 **Atlas is the persistent system that owns the work.**

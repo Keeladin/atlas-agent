@@ -121,8 +121,8 @@ Current and intended interfaces include:
 
 - CLI for engineering and recovery;
 - offline-first supervisor Mobile Capture;
-- a future authenticated Atlas Companion PWA;
-- future APIs, schedules, events and integrations.
+- LAN-local Atlas Companion PWA (Ask / Work / Knowledge / Models / Settings);
+- future authenticated remote Companion access, APIs, schedules, events and integrations.
 
 All interfaces must enter the same durable Atlas runtime rather than create separate agent identities or competing stores of truth.
 
@@ -140,11 +140,14 @@ Implemented on `main`:
 - local/cloud provider routing and eval score persistence;
 - SQLite/FTS knowledge plane;
 - Morning Workflow integration;
-- offline-first Mobile Capture surface with phone-offline acceptance.
+- offline-first Mobile Capture surface with phone-offline acceptance;
+- LAN-local Companion PWA over the same TaskRuntime;
+- inferred Ask criteria/authority, persisted Ask conversations, and exclusive cloud/local model activation;
+- intent-based presentation profiles separate from capability defaults.
 
 Not yet implemented as canonical production surfaces:
 
-- general Atlas browser / Companion PWA;
+- authenticated remote Companion access;
 - authenticated Mobile Capture server synchronization;
 - production always-on server packaging;
 - resource-management capabilities for shared host workloads;

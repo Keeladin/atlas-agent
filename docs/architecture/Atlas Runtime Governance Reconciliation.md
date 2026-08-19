@@ -98,6 +98,8 @@ A context window is temporary workspace assembled for one bounded execution fram
 
 The runtime may preserve large artifacts by identity/hash/metadata while retrieving only the content required for the current execution.
 
+Capability and presentation remain separate. ContextBuilder may still invoke `reasoning.general` while assembling a concise-answer, conversational, compose, evidence, or research profile from the user objective. A capability default of `research` is not a presentation contract.
+
 Long task depth is achieved through many bounded frames, not by growing context indefinitely.
 
 ---
@@ -330,6 +332,8 @@ atlas_core/
 │   └── adapters around domain responsibilities
 ├── authority.py
 ├── context.py
+├── deliverable.py
+│   └── deliverable contract + presentation profile
 ├── runtime.py
 │   └── TaskRuntime public facade
 ├── runtime_types.py
@@ -346,6 +350,7 @@ atlas_core/
 ├── bootstrap.py
 └── __main__.py
 
+atlas_companion/ LAN-local Companion PWA adapter
 atlas_morning/   frozen Morning Workflow implementation
 atlas_mobile/    offline-first Mobile Capture surface
 ```
@@ -389,7 +394,8 @@ Regression coverage should preserve at minimum:
 13. provider routing respects privacy and eval scores;
 14. side-effecting tools require receipts;
 15. tasks can execute beyond shallow conversational round limits;
-16. Morning and Mobile behavioural regression suites remain green.
+16. presentation profile follows intent rather than capability default;
+17. Morning, Mobile, and Companion behavioural regression suites remain green.
 
 ---
 

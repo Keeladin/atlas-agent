@@ -93,36 +93,39 @@ The offline app must remain useful when the server cannot be reached.
 
 ## 5. Atlas Companion PWA
 
-A separate personal **Atlas Companion PWA** is planned for the owner/admin interface.
+The personal **Atlas Companion PWA** is implemented as a LAN-local owner/admin interface in `atlas_companion/`.
 
-It should use the same Atlas backend and durable task truth while exposing a different authority surface from supervisor reporting.
+It uses the same Atlas backend and durable task truth while exposing a different authority surface from supervisor reporting. There is still one Atlas.
 
-Expected areas include:
+Implemented:
 
-- conversational requests;
-- task status and history;
-- approvals;
-- server and provider health;
-- operational summaries;
-- artifacts and results;
-- notifications;
-- settings and authority controls.
-
-Conceptually:
+- conversational Ask front door (criteria/authority inferred; work still created);
+- persisted Ask transcript in the same SQLite database;
+- Work overview, one-off, recurring view, history, approvals, hard delete;
+- Knowledge library / search / indexing;
+- Models: sequential local GPU load/unload/activate; xAI credential file, model select, exclusive enable;
+- Settings/health identity without secrets;
+- Personal stub (connectors not connected).
 
 ```text
 Phone / browser
-   ↓ HTTPS
+   ↓ trusted LAN HTTP
 Atlas Companion PWA
-   ↓
-Atlas API
    ↓
 TaskRuntime
    ↓
 capabilities / tools / model router
 ```
 
-The browser must not communicate directly with model-provider endpoints.
+The browser must not communicate directly with model-provider endpoints. Companion is unauthenticated; do not bind it to a public address.
+
+Remaining Companion work is explicitly future:
+
+- authentication for remote access;
+- async Ask so long tasks do not block HTTP;
+- Personal email/calendar/storage connectors;
+- additional cloud vendor adapters;
+- notifications.
 
 ## 6. One backend, different authority surfaces
 
@@ -209,10 +212,9 @@ Future interface and deployment work must preserve the current architecture:
 The next practical product sequence is:
 
 ```text
-always-on host
-  → stable Atlas API surface
-  → authentication / authorization
-  → Companion PWA
+Companion PWA (implemented, LAN-local)
+  → authentication / trusted-network hardening
+  → always-on host packaging
   → Mobile Capture server sync
   → richer operational state and notifications
 ```

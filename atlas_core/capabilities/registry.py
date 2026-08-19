@@ -122,6 +122,8 @@ class CapabilityRegistry:
                     "importance": spec.context_policy.hybrid_weights.importance,
                 },
             },
+            "output_kind": spec.output_kind,
+            "requires_artifact_kinds": list(spec.requires_artifact_kinds),
             "eligible_providers": list(spec.eligible_providers),
             "verifier_id": spec.verifier_id,
             "verification_required": spec.verification_required,

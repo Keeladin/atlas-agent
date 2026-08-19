@@ -28,6 +28,10 @@ def _spec(key: str, item: dict[str, Any]) -> ProviderSpec:
 
 def load_provider_registry(path: str | Path) -> ProviderRegistry:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return load_provider_registry_from_data(data)
+
+
+def load_provider_registry_from_data(data: dict[str, Any]) -> ProviderRegistry:
     registry = ProviderRegistry()
     for key, item in dict(data.get("providers", {})).items():
         spec = _spec(key, item)

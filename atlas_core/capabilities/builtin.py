@@ -27,6 +27,20 @@ def register_intelligence_capabilities(registry: CapabilityRegistry) -> None:
             budget=ExecutionBudget(max_attempts=3, max_context_chars=64_000, max_output_chars=32_000),
         ),
         CapabilitySpec(
+            id="generation.compose",
+            description=(
+                "Compose the user-requested artifact itself "
+                "(story, letter, document, or other requested text). "
+                "Do not analyze the request."
+            ),
+            executor_kind="model",
+            required_authority="interpret",
+            context_profile="compose",
+            verifier_id="core.nonempty",
+            privacy="cloud_allowed",
+            budget=ExecutionBudget(max_attempts=3, max_context_chars=48_000, max_output_chars=32_000),
+        ),
+        CapabilitySpec(
             id="reasoning.deep_analysis",
             description="Deep evidence-led reasoning for complex trade-offs and failure modes.",
             executor_kind="model",

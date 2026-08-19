@@ -5,79 +5,156 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Atlas Companion</title>
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/styles.css?v=3">
+  <link rel="stylesheet" href="/styles.css?v=15">
 </head>
 <body>
   <div class="app-shell">
     <aside class="rail">
-      <div class="brand"><span class="brand-mark">A</span><div><small>AtlasAgent</small><strong>Companion</strong></div></div>
-      <nav aria-label="Companion screens">
-        <button class="nav-btn active" data-screen="today"><span>Today</span><small>Operational picture</small></button>
-        <button class="nav-btn" data-screen="work"><span>Work</span><small>Durable tasks</small></button>
-        <button class="nav-btn" data-screen="ask"><span>Ask</span><small>Create a responsibility</small></button>
-        <button class="nav-btn" data-screen="knowledge"><span>Knowledge</span><small>Indexed work</small></button>
-        <button class="nav-btn" data-screen="approvals"><span>Approvals</span><small id="approval-count">Checking…</small></button>
-        <button class="nav-btn" data-screen="health"><span>Health</span><small>Machine and runtime</small></button>
+      <div class="brand"><span class="brand-mark">A</span><div><small>Atlas</small><strong>Companion</strong></div></div>
+      <nav aria-label="Companion spaces">
+        <button class="nav-btn active" data-screen="ask"><span>Ask</span><small>Talk to Atlas</small></button>
+        <button class="nav-btn" data-screen="work"><span>Work</span><small id="work-nav-note">Operational execution</small></button>
+        <button class="nav-btn" data-screen="personal"><span>Personal</span><small>Today and connected services</small></button>
+        <button class="nav-btn" data-screen="knowledge"><span>Knowledge</span><small>Library and research</small></button>
+        <button class="nav-btn" data-screen="models"><span>Models</span><small>Local and cloud providers</small></button>
       </nav>
-      <p class="rail-foot">Same durable runtime as the CLI. Provider traffic and machine telemetry stay on this host.</p>
+      <nav class="rail-secondary" aria-label="System">
+        <button class="nav-btn" data-screen="settings"><span>Settings</span><small>Health and runtime identity</small></button>
+      </nav>
+      <p class="rail-foot">One agent. Spaces of responsibility, not extra personalities.</p>
     </aside>
 
     <div class="main">
       <header class="topbar">
-        <div><p class="eyebrow">Companion / <span id="crumb">Today</span></p><h1 id="page-title">Today</h1></div>
-        <div id="status-strip" class="status-strip" aria-live="polite">Loading runtime health…</div>
+        <div><p class="eyebrow">Atlas / <span id="crumb">Ask</span></p><h1 id="page-title">Ask</h1></div>
+        <div id="status-strip" class="status-strip" aria-live="polite">Loading runtime identity…</div>
       </header>
 
       <main>
-        <section class="screen active" id="today-screen">
-          <div class="section-heading"><div><h2>Operational picture</h2><p>What Atlas owns right now, grounded in durable task state.</p></div><button class="primary" data-goto="ask">New responsibility</button></div>
-          <div class="metric-grid" id="today-metrics"></div>
-          <div class="two-col">
-            <article class="panel"><div class="panel-head"><h3>Needs attention</h3><button class="link-btn" data-goto="approvals">View approvals</button></div><div id="needs-attention"></div></article>
-            <article class="panel"><div class="panel-head"><h3>Recent durable outcomes</h3><button class="link-btn" data-goto="work">View all work</button></div><div id="recent-outcomes"></div></article>
+        <section class="screen active" id="ask-screen">
+          <div class="section-heading"><div><h2>Ask Atlas</h2><p>Talk naturally. Atlas still records durable work when something needs to happen; a model reply alone is never completion.</p></div></div>
+          <div class="ask-layout">
+            <div class="panel ask-thread" id="ask-thread">
+              <div class="ask-welcome muted-panel">Ask a question, request a story, or start operational work. Atlas infers success criteria unless you override them in Advanced.</div>
+            </div>
+            <form id="new-task" class="panel form-panel ask-composer">
+              <label><span>Message</span><textarea name="objective" placeholder="What should Atlas do?" required></textarea></label>
+              <details class="advanced-box">
+                <summary>Advanced</summary>
+                <div class="form-grid">
+                  <label><span>Success criteria <small>(optional — one per line)</small></span><textarea name="criteria" placeholder="Leave blank for Atlas to infer"></textarea></label>
+                  <label><span>Authority</span><select name="authority"><option value="auto" selected>Auto</option><option value="read">Read</option><option value="interpret">Interpret</option><option value="recommend">Recommend</option><option value="modify_internal">Modify internal</option></select><small class="field-help">Auto never grants communicate or execute-external. Atlas still stops at required gates.</small></label>
+                </div>
+              </details>
+              <div class="form-actions"><button class="primary" type="submit">Send</button><p id="message" role="status"></p></div>
+            </form>
           </div>
         </section>
 
         <section class="screen" id="work-screen">
-          <div class="section-heading"><div><h2>Work</h2><p>Tasks survive the conversation. Active means ready—not necessarily executing.</p></div><button class="primary" data-goto="ask">Create task</button></div>
-          <div class="filters" id="work-filters">
-            <button class="filter active" data-filter="all">All</button><button class="filter" data-filter="open">Open</button><button class="filter" data-filter="completed">Completed</button><button class="filter" data-filter="failed">Failed</button>
+          <div class="section-heading"><div><h2>Work</h2><p>Operational execution. Active means ready—not necessarily running.</p></div><button class="primary" data-goto="ask">New work</button></div>
+          <div class="filters" id="work-tabs" role="tablist">
+            <button class="filter active" data-work-view="overview">Overview</button>
+            <button class="filter" data-work-view="one-off">One-off</button>
+            <button class="filter" data-work-view="recurring">Recurring</button>
+            <button class="filter" data-work-view="history">History</button>
           </div>
-          <div class="work-layout"><div class="panel task-list" id="tasks"></div><article class="panel task-detail" id="detail"><div class="empty"><strong>Select a task</strong><p>Inspect steps, executions, evidence, approvals, and the presented result.</p></div></article></div>
+
+          <div id="work-overview">
+            <div class="metric-grid" id="work-metrics"></div>
+            <div class="two-col">
+              <article class="panel"><div class="panel-head"><h3>Needs attention</h3></div><div id="needs-attention"></div></article>
+              <article class="panel"><div class="panel-head"><h3>Recent outcomes</h3></div><div id="recent-outcomes"></div></article>
+            </div>
+          </div>
+
+          <div id="work-board" hidden>
+            <div class="filters" id="work-filters">
+              <button class="filter active" data-filter="all">All</button><button class="filter" data-filter="open">Open</button><button class="filter" data-filter="completed">Completed</button><button class="filter" data-filter="failed">Failed</button>
+            </div>
+            <div class="work-layout"><div class="panel task-list" id="tasks"></div><article class="panel task-detail" id="detail"><div class="empty"><strong>Select a task</strong><p>Inspect the result first, then how Atlas executed it.</p></div></article></div>
+          </div>
         </section>
 
-        <section class="screen" id="ask-screen">
-          <div class="section-heading"><div><h2>Ask Atlas</h2><p>This creates a durable task. A model response alone is never completion.</p></div></div>
-          <form id="new-task" class="panel form-panel">
-            <label><span>Responsibility</span><textarea name="objective" placeholder="Explain what Atlas should own and produce…" required></textarea></label>
-            <div class="form-grid">
-              <label><span>Success criteria <small>(one per line)</small></span><textarea name="criteria" placeholder="Produce an evidence-grounded result" required></textarea></label>
-              <label><span>Authority</span><select name="authority"><option value="read">Read</option><option value="interpret" selected>Interpret</option><option value="modify_internal">Modify internal</option><option value="recommend">Recommend</option></select><small class="field-help">Atlas will still stop at any authority gate required by the plan.</small></label>
-            </div>
-            <div class="form-actions"><button class="primary" type="submit">Create and run</button><p id="message" role="status"></p></div>
-          </form>
+        <section class="screen" id="personal-screen">
+          <div class="section-heading"><div><h2>Personal</h2><p>Your command center for connected services. Today lives here — not as a second Work view.</p></div></div>
+          <article class="panel empty-state">
+            <h3>Today</h3>
+            <p>Appointments, important mail, and reminders will appear here when personal services are connected.</p>
+            <p class="muted-panel">Email, calendar, cloud storage, and reminders are not connected yet. Atlas remains one agent; Personal is a domain, not another personality.</p>
+          </article>
         </section>
 
         <section class="screen" id="knowledge-screen">
-          <div class="section-heading"><div><h2>Knowledge</h2><p>Durable indexing and retrieval work recorded by Atlas.</p></div></div>
+          <div class="section-heading"><div><h2>Knowledge</h2><p>Digital library and research. Indexing is Work; the corpus lives here. This is not the web.</p></div></div>
+          <div class="filters" id="knowledge-tabs" role="tablist">
+            <button class="filter active" data-knowledge-view="library">Library</button>
+            <button class="filter" data-knowledge-view="search">Search</button>
+            <button class="filter" data-knowledge-view="indexing">Indexing</button>
+          </div>
           <div class="metric-grid" id="knowledge-metrics"></div>
-          <article class="panel"><div class="panel-head"><h3>Knowledge tasks</h3><button class="link-btn" data-goto="ask">Create knowledge task</button></div><div id="knowledge-tasks"></div></article>
+          <div id="knowledge-library">
+            <article class="panel">
+              <div class="panel-head"><h3>Indexed documents</h3></div>
+              <div id="knowledge-docs"></div>
+            </article>
+          </div>
+          <div id="knowledge-search-view" hidden>
+            <article class="panel">
+              <div class="panel-head"><h3>Search the local library</h3></div>
+              <form id="knowledge-search" class="inline-form">
+                <input name="q" placeholder="ContextBuilder, cavitation, morning pack…" required>
+                <button class="primary" type="submit">Search</button>
+              </form>
+              <div id="knowledge-hits"></div>
+            </article>
+          </div>
+          <div id="knowledge-indexing" hidden>
+            <div class="two-col">
+              <article class="panel">
+                <div class="panel-head"><h3>Index a text source</h3></div>
+                <form id="knowledge-ingest">
+                  <label><span>Server path</span><input name="source_path" placeholder="/home/jaco/Projects/atlas-agent/README.md" required></label>
+                  <p class="technical" id="file-meta">Path and sha256 are captured on this host. The body is not copied into the task artifact.</p>
+                  <div class="form-actions">
+                    <button class="secondary" type="button" id="inspect-path">Inspect path</button>
+                    <button class="primary" type="submit">Create ingest task</button>
+                  </div>
+                  <p id="index-status" role="status"></p>
+                </form>
+              </article>
+              <article class="panel">
+                <div class="panel-head"><h3>Indexing jobs</h3><span class="muted-panel">Execution lives in Work</span></div>
+                <div id="knowledge-jobs"></div>
+              </article>
+            </div>
+          </div>
         </section>
 
-        <section class="screen" id="approvals-screen">
-          <div class="section-heading"><div><h2>Approvals</h2><p>Authority is explicit. Approval grants permission; it does not fake completion.</p></div></div>
-          <div id="approvals-list" class="stack"><article class="panel muted-panel">Loading approval records…</article></div>
+        <section class="screen" id="models-screen">
+          <div class="section-heading"><div><h2>Models</h2><p>Local inference and cloud providers. Credentials and selected model are separate. Secrets never come back to this page after save.</p></div><button class="secondary" id="refresh-models">Refresh</button></div>
+          <div class="two-col">
+            <article class="panel">
+              <div class="panel-head"><h3>Local models</h3></div>
+              <p class="muted-panel">One GPU model at a time on this host. Activate swaps sequentially (unload the other, then load).</p>
+              <div id="local-models"><p class="muted-panel">Loading local models…</p></div>
+            </article>
+            <article class="panel">
+              <div class="panel-head"><h3>Cloud providers</h3></div>
+              <div id="cloud-providers"><p class="muted-panel">Loading cloud providers…</p></div>
+            </article>
+          </div>
         </section>
 
-        <section class="screen" id="health-screen">
-          <div class="section-heading"><div><h2>Health</h2><p>Live host, runtime, provider, container, network, and repository state.</p></div><button class="secondary" id="refresh-health">Refresh</button></div>
+        <section class="screen" id="settings-screen">
+          <div class="section-heading"><div><h2>Settings</h2><p>Live host, runtime identity, provider, container, network, and repository state.</p></div><button class="secondary" id="refresh-health">Refresh</button></div>
           <div id="health" class="health-grid"></div>
         </section>
       </main>
     </div>
   </div>
   <div class="toast" id="toast" role="status"></div>
-  <script src="/app.js?v=3"></script>
-  <script>navigator.serviceWorker?.register('/sw.js?v=3',{updateViaCache:'none'})</script>
+  <script src="/app.js?v=15"></script>
+  <script>navigator.serviceWorker?.register('/sw.js?v=15',{updateViaCache:'none'})</script>
 </body>
 </html>

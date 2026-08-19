@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Atlas Companion — design prototype</title>
+  <style>
+    :root {
+      --bg: #121820;
+      --bg-2: #0f1520;
+      --card: #1c2533;
+      --card-2: #232e3f;
+      --ink: #e8eef6;
+      --muted: #9aacbf;
+      --line: #334155;
+      --accent: #3d8bfd;
+      --red: #c44b4b;
+      --orange: #c47a2b;
+      --green: #2f8f62;
+      --rail: 248px;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font: 15px/1.45 system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    button, input, textarea, select { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    .app {
+      display: grid;
+      grid-template-columns: var(--rail) 1fr;
+      min-height: 100%;
+    }
+    .rail {
+      background: #10161f;
+      border-right: 1px solid var(--line);
+      padding: 1.1rem 0.9rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+    .brand { color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; font-size: 0.72rem; margin: 0; }
+    .brand-title { margin: 0.15rem 0 1rem; font-size: 1.15rem; }
+    .proto {
+      font-size: 0.72rem;
+      color: var(--orange);
+      border: 1px solid #6a4a1d;
+      background: #2a2112;
+      border-radius: 999px;
+      padding: 0.1rem 0.45rem;
+      margin-left: 0.35rem;
+      vertical-align: middle;
+    }
+    .nav-btn {
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--ink);
+      border-radius: 8px;
+      padding: 0.55rem 0.65rem;
+    }
+    .nav-btn small { display: block; color: var(--muted); font-size: 0.78rem; }
+    .nav-btn.active { background: var(--card); border-color: var(--line); }
+    .rail-foot { margin-top: auto; color: var(--muted); font-size: 0.78rem; }
+    .main { display: flex; flex-direction: column; min-width: 0; }
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.85rem 1.2rem;
+      border-bottom: 1px solid var(--line);
+      background: #141b25;
+    }
+    .crumb { margin: 0; }
+    .crumb span { color: var(--muted); }
+    .status-dot {
+      display: inline-block;
+      width: 0.55rem; height: 0.55rem;
+      border-radius: 50%;
+      background: var(--green);
+      margin-right: 0.4rem;
+    }
+    .screen { display: none; padding: 1.1rem 1.2rem 2.4rem; }
+    .screen.active { display: block; }
+    h2 { margin: 0 0 0.35rem; font-size: 1.25rem; }
+    .lede { color: var(--muted); margin: 0 0 1rem; }
+    .grid { display: grid; gap: 0.8rem; }
+    .cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .cols-2 { grid-template-columns: 1.4fr 1fr; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 0.85rem 0.95rem;
+    }
+    .card h3 { margin: 0 0 0.45rem; font-size: 0.95rem; }
+    .metric { font-size: 1.6rem; font-weight: 650; }
+    .muted { color: var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
+    .row { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+    .pill {
+      border-radius: 999px;
+      padding: 0.12rem 0.5rem;
+      font-size: 0.75rem;
+      border: 1px solid var(--line);
+      background: var(--bg-2);
+    }
+    .pill.pass, .pill.completed { color: #b7e6cf; border-color: #2f8f62; }
+    .pill.running { color: #cfe0ff; border-color: var(--accent); }
+    .pill.blocked, .pill.pending { color: #f0d3a0; border-color: var(--orange); }
+    .pill.failed { color: #f0b4b4; border-color: var(--red); }
+    .list-btn, .primary, .ghost, .danger {
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      padding: 0.5rem 0.7rem;
+    }
+    .list-btn {
+      width: 100%;
+      text-align: left;
+      background: var(--card);
+      margin: 0 0 0.45rem;
+    }
+    .list-btn:hover { background: var(--card-2); }
+    .list-btn .title { font-weight: 600; }
+    .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .ghost { background: #2a3548; }
+    .danger { background: #3a2222; border-color: #7a3535; color: #f4c8c8; }
+    input, textarea, select {
+      width: 100%;
+      background: var(--bg-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.5rem 0.6rem;
+    }
+    textarea { min-height: 5.5rem; resize: vertical; }
+    label { display: block; margin: 0.65rem 0; }
+    label span { display: block; color: var(--muted); font-size: 0.8rem; margin-bottom: 0.25rem; }
+    .hit { border-left: 3px solid var(--accent); }
+    .step { display: grid; grid-template-columns: 1.4rem 1fr auto; gap: 0.5rem; padding: 0.45rem 0; border-bottom: 1px solid #2a3548; }
+    .step:last-child { border-bottom: 0; }
+    .toast {
+      position: fixed; right: 1rem; bottom: 1rem;
+      background: #163024; border: 1px solid var(--green);
+      color: #d8f5e7; padding: 0.6rem 0.8rem; border-radius: 8px;
+      display: none; max-width: 22rem;
+    }
+    .ask-thread { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 1rem; }
+    .bubble { border-radius: 10px; padding: 0.7rem 0.8rem; }
+    .bubble.user { background: #24344d; }
+    .bubble.atlas { background: var(--card); border: 1px solid var(--line); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    th, td { text-align: left; padding: 0.4rem 0.3rem; border-bottom: 1px solid #2a3548; }
+    th { color: var(--muted); font-weight: 500; }
+    @media (max-width: 860px) {
+      .app { grid-template-columns: 1fr; }
+      .rail { flex-direction: row; flex-wrap: wrap; }
+      .rail-foot { display: none; }
+      .cols-3, .cols-2 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail">
+      <p class="brand">AtlasAgent</p>
+      <h1 class="brand-title">Companion <span class="proto">prototype</span></h1>
+      <button class="nav-btn active" data-screen="today"><strong>Today</strong><small>Operational picture</small></button>
+      <button class="nav-btn" data-screen="work"><strong>Work</strong><small>Durable tasks</small></button>
+      <button class="nav-btn" data-screen="ask"><strong>Ask</strong><small>Creates a task, not a chat log</small></button>
+      <button class="nav-btn" data-screen="knowledge"><strong>Knowledge</strong><small>Index and retrieve</small></button>
+      <button class="nav-btn" data-screen="approvals"><strong>Approvals</strong><small>1 waiting</small></button>
+      <button class="nav-btn" data-screen="health"><strong>Health</strong><small>Runtime and providers</small></button>
+      <p class="rail-foot">Same Atlas runtime as CLI and Mobile Capture. This surface never talks to a model provider directly.</p>
+    </aside>
+
+    <div class="main">
+      <header class="top">
+        <p class="crumb" id="crumb"><span>Companion</span> / Today</p>
+        <p class="muted"><span class="status-dot"></span>local runtime · instance/atlas.db · authority: modify_internal</p>
+      </header>
+
+      <section class="screen active" id="today">
+        <h2>Tuesday 18 Aug · operational day</h2>
+        <p class="lede">What Atlas owns right now. Chat is not shown here because it is not the source of truth.</p>
+        <div class="grid cols-3">
+          <article class="card"><h3>Open work</h3><div class="metric">3</div><p class="muted">1 blocked on approval</p></article>
+          <article class="card"><h3>Morning pack</h3><div class="metric">Ready</div><p class="muted">Verified · 05 May replay fixture</p></article>
+          <article class="card"><h3>Knowledge</h3><div class="metric">2 docs</div><p class="muted">README indexed · path/hash backed</p></article>
+        </div>
+        <div class="grid cols-2" style="margin-top:0.8rem">
+          <article class="card">
+            <h3>Needs you</h3>
+            <button class="list-btn" data-goto="approvals">
+              <div class="title">Approve knowledge ingest authority</div>
+              <div class="muted">modify_internal · index Atlas Architecture.md</div>
+            </button>
+            <button class="list-btn" data-goto="work" data-task="t-morning">
+              <div class="title">Morning pack is complete</div>
+              <div class="muted">Open verified artifact</div>
+            </button>
+          </article>
+          <article class="card">
+            <h3>Recent durable outcomes</h3>
+            <button class="list-btn" data-goto="work" data-task="t-readme">
+              <div class="row"><span class="title">Index README.md</span><span class="pill pass">completed</span></div>
+              <div class="muted mono">doc_7c1a… · 6 chunks · sha256 9f3c…</div>
+            </button>
+            <button class="list-btn" data-goto="knowledge">
+              <div class="title">Search: ContextBuilder</div>
+              <div class="muted">3 source-grounded hits</div>
+            </button>
+          </article>
+        </div>
+      </section>
+
+      <section class="screen" id="work">
+        <h2>Work</h2>
+        <p class="lede">Tasks survive the conversation. Open one to see steps, artifacts and verification.</p>
+        <div class="row" style="margin-bottom:0.8rem">
+          <button class="ghost filter active" data-filter="all">All</button>
+          <button class="ghost filter" data-filter="running">Running</button>
+          <button class="ghost filter" data-filter="blocked">Blocked</button>
+          <button class="ghost filter" data-filter="completed">Completed</button>
+        </div>
+        <div id="task-list"></div>
+        <article class="card" id="task-detail" hidden></article>
+      </section>
+
+      <section class="screen" id="ask">
+        <h2>Ask Atlas</h2>
+        <p class="lede">This interface creates or resumes a durable task. A reply is not completion.</p>
+        <label><span>Responsibility</span>
+          <textarea id="ask-text" placeholder="Index the architecture document and tell me where ContextBuilder owns assembly."></textarea>
+        </label>
+        <div class="grid cols-3">
+          <label><span>Authority</span>
+            <select id="ask-auth">
+              <option>read</option>
+              <option selected>modify_internal</option>
+              <option>recommend</option>
+            </select>
+          </label>
+          <label><span>Success criterion</span>
+            <input id="ask-crit" value="Source-grounded answer with document hash">
+          </label>
+          <label><span> </span><button class="primary" id="ask-send" style="width:100%">Create task</button></label>
+        </div>
+        <div class="ask-thread" id="ask-thread">
+          <div class="bubble user">Index README and keep it searchable.</div>
+          <div class="bubble atlas">
+            Created task <button class="ghost" data-goto="work" data-task="t-readme">tsk_readme</button>
+            <div class="muted">Capability plan: knowledge.ingest_text → knowledge.search. Completion waits on verification, not this message.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen" id="knowledge">
+        <h2>Knowledge</h2>
+        <p class="lede">Bulk files stay on disk. Atlas stores a control record, chunks and hashes — not the whole document in context.</p>
+        <div class="grid cols-2">
+          <article class="card">
+            <h3>Search local knowledge</h3>
+            <div class="row">
+              <input id="q" placeholder="ContextBuilder, cavitation, morning pack…">
+              <button class="primary" id="do-search">Search</button>
+            </div>
+            <div id="hits" style="margin-top:0.8rem"></div>
+          </article>
+          <article class="card">
+            <h3>Index a text source</h3>
+            <label><span>File</span><input id="file" type="file" accept=".md,.txt,text/plain"></label>
+            <p class="muted mono" id="file-meta">No file selected. Path and sha256 will be captured; the body is not copied into the task artifact.</p>
+            <div class="row">
+              <button class="primary" id="do-index">Create ingest task</button>
+              <button class="ghost" id="do-clear">Clear</button>
+            </div>
+            <p class="muted" id="index-status"></p>
+          </article>
+        </div>
+        <article class="card" style="margin-top:0.8rem">
+          <h3>Indexed documents</h3>
+          <table>
+            <thead><tr><th>Title</th><th>Source</th><th>Chunks</th><th>Hash</th><th>Status</th></tr></thead>
+            <tbody id="docs"></tbody>
+          </table>
+        </article>
+      </section>
+
+      <section class="screen" id="approvals">
+        <h2>Approvals</h2>
+        <p class="lede">Authority is explicit. Capability does not imply permission.</p>
+        <article class="card" id="approval-card">
+          <div class="row"><strong>Index Atlas Architecture.md</strong><span class="pill pending">pending</span></div>
+          <p class="muted">Requested: knowledge.ingest_text · required authority: modify_internal</p>
+          <p class="mono">source_path = /home/jaco/Projects/atlas-agent/Atlas Architecture — Runtime and Topology.md</p>
+          <p class="mono">content_sha256 = 4e91… (capture-time) · file will be re-hashed at execution</p>
+          <div class="row">
+            <button class="primary" id="approve">Approve</button>
+            <button class="danger" id="deny">Deny</button>
+          </div>
+        </article>
+      </section>
+
+      <section class="screen" id="health">
+        <h2>Health</h2>
+        <p class="lede">Companion is an interface. Runtime, SQLite and providers stay on the Atlas host.</p>
+        <div class="grid cols-3">
+          <article class="card"><h3>TaskRuntime</h3><p><span class="pill pass">up</span></p><p class="muted">No executions running</p></article>
+          <article class="card"><h3>Providers</h3><p>local-only configured</p><p class="muted">Browser has no provider keys</p></article>
+          <article class="card"><h3>Knowledge store</h3><p>FTS5 available</p><p class="muted">Ingest budget 4000 control tokens</p></article>
+        </div>
+      </section>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const titles = {
+      today: "Today",
+      work: "Work",
+      ask: "Ask",
+      knowledge: "Knowledge",
+      approvals: "Approvals",
+      health: "Health",
+    };
+
+    const tasks = {
+      "t-readme": {
+        filter: "completed",
+        title: "Index local knowledge source README.md",
+        status: "completed",
+        id: "tsk_readme",
+        authority: "modify_internal",
+        criteria: ["The source is durably indexed with chunk provenance."],
+        steps: [
+          ["1", "knowledge.ingest_text@1.1.0", "pass", "6 chunks · sha256 9f3c…"],
+        ],
+        artifacts: "knowledge_ingest_request (path/hash) → knowledge_ingest_result",
+      },
+      "t-morning": {
+        filter: "completed",
+        title: "Generate the TMM morning operational pack",
+        status: "completed",
+        id: "tsk_morning",
+        authority: "read",
+        criteria: ["Verified non-empty pack for the requested operational day."],
+        steps: [
+          ["1", "operations.morning_pack.generate", "pass", "morning_pack artifact"],
+        ],
+        artifacts: "morning_request (paths) → morning_pack",
+      },
+      "t-arch": {
+        filter: "blocked",
+        title: "Index Atlas Architecture — Runtime and Topology.md",
+        status: "blocked",
+        id: "tsk_arch",
+        authority: "modify_internal",
+        criteria: ["The source is durably indexed with chunk provenance."],
+        steps: [
+          ["1", "knowledge.ingest_text@1.1.0", "blocked", "waiting on approval"],
+        ],
+        artifacts: "knowledge_ingest_request control record only",
+      },
+    };
+
+    const docs = [
+      ["README.md", "…/README.md", "6", "9f3c…a21", "indexed"],
+      ["Atlas Constitution.md", "…/Atlas Constitution.md", "3", "11ab…c90", "indexed"],
+    ];
+
+    function show(id) {
+      document.querySelectorAll(".screen").forEach((el) => el.classList.toggle("active", el.id === id));
+      document.querySelectorAll(".nav-btn").forEach((el) => el.classList.toggle("active", el.dataset.screen === id));
+      document.getElementById("crumb").innerHTML = "<span>Companion</span> / " + titles[id];
+    }
+
+    function toast(text) {
+      const el = document.getElementById("toast");
+      el.textContent = text;
+      el.style.display = "block";
+      setTimeout(() => { el.style.display = "none"; }, 2800);
+    }
+
+    function renderTasks(filter) {
+      const root = document.getElementById("task-list");
+      root.innerHTML = "";
+      Object.entries(tasks).forEach(([key, task]) => {
+        if (filter !== "all" && task.filter !== filter) return;
+        const btn = document.createElement("button");
+        btn.className = "list-btn";
+        btn.innerHTML = `<div class="row"><span class="title">${task.title}</span><span class="pill ${task.status}">${task.status}</span></div>
+          <div class="muted mono">${task.id} · ${task.authority}</div>`;
+        btn.onclick = () => openTask(key);
+        root.appendChild(btn);
+      });
+    }
+
+    function openTask(key) {
+      show("work");
+      const task = tasks[key];
+      const el = document.getElementById("task-detail");
+      el.hidden = false;
+      el.innerHTML = `
+        <div class="row"><h3 style="margin:0">${task.title}</h3><span class="pill ${task.status}">${task.status}</span></div>
+        <p class="mono muted">${task.id} · authority ${task.authority}</p>
+        <p><strong>Success criteria</strong><br>${task.criteria.map((c) => "• " + c).join("<br>")}</p>
+        ${task.steps.map(([n, cap, st, note]) =>
+          `<div class="step"><div>${n}</div><div><div class="mono">${cap}</div><div class="muted">${note}</div></div><span class="pill ${st}">${st}</span></div>`
+        ).join("")}
+        <p class="muted">Artifacts: ${task.artifacts}</p>
+        <div class="row">
+          <button class="ghost" onclick="toast('Would call runtime resume/run for ${task.id}')">Resume</button>
+          <button class="ghost" onclick="toast('Would render TaskPresenter markdown')">Open result</button>
+        </div>`;
+    }
+
+    function renderDocs() {
+      document.getElementById("docs").innerHTML = docs.map((row) =>
+        `<tr><td>${row[0]}</td><td class="mono">${row[1]}</td><td>${row[2]}</td><td class="mono">${row[3]}</td><td><span class="pill pass">${row[4]}</span></td></tr>`
+      ).join("");
+    }
+
+    function hexPreview(buffer) {
+      const bytes = new Uint8Array(buffer.slice(0, 32));
+      return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    async function fileMeta(file) {
+      const buf = await file.arrayBuffer();
+      const digest = await crypto.subtle.digest("SHA-256", buf);
+      const hash = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+      return { name: file.name, size: file.size, hash, preview: hexPreview(buf) };
+    }
+
+    document.querySelectorAll(".nav-btn").forEach((btn) => {
+      btn.addEventListener("click", () => show(btn.dataset.screen));
+    });
+    document.querySelectorAll("[data-goto]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        show(btn.dataset.goto);
+        if (btn.dataset.task) openTask(btn.dataset.task);
+      });
+    });
+    document.querySelectorAll(".filter").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".filter").forEach((el) => el.classList.remove("active"));
+        btn.classList.add("active");
+        renderTasks(btn.dataset.filter);
+      });
+    });
+
+    document.getElementById("do-search").onclick = () => {
+      const q = document.getElementById("q").value.trim() || "ContextBuilder";
+      document.getElementById("hits").innerHTML = `
+        <article class="card hit">
+          <div class="row"><strong>README.md</strong><span class="pill">ordinal 2</span></div>
+          <p>The ContextBuilder is the sole authority for assembling task context for normal capability/model invocation.</p>
+          <p class="mono muted">chunk_…0002 · score 0.81 · sha256 a91e…</p>
+        </article>
+        <p class="muted">Query “${q}” returned source-grounded chunks. Atlas does not invent a summary above the evidence.</p>`;
+    };
+
+    document.getElementById("file").onchange = async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      const meta = await fileMeta(file);
+      document.getElementById("file-meta").textContent =
+        `source_path ≈ ${file.name} · ${file.size} bytes · content_sha256 ${meta.hash.slice(0, 12)}… · body stays out of context`;
+    };
+
+    document.getElementById("do-index").onclick = async () => {
+      const file = document.getElementById("file").files[0];
+      if (!file) {
+        toast("Choose a UTF-8 text file first.");
+        return;
+      }
+      const meta = await fileMeta(file);
+      document.getElementById("index-status").textContent =
+        "Created tsk_local · knowledge.ingest_text@1.1.0 · control artifact only · waiting for runtime verification.";
+      docs.unshift([file.name, file.name, "…", meta.hash.slice(0, 4) + "…" + meta.hash.slice(-3), "running"]);
+      renderDocs();
+      toast("Ingest task created. File body was not copied into the request artifact.");
+    };
+    document.getElementById("do-clear").onclick = () => {
+      document.getElementById("file").value = "";
+      document.getElementById("file-meta").textContent = "No file selected.";
+      document.getElementById("index-status").textContent = "";
+    };
+
+    document.getElementById("ask-send").onclick = () => {
+      const text = document.getElementById("ask-text").value.trim() || "Index the architecture document.";
+      const thread = document.getElementById("ask-thread");
+      thread.insertAdjacentHTML("beforeend",
+        `<div class="bubble user">${text}</div>
+         <div class="bubble atlas">Created <span class="mono">tsk_arch</span>. Blocked on approval before knowledge.ingest_text runs.
+         <div class="row" style="margin-top:0.4rem">
+           <button class="ghost" data-goto="work" data-task="t-arch">Open task</button>
+           <button class="ghost" data-goto="approvals">Review approval</button>
+         </div></div>`);
+      thread.querySelectorAll("[data-goto]").forEach((btn) => {
+        btn.onclick = () => {
+          show(btn.dataset.goto);
+          if (btn.dataset.task) openTask(btn.dataset.task);
+        };
+      });
+      toast("Ask created a task. Completion still requires verification.");
+    };
+
+    document.getElementById("approve").onclick = () => {
+      document.getElementById("approval-card").innerHTML =
+        `<div class="row"><strong>Index Atlas Architecture.md</strong><span class="pill pass">approved</span></div>
+         <p class="muted">Runtime may now execute knowledge.ingest_text. Hash will be checked again at ingest time.</p>`;
+      tasks["t-arch"].status = "running";
+      tasks["t-arch"].filter = "running";
+      tasks["t-arch"].steps[0][2] = "running";
+      tasks["t-arch"].steps[0][3] = "approved · ready";
+      toast("Approval recorded as durable authority, not a chat decision.");
+    };
+    document.getElementById("deny").onclick = () => {
+      document.getElementById("approval-card").innerHTML =
+        `<div class="row"><strong>Index Atlas Architecture.md</strong><span class="pill failed">denied</span></div>
+         <p class="muted">Task remains blocked. No ingest side effect was taken.</p>`;
+      toast("Denied. No knowledge document created.");
+    };
+
+    renderTasks("all");
+    renderDocs();
+  </script>
+</body>
+</html>

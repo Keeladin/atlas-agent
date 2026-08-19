@@ -8,6 +8,16 @@ class SchemaValidationError(ValueError):
     pass
 
 
+def project_object_to_schema(value: Any, schema: dict[str, Any] | None) -> Any:
+    """Drop properties the contract forbids, keep the durable artifact unchanged."""
+    if not schema or not isinstance(value, dict):
+        return value
+    properties = schema.get("properties")
+    if schema.get("additionalProperties") is False and isinstance(properties, dict):
+        return {key: value[key] for key in properties if key in value}
+    return value
+
+
 def validate_json(value: Any, schema: dict[str, Any], *, path: str = "$") -> None:
     """Validate the small JSON-Schema subset Atlas runtime contracts need.
 

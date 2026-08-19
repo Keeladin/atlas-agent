@@ -7,7 +7,7 @@ from typing import Any, Iterable
 from atlas_core.authority import validate_authority
 
 from .models import *
-from .store_common import (InvalidTransitionError, UnknownRecordError, _new_id, _json_dump, _json_load, _payload_hash, _TASK_TRANSITIONS, _STEP_TRANSITIONS)
+from .store_common import (InvalidTransitionError, TaskStoreError, UnknownRecordError, _new_id, _json_dump, _json_load, _payload_hash, _TASK_TRANSITIONS, _STEP_TRANSITIONS)
 
 class TaskStoreCoreMixin:
     def create_task(
@@ -72,6 +72,41 @@ class TaskStoreCoreMixin:
         with self._db() as db:
             db.execute("UPDATE tasks SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (status, task_id))
         return self.get_task(task_id)
+
+    _TASK_OWNED_TABLES = (
+        "task_criteria",
+        "task_steps",
+        "task_artifacts",
+        "task_executions",
+        "task_context_manifests",
+        "task_checkpoints",
+        "task_claims",
+        "task_approvals",
+        "task_events",
+        "tasks",
+    )
+
+    def delete_task(self, task_id: str) -> None:
+        self.get_task(task_id)
+        with self._db() as db:
+            cursor = db.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+            if cursor.rowcount != 1:
+                raise UnknownRecordError(f"Unknown task: {task_id}")
+            leftover = []
+            for table in self._TASK_OWNED_TABLES:
+                if table == "tasks":
+                    row = db.execute("SELECT COUNT(*) AS n FROM tasks WHERE id=?", (task_id,)).fetchone()
+                else:
+                    row = db.execute(
+                        f"SELECT COUNT(*) AS n FROM {table} WHERE task_id=?",
+                        (task_id,),
+                    ).fetchone()
+                if int(row["n"]):
+                    leftover.append(table)
+            if leftover:
+                raise TaskStoreError(
+                    f"Task {task_id} still has rows after delete: {leftover}"
+                )
 
     def list_criteria(self, task_id: str) -> tuple[CriterionRecord, ...]:
         self.get_task(task_id)
@@ -156,6 +191,21 @@ class TaskStoreCoreMixin:
         with self._db() as db:
             rows = db.execute("SELECT * FROM task_steps WHERE task_id=? ORDER BY ordinal,id", (task_id,)).fetchall()
         return tuple(self._step_from_row(row) for row in rows)
+
+    def set_step_input_artifact_ids(self, step_id: str, input_artifact_ids: Iterable[str]) -> StepRecord:
+        current = self.get_step(step_id)
+        if current.status not in {"pending", "rework"}:
+            raise InvalidTransitionError("Cannot attach input artifacts after a step has started.")
+        if current.input_artifact_ids:
+            raise InvalidTransitionError("Step already has input artifacts.")
+        input_ids = tuple(dict.fromkeys(input_artifact_ids))
+        self._validate_artifacts_for_task(current.task_id, input_ids)
+        with self._db() as db:
+            db.execute(
+                "UPDATE task_steps SET input_artifact_ids_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (_json_dump(input_ids), step_id),
+            )
+        return self.get_step(step_id)
 
     def set_step_status(self, step_id: str, status: str, *, force: bool = False) -> StepRecord:
         if status not in STEP_STATUSES:

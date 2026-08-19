@@ -1,14 +1,22 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from atlas_core.authority import authority_allows
 from atlas_core.capabilities import CapabilitySpec
 from atlas_core.context import ContextBuilder
-from atlas_core.providers import ModelRequest, ModelRouter
+from atlas_core.providers import ModelRequest, ModelRouter, ModelRoutingError
 from atlas_core.tasks import TaskRecord, TaskStore
+
+_FENCED_JSON_RE = re.compile(r"```(?:json|JSON)?\s*\r?\n?(.*?)```", re.DOTALL)
+_PLANNER_JSON_ERRORS = {
+    "Planner did not return valid JSON.",
+    "Planner JSON must contain a steps array.",
+    "Each plan step must be an object.",
+}
 
 
 @dataclass(frozen=True)
@@ -19,6 +27,7 @@ class PlannedStep:
     dependencies: tuple[str, ...]
     satisfies_criteria: tuple[int, ...] = ()
     capability_version: str | None = None
+    input: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -29,6 +38,34 @@ class TaskPlan:
 
 class PlanError(RuntimeError):
     pass
+
+
+def _is_planner_json_error(exc: BaseException) -> bool:
+    return isinstance(exc, PlanError) and str(exc) in _PLANNER_JSON_ERRORS
+
+
+def _extract_json_value(text: str) -> Any:
+    raw = (text or "").strip().lstrip("\ufeff")
+    if not raw:
+        raise PlanError("Planner did not return valid JSON.")
+    candidates = [raw]
+    for block in _FENCED_JSON_RE.findall(raw):
+        inner = block.strip()
+        if inner:
+            candidates.append(inner)
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    start = raw.find("{")
+    if start >= 0:
+        try:
+            value, _end = json.JSONDecoder().raw_decode(raw, start)
+            return value
+        except json.JSONDecodeError:
+            pass
+    raise PlanError("Planner did not return valid JSON.")
 
 
 class TaskPlanner:
@@ -54,6 +91,11 @@ class TaskPlanner:
         self.context_builder = ContextBuilder(store)
         self._capability_versions: dict[str, str] = {
             str(item.get("id") or "").strip(): str(item.get("version") or "1.0.0").strip()
+            for item in capability_manifest
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        }
+        self._capability_index: dict[str, dict[str, Any]] = {
+            str(item.get("id") or "").strip(): item
             for item in capability_manifest
             if isinstance(item, dict) and str(item.get("id") or "").strip()
         }
@@ -97,12 +139,18 @@ class TaskPlanner:
                         "capability_version",
                         "dependencies",
                         "satisfies_criteria",
+                        "input",
                     ],
                     "rules": [
                         "dependencies contain step keys, never prose",
                         "do not execute work",
                         "use only supplied capability ids/versions",
                         "satisfies_criteria contains only 1-based integer criterion ordinals, never criterion ids",
+                        "when a capability input_schema lists required properties, include input with those properties",
+                        "if the objective requests a user-facing artifact such as a story, letter, document, or exact phrase, include a step that produces that artifact; do not substitute analysis of the request",
+                        "knowledge.search and knowledge.answer only query Atlas's ingested local corpus; they are not web search or general trivia",
+                        "prefer reasoning.general for general identification or factual questions unless the user asked to search Atlas knowledge",
+                        "knowledge.answer requires a dependency that produces knowledge_search_results",
                     ],
                 },
             },
@@ -140,87 +188,53 @@ class TaskPlanner:
             input_artifact_ids=(planning_input.id,),
         )
         try:
-            pack = self.context_builder.build(
-                task.id,
-                planning_step.id,
+            _pack, manifest_record, route, response = self._planning_generate(
+                task=task,
+                planning_step=planning_step,
+                execution=execution,
                 artifact_ids=(planning_input.id,),
-                required_artifact_ids=(planning_input.id,),
-                execution_id=execution.id,
-                capability=self.planning_capability,
-                max_chars=self.planning_capability.budget.max_context_chars,
+                required_artifact_id=planning_input.id,
             )
-            manifest_record = self.store.write_context_manifest(
-                task.id,
-                step_id=planning_step.id,
-                execution_id=execution.id,
-                capability=self.planning_capability.id,
-                capability_version=self.planning_capability.version,
-                assembler_version=pack.manifest.assembler_version,
-                budget_tokens=pack.manifest.budget_tokens,
-                total_tokens=pack.manifest.total_tokens,
-                manifest=pack.manifest.as_dict(),
-                manifest_id=pack.manifest.manifest_id,
-            )
-            self.store.append_event(
-                task.id,
-                step_id=planning_step.id,
-                execution_id=execution.id,
-                name="context.manifest.written",
-                payload={
-                    "manifest_id": manifest_record.id,
-                    "sha256": manifest_record.sha256,
-                    "capability": self.planning_capability.id,
-                    "capability_version": self.planning_capability.version,
-                    "tokens": pack.manifest.total_tokens,
-                    "budget": pack.manifest.budget_tokens,
-                },
-            )
-            route = self.model_router.select(
-                self.planning_capability,
-                context_chars=pack.chars,
-            )
-            projected_cost = route.provider.spec.estimate_cost_usd(
-                input_tokens=pack.tokens,
-                output_tokens=max(
-                    1,
-                    ((self.planning_capability.budget.max_output_chars or 8_000) + 3) // 4,
-                ),
-            )
-            if (
-                self.planning_capability.budget.max_cost_usd is not None
-                and projected_cost is not None
-                and projected_cost > self.planning_capability.budget.max_cost_usd
-            ):
-                raise PlanError(
-                    "Projected planning cost exceeds capability budget: "
-                    f"{projected_cost:.6f}>"
-                    f"{self.planning_capability.budget.max_cost_usd:.6f}"
+            repaired = False
+            try:
+                parsed = self.parse_plan(response.text)
+            except PlanError as exc:
+                if not _is_planner_json_error(exc):
+                    raise
+                rejected = self.store.put_artifact(
+                    task.id,
+                    step_id=planning_step.id,
+                    kind="planner_json_rejected",
+                    payload={"raw": response.text, "error": str(exc)},
+                    metadata={"repair": "pending"},
                 )
-            self.store.set_execution_provider(execution.id, route.provider.spec.key)
-            response = route.provider.generate(
-                ModelRequest(
-                    self.planning_capability.id,
-                    json.dumps(pack.payload["system"], ensure_ascii=False, sort_keys=True),
-                    pack.as_text(),
-                    max_output_chars=self.planning_capability.budget.max_output_chars,
-                    metadata={
-                        "task_id": task.id,
-                        "step_id": planning_step.id,
-                        "context_manifest_id": manifest_record.id,
-                        "capability_version": self.planning_capability.version,
-                        "response_format": {"type": "json_object"},
-                    },
+                self.store.finish_execution(
+                    execution.id,
+                    status="rework",
+                    output_artifact_ids=(rejected.id,),
+                    error=str(exc),
+                    metrics=dict(response.metrics),
                 )
-            )
-            if (
-                self.planning_capability.budget.max_output_chars is not None
-                and len(response.text) > self.planning_capability.budget.max_output_chars
-            ):
-                raise PlanError(
-                    "Planner output exceeds explicit capability output budget."
+                execution = self.store.begin_execution(
+                    task.id,
+                    step_id=planning_step.id,
+                    capability=self.planning_capability.id,
+                    capability_version=self.planning_capability.version,
+                    input_artifact_ids=(planning_input.id, rejected.id),
                 )
+                _pack, manifest_record, route, response = self._planning_generate(
+                    task=task,
+                    planning_step=planning_step,
+                    execution=execution,
+                    artifact_ids=(planning_input.id, rejected.id),
+                    required_artifact_id=planning_input.id,
+                    failure_reason=str(exc),
+                    previous_manifest_id=manifest_record.id,
+                )
+                parsed = self.parse_plan(response.text)
+                repaired = True
             plan = self._pin_and_validate_plan(
-                self.parse_plan(response.text),
+                parsed,
                 criterion_count=len(success_criteria),
             )
             artifact = self.store.put_artifact(
@@ -247,6 +261,7 @@ class TaskPlanner:
                     "model": response.model,
                     "route": route.reason,
                     "context_manifest_id": manifest_record.id,
+                    "repaired": repaired,
                 },
             )
             verification = self.store.put_artifact(
@@ -307,12 +322,22 @@ class TaskPlanner:
             progressed = False
             for item in list(pending):
                 if all(dep in ids for dep in item.dependencies):
+                    input_ids: tuple[str, ...] = ()
+                    if item.input:
+                        request = self.store.put_artifact(
+                            task.id,
+                            kind=f"{item.capability.replace('.', '_')}_request",
+                            payload=item.input,
+                            metadata={"purpose": "planned invocation input", "plan_key": item.key},
+                        )
+                        input_ids = (request.id,)
                     record = self.store.add_step(
                         task.id,
                         description=item.description,
                         capability=item.capability,
                         capability_version=item.capability_version,
                         dependencies=[ids[dep] for dep in item.dependencies],
+                        input_artifact_ids=input_ids,
                         metadata={
                             "satisfies_criteria": list(item.satisfies_criteria),
                             "plan_key": item.key,
@@ -368,6 +393,7 @@ class TaskPlanner:
                     step.dependencies,
                     step.satisfies_criteria,
                     selected_version,
+                    step.input,
                 )
             )
 
@@ -394,14 +420,147 @@ class TaskPlanner:
             for key in ready:
                 resolved.add(key)
                 remaining.pop(key)
+        self._assert_plan_feasible(tuple(pinned))
         return TaskPlan(tuple(pinned), plan.notes)
+
+    def _assert_plan_feasible(self, steps: tuple[PlannedStep, ...]) -> None:
+        by_key = {step.key: step for step in steps}
+        for step in steps:
+            contract = self._capability_index.get(step.capability) or {}
+            required = tuple(
+                str(kind)
+                for kind in (contract.get("requires_artifact_kinds") or ())
+                if str(kind).strip()
+            )
+            if required:
+                produced: set[str] = set()
+                for dep in step.dependencies:
+                    dep_contract = self._capability_index.get(by_key[dep].capability) or {}
+                    kind = str(dep_contract.get("output_kind") or "").strip()
+                    if kind:
+                        produced.add(kind)
+                missing = [kind for kind in required if kind not in produced]
+                if missing:
+                    raise PlanError(
+                        f"Plan step {step.key!r} requires artifact kinds {missing} "
+                        "from a dependency, but none of its dependencies produce them."
+                    )
+            if str(contract.get("executor_kind") or "") != "model":
+                continue
+            probe = CapabilitySpec(
+                id=step.capability,
+                description=str(contract.get("description") or step.capability),
+                executor_kind="model",
+                version=step.capability_version or "1.0.0",
+                required_authority=str(contract.get("required_authority") or "read"),
+                privacy=str(contract.get("privacy") or "cloud_allowed"),
+                verifier_id=str(contract.get("verifier_id") or "core.nonempty"),
+            )
+            try:
+                self.model_router.select(probe, context_chars=256)
+            except ModelRoutingError as exc:
+                raise PlanError(
+                    f"Plan step {step.key!r} is not executable with current providers: {exc}"
+                ) from exc
+
+    def _planning_generate(
+        self,
+        *,
+        task: TaskRecord,
+        planning_step,
+        execution,
+        artifact_ids: tuple[str, ...],
+        required_artifact_id: str,
+        failure_reason: str | None = None,
+        previous_manifest_id: str | None = None,
+    ) -> tuple[Any, Any, Any, Any]:
+        pack = self.context_builder.build(
+            task.id,
+            planning_step.id,
+            artifact_ids=artifact_ids,
+            required_artifact_ids=(required_artifact_id,),
+            execution_id=execution.id,
+            capability=self.planning_capability,
+            max_chars=self.planning_capability.budget.max_context_chars,
+            previous_manifest_id=previous_manifest_id,
+            failure_reason=failure_reason,
+        )
+        manifest_record = self.store.write_context_manifest(
+            task.id,
+            step_id=planning_step.id,
+            execution_id=execution.id,
+            capability=self.planning_capability.id,
+            capability_version=self.planning_capability.version,
+            assembler_version=pack.manifest.assembler_version,
+            budget_tokens=pack.manifest.budget_tokens,
+            total_tokens=pack.manifest.total_tokens,
+            manifest=pack.manifest.as_dict(),
+            manifest_id=pack.manifest.manifest_id,
+        )
+        self.store.append_event(
+            task.id,
+            step_id=planning_step.id,
+            execution_id=execution.id,
+            name="context.manifest.written",
+            payload={
+                "manifest_id": manifest_record.id,
+                "sha256": manifest_record.sha256,
+                "capability": self.planning_capability.id,
+                "capability_version": self.planning_capability.version,
+                "tokens": pack.manifest.total_tokens,
+                "budget": pack.manifest.budget_tokens,
+            },
+        )
+        route = self.model_router.select(
+            self.planning_capability,
+            context_chars=pack.chars,
+        )
+        projected_cost = route.provider.spec.estimate_cost_usd(
+            input_tokens=pack.tokens,
+            output_tokens=max(
+                1,
+                ((self.planning_capability.budget.max_output_chars or 8_000) + 3) // 4,
+            ),
+        )
+        if (
+            self.planning_capability.budget.max_cost_usd is not None
+            and projected_cost is not None
+            and projected_cost > self.planning_capability.budget.max_cost_usd
+        ):
+            raise PlanError(
+                "Projected planning cost exceeds capability budget: "
+                f"{projected_cost:.6f}>"
+                f"{self.planning_capability.budget.max_cost_usd:.6f}"
+            )
+        self.store.set_execution_provider(execution.id, route.provider.spec.key)
+        response = route.provider.generate(
+            ModelRequest(
+                self.planning_capability.id,
+                json.dumps(pack.payload["system"], ensure_ascii=False, sort_keys=True),
+                pack.as_text(),
+                max_output_chars=self.planning_capability.budget.max_output_chars,
+                metadata={
+                    "task_id": task.id,
+                    "step_id": planning_step.id,
+                    "context_manifest_id": manifest_record.id,
+                    "capability_version": self.planning_capability.version,
+                    "response_format": {"type": "json_object"},
+                    "plan_repair": bool(failure_reason),
+                },
+            )
+        )
+        if (
+            self.planning_capability.budget.max_output_chars is not None
+            and len(response.text) > self.planning_capability.budget.max_output_chars
+        ):
+            raise PlanError(
+                "Planner output exceeds explicit capability output budget."
+            )
+        return pack, manifest_record, route, response
 
     @staticmethod
     def parse_plan(text: str) -> TaskPlan:
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise PlanError("Planner did not return valid JSON.") from exc
+        data = _extract_json_value(text)
         if not isinstance(data, dict) or not isinstance(data.get("steps"), list):
             raise PlanError("Planner JSON must contain a steps array.")
         steps: list[PlannedStep] = []
@@ -424,6 +583,9 @@ class TaskPlanner:
                 str(x) for x in item.get("dependencies", []) if str(x).strip()
             )
             satisfies = tuple(int(x) for x in item.get("satisfies_criteria", []))
+            raw_input = item.get("input")
+            if raw_input is not None and not isinstance(raw_input, dict):
+                raise PlanError(f"Plan step {key!r} input must be an object.")
             steps.append(
                 PlannedStep(
                     key,
@@ -432,6 +594,7 @@ class TaskPlanner:
                     dependencies,
                     satisfies,
                     capability_version,
+                    raw_input,
                 )
             )
         notes = tuple(str(x) for x in data.get("notes", []) if str(x).strip())

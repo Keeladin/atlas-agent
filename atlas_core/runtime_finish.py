@@ -11,6 +11,7 @@ from atlas_core.events import RuntimeEvent
 from atlas_core.providers import ModelRequest, ModelRoutingError
 from atlas_core.tasks import InvalidTransitionError, StepRecord
 from atlas_core.schema_validation import SchemaValidationError, validate_json
+from atlas_core.verification import VerificationResult
 from .runtime_types import RuntimeResult, RecoveryResult
 
 class RuntimeFinishMixin:
@@ -124,10 +125,13 @@ class RuntimeFinishMixin:
             receipt_artifact_id = receipt_artifact.id
 
         verifier_artifact_id: str | None = None
+        verification: VerificationResult | None = None
         final_status = outcome.status
+        verification_context = dict(context)
+        verification_context["execution_receipt"] = outcome.receipt
+        details: dict[str, Any] = {}
+        gate: VerificationResult | None = None
         if outcome.status == "pass" and spec.verification_required:
-            verification_context = dict(context)
-            verification_context["execution_receipt"] = outcome.receipt
             try:
                 verification = self.verifiers.verify(
                     spec.verifier_id or "",
@@ -136,20 +140,51 @@ class RuntimeFinishMixin:
                     verification_context,
                 )
             except Exception as exc:
-                verification = None
-                final_status = "fail"
-                verifier_payload = {
-                    "status": "fail",
-                    "summary": f"verifier failed: {exc}",
-                    "details": {},
-                }
-            else:
+                verification = VerificationResult("fail", f"verifier failed: {exc}")
+            details["capability_verifier"] = {
+                "status": verification.status,
+                "summary": verification.summary,
+                **verification.details,
+            }
+            if verification.status != "pass":
                 final_status = verification.status
-                verifier_payload = {
-                    "status": verification.status,
-                    "summary": verification.summary,
-                    "details": verification.details,
-                }
+        if final_status == "pass":
+            task = self.store.get_task(step.task_id)
+            gate = self.outcome_gate.evaluate(
+                spec=spec,
+                output=outcome.output,
+                context=verification_context,
+                step=step,
+                task=task,
+            )
+            details["outcome_gate"] = {
+                "status": gate.status,
+                "summary": gate.summary,
+                **gate.details,
+            }
+            if gate.status != "pass":
+                verification = gate
+                final_status = gate.status
+        persist_verification = verification is not None and (
+            spec.verification_required or verification.status != "pass"
+        )
+        gate_details = details.get("outcome_gate") or {}
+        if gate is not None and (
+            gate_details.get("layer") == "semantic" or "semantic" in gate_details
+        ):
+            persist_verification = True
+            if verification is None:
+                verification = gate
+        if persist_verification:
+            verifier_payload = {
+                "status": verification.status if verification is not None else final_status,
+                "summary": (
+                    verification.summary
+                    if verification is not None
+                    else "verification completed"
+                ),
+                "details": details or (verification.details if verification is not None else {}),
+            }
             verifier = self.store.put_artifact(
                 step.task_id,
                 step_id=step.id,
@@ -158,6 +193,7 @@ class RuntimeFinishMixin:
                 metadata={
                     "verifier_id": spec.verifier_id,
                     "execution_id": execution_id,
+                    "outcome_gate": True,
                 },
             )
             verifier_artifact_id = verifier.id
@@ -169,6 +205,9 @@ class RuntimeFinishMixin:
                 payload=verifier_payload,
             )
 
+        execution_error = outcome.error
+        if verification is not None and verification.status != "pass":
+            execution_error = execution_error or verification.summary
         execution = self.store.finish_execution(
             execution_id,
             status=final_status,
@@ -176,7 +215,7 @@ class RuntimeFinishMixin:
             verifier_artifact_id=verifier_artifact_id,
             receipt=outcome.receipt,
             metrics=outcome.metrics,
-            error=outcome.error,
+            error=execution_error,
         )
 
         if final_status in spec.retry_policy.retry_on:
@@ -315,6 +354,19 @@ class RuntimeFinishMixin:
                 self.store.set_task_status(task_id, "completed")
                 self.store.create_checkpoint(task_id, reason="task completed")
                 self._emit(task_id, "task.completed")
+            return
+        if decision.status == "failed" and task.status not in {
+            "failed",
+            "cancelled",
+            "completed",
+        }:
+            self.store.set_task_status(task_id, "failed")
+            self.store.create_checkpoint(task_id, reason="completion rejected")
+            self._emit(
+                task_id,
+                "task.failed",
+                payload={"reason": "; ".join(decision.reasons) or "completion rejected"},
+            )
             return
         if not self.store.ready_steps(task_id) and task.status == "active":
             self.store.set_task_status(task_id, "waiting")

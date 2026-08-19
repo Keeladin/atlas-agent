@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from atlas_core.capabilities import (
     CapabilityOutcome,
@@ -15,8 +16,16 @@ from atlas_core.evals import EvalCase, EvalHarness, record_eval_report
 from atlas_core.events import EventBus, RuntimeEvent
 from atlas_core.planner import PlanError, TaskPlanner
 from atlas_core.presentation import TaskPresenter
-from atlas_core.providers import ModelResponse, ModelRouter, ProviderRegistry, ProviderScoreStore, ProviderSpec
+from atlas_core.providers import (
+    ModelResponse,
+    ModelRouter,
+    ProviderHTTPError,
+    ProviderRegistry,
+    ProviderScoreStore,
+    ProviderSpec,
+)
 from atlas_core.runtime import RuntimeBudget, TaskRuntime
+from atlas_core.runtime_execution import _exclude_provider_keys, _provider_failure_is_permanent
 from atlas_core.tasks import InvalidTransitionError, TaskStore
 from atlas_core.tools import ToolGateway, ToolResult, ToolSpec
 from atlas_core.verification import VerifierRegistry
@@ -175,6 +184,200 @@ class RuntimeHardeningTests(unittest.TestCase):
         task = self.store.list_tasks()[0]; self.assertEqual(task.status, "failed")
         execution = self.store.list_executions(task.id)[0]; self.assertEqual(execution.status, "fail")
 
+    def _planner(self, text, *, scores=None, manifest=None):
+        class Provider:
+            def __init__(self):
+                self.spec = ProviderSpec("planner", "planner", "fake", scores or {"planning.general": 1.0})
+                self.text = text
+            def generate(self, request):
+                return ModelResponse(self.text, self.spec.key, self.spec.model, {}, {"input_tokens": 10, "output_tokens": 10})
+        providers = ProviderRegistry()
+        providers.register(Provider())
+        planning = CapabilitySpec(
+            id="planning.general",
+            description="plan",
+            executor_kind="model",
+            required_authority="interpret",
+            verifier_id="core.nonempty",
+        )
+        return TaskPlanner(
+            store=self.store,
+            model_router=ModelRouter(providers),
+            planning_capability=planning,
+            capability_manifest=manifest or [{"id": "demo.work"}],
+        )
+
+    def test_planner_rejects_knowledge_answer_without_search_results(self):
+        planner = self._planner(
+            '{"steps":[{"key":"a","description":"Answer","capability":"knowledge.answer","dependencies":[],"satisfies_criteria":[1]}],"notes":[]}',
+            manifest=[{
+                "id": "knowledge.answer",
+                "executor_kind": "deterministic",
+                "output_kind": "grounded_answer",
+                "requires_artifact_kinds": ["knowledge_search_results"],
+            }],
+        )
+        with self.assertRaises(PlanError) as raised:
+            planner.plan_and_create(objective="what is ohms law", success_criteria=("truthful answer",), authority_scope="interpret")
+        self.assertIn("knowledge_search_results", str(raised.exception))
+        self.assertEqual(self.store.list_tasks()[-1].status, "failed")
+
+    def test_planner_accepts_search_then_answer(self):
+        planner = self._planner(
+            '{"steps":[{"key":"s","description":"Search","capability":"knowledge.search","dependencies":[],"satisfies_criteria":[]},{"key":"a","description":"Answer","capability":"knowledge.answer","dependencies":["s"],"satisfies_criteria":[1]}],"notes":[]}',
+            manifest=[
+                {"id": "knowledge.search", "executor_kind": "deterministic", "output_kind": "knowledge_search_results"},
+                {"id": "knowledge.answer", "executor_kind": "deterministic", "output_kind": "grounded_answer", "requires_artifact_kinds": ["knowledge_search_results"]},
+            ],
+        )
+        task, plan = planner.plan_and_create(objective="Search Atlas knowledge for: ContextBuilder", success_criteria=("grounded",), authority_scope="interpret")
+        self.assertEqual(task.status, "active")
+        self.assertEqual([step.capability for step in plan.steps], ["knowledge.search", "knowledge.answer"])
+
+    def test_planner_rejects_unroutable_model_capability(self):
+        planner = self._planner(
+            '{"steps":[{"key":"a","description":"Analyse","capability":"reasoning.deep_analysis","dependencies":[],"satisfies_criteria":[1]}],"notes":[]}',
+            scores={"planning.general": 1.0},
+            manifest=[{
+                "id": "reasoning.deep_analysis",
+                "executor_kind": "model",
+                "output_kind": "capability_result",
+                "privacy": "cloud_allowed",
+                "verifier_id": "core.nonempty",
+            }],
+        )
+        with self.assertRaises(PlanError) as raised:
+            planner.plan_and_create(objective="Identify a character", success_criteria=("truthful answer",), authority_scope="interpret")
+        self.assertIn("not executable", str(raised.exception))
+
+    def test_planner_accepts_compose_when_a_provider_can_run_it(self):
+        planner = self._planner(
+            '{"steps":[{"key":"a","description":"Write the story","capability":"generation.compose","dependencies":[],"satisfies_criteria":[1]}],"notes":[]}',
+            scores={"planning.general": 1.0, "generation.compose": 0.9},
+            manifest=[{
+                "id": "generation.compose",
+                "executor_kind": "model",
+                "output_kind": "capability_result",
+                "verifier_id": "core.nonempty",
+            }],
+        )
+        task, plan = planner.plan_and_create(
+            objective="tel me a short story about a guy who found a magic pond with water of immortality",
+            success_criteria=("make it believable",),
+            authority_scope="interpret",
+        )
+        self.assertEqual(plan.steps[0].capability, "generation.compose")
+        self.assertEqual(task.status, "active")
+
+    def _sequential_planner(self, texts, *, scores=None, manifest=None):
+        class Provider:
+            def __init__(self):
+                self.spec = ProviderSpec("planner", "planner", "fake", scores or {"planning.general": 1.0})
+                self.texts = list(texts)
+                self.calls = 0
+                self.requests = []
+            def generate(self, request):
+                self.calls += 1
+                self.requests.append(request)
+                text = self.texts[min(self.calls - 1, len(self.texts) - 1)]
+                return ModelResponse(text, self.spec.key, self.spec.model, {}, {"input_tokens": 10, "output_tokens": 10})
+        provider = Provider()
+        providers = ProviderRegistry()
+        providers.register(provider)
+        planning = CapabilitySpec(
+            id="planning.general",
+            description="plan",
+            executor_kind="model",
+            required_authority="interpret",
+            context_profile="plan",
+            verifier_id="core.nonempty",
+        )
+        planner = TaskPlanner(
+            store=self.store,
+            model_router=ModelRouter(providers),
+            planning_capability=planning,
+            capability_manifest=manifest or [{"id": "demo.work"}],
+        )
+        return planner, provider
+
+    def test_parse_plan_extracts_json_from_markdown_and_prose(self):
+        body = '{"steps":[{"key":"a","description":"Work","capability":"demo.work","dependencies":[],"satisfies_criteria":[1]}],"notes":[]}'
+        fenced = TaskPlanner.parse_plan(f"```json\n{body}\n```")
+        self.assertEqual(fenced.steps[0].key, "a")
+        prose = TaskPlanner.parse_plan(f"Here is the plan:\n{body}\nHope this helps.")
+        self.assertEqual(prose.steps[0].capability, "demo.work")
+        with self.assertRaises(PlanError) as raised:
+            TaskPlanner.parse_plan("Sure, I will plan that for you.")
+        self.assertEqual(str(raised.exception), "Planner did not return valid JSON.")
+
+    def test_planner_accepts_fenced_json_without_a_repair_call(self):
+        body = '{"steps":[{"key":"a","description":"Work","capability":"demo.work","dependencies":[],"satisfies_criteria":[1]}],"notes":[]}'
+        planner, provider = self._sequential_planner((f"```json\n{body}\n```",))
+        task, plan = planner.plan_and_create(
+            objective="Do work",
+            success_criteria=("Done",),
+            authority_scope="interpret",
+        )
+        self.assertEqual(task.status, "active")
+        self.assertEqual(plan.steps[0].key, "a")
+        self.assertEqual(provider.calls, 1)
+        planning_execs = [
+            item for item in self.store.list_executions(task.id)
+            if item.capability == "planning.general"
+        ]
+        self.assertEqual(len(planning_execs), 1)
+        self.assertEqual(planning_execs[0].status, "pass")
+
+    def test_planner_repairs_invalid_json_once(self):
+        valid = '{"steps":[{"key":"a","description":"Work","capability":"demo.work","dependencies":[],"satisfies_criteria":[1]}],"notes":[]}'
+        planner, provider = self._sequential_planner(("Sure, here is a plan in prose.", valid))
+        task, plan = planner.plan_and_create(
+            objective="Do work",
+            success_criteria=("Done",),
+            authority_scope="interpret",
+        )
+        self.assertEqual(task.status, "active")
+        self.assertEqual(plan.steps[0].key, "a")
+        self.assertEqual(provider.calls, 2)
+        self.assertTrue(provider.requests[1].metadata.get("plan_repair"))
+        self.assertIn("Planner did not return valid JSON.", provider.requests[1].input)
+        executions = [
+            item for item in self.store.list_executions(task.id)
+            if item.capability == "planning.general"
+        ]
+        self.assertEqual([item.status for item in executions], ["rework", "pass"])
+        self.assertEqual(len(self.store.list_context_manifests(task.id, step_id=executions[0].step_id)), 2)
+        plans = [item for item in self.store.list_artifacts(task.id) if item.kind == "task_plan"]
+        self.assertEqual(plans[0].metadata.get("repaired"), True)
+
+    def test_planner_does_not_repair_a_second_time(self):
+        planner, provider = self._sequential_planner(("not json", "still not json", '{"steps":[],"notes":[]}'))
+        with self.assertRaises(PlanError) as raised:
+            planner.plan_and_create(
+                objective="Do work",
+                success_criteria=("Done",),
+                authority_scope="interpret",
+            )
+        self.assertEqual(str(raised.exception), "Planner did not return valid JSON.")
+        self.assertEqual(provider.calls, 2)
+        self.assertEqual(self.store.list_tasks()[-1].status, "failed")
+
+    def test_planner_does_not_repair_invalid_plan_content(self):
+        planner, provider = self._sequential_planner(
+            (
+                '{"steps":[{"key":"a","description":"work","capability":"demo.work","dependencies":[],"satisfies_criteria":[]}],"notes":[]}',
+                '{"steps":[{"key":"a","description":"work","capability":"demo.work","dependencies":[],"satisfies_criteria":[1]}],"notes":[]}',
+            )
+        )
+        with self.assertRaises(PlanError) as raised:
+            planner.plan_and_create(
+                objective="Do work",
+                success_criteria=("must be covered",),
+                authority_scope="interpret",
+            )
+        self.assertIn("success criteria", str(raised.exception))
+        self.assertEqual(provider.calls, 1)
+
     def test_cost_budget_blocks_model_call_before_spend(self):
         class CostlyProvider:
             def __init__(self):
@@ -193,6 +396,289 @@ class RuntimeHardeningTests(unittest.TestCase):
         TaskRuntime(store=self.store, capabilities=capabilities).run_until_blocked(task.id)
         presentation = TaskPresenter(self.store).build(task.id)
         self.assertEqual(presentation.status, "completed"); self.assertTrue(presentation.outputs); self.assertIn("answer", presentation.outputs[0]["preview"]); self.assertIn("accepted", presentation.render_markdown())
+
+    def test_repetitive_model_text_is_not_usable_output(self):
+        registry = VerifierRegistry()
+        looping = "\n".join(['*   *Could it be **The Adventures of Tintin**?*'] * 40)
+        result = registry.verify(
+            "core.nonempty",
+            CapabilitySpec(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty"),
+            looping,
+            {},
+        )
+        self.assertEqual(result.status, "rework")
+        self.assertIn("looping", result.summary)
+        ok = registry.verify(
+            "core.nonempty",
+            CapabilitySpec(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty"),
+            "Plastic Man",
+            {},
+        )
+        self.assertEqual(ok.status, "pass")
+
+    def test_looping_reasoner_cannot_complete_a_truthful_answer(self):
+        class LoopingProvider:
+            def __init__(self):
+                self.spec = ProviderSpec("loop", "loop", "fake", {"reasoning.general": 1.0})
+                self.calls = 0
+            def generate(self, request):
+                self.calls += 1
+                text = "\n".join(["*   *Could it be **The Adventures of Tintin**?*"] * 40)
+                return ModelResponse(text, self.spec.key, self.spec.model, {}, {"output_tokens": 10})
+        provider = LoopingProvider()
+        providers = ProviderRegistry(); providers.register(provider)
+        capabilities = CapabilityRegistry()
+        capabilities.register(
+            CapabilitySpec(
+                id="reasoning.general",
+                description="reason",
+                executor_kind="model",
+                verifier_id="core.nonempty",
+                budget=ExecutionBudget(max_attempts=3),
+            )
+        )
+        task = self.store.create_task(
+            objective="Identify the fictional character",
+            success_criteria=("produce a truthful answer",),
+            authority_scope="interpret",
+        )
+        self.store.add_step(
+            task.id,
+            description="Identify the character",
+            capability="reasoning.general",
+            metadata={"accept_all_criteria": True},
+        )
+        result = TaskRuntime(
+            store=self.store,
+            capabilities=capabilities,
+            model_router=ModelRouter(providers),
+        ).run_until_blocked(task.id)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(self.store.list_criteria(task.id)[0].status, "pending")
+        executions = self.store.list_executions(task.id)
+        self.assertEqual(provider.calls, 3)
+        self.assertTrue(all(item.status == "rework" for item in executions))
+        self.assertTrue(all(item.provider == "loop" for item in executions))
+        self.assertTrue(any("looping" in (item.error or "") for item in executions))
+        presentation = TaskPresenter(self.store).build(task.id)
+        self.assertIn("looping", presentation.failure_reason or "")
+        self.assertNotIn("## Grounded answer", presentation.render_markdown())
+
+    def test_timeout_on_sole_provider_retries_the_same_provider(self):
+        class TimeoutThenOk:
+            def __init__(self):
+                self.spec = ProviderSpec("xai:expert", "grok", "fake", {"reasoning.general": 1.0})
+                self.calls = 0
+            def generate(self, request):
+                self.calls += 1
+                if self.calls == 1:
+                    raise ProviderHTTPError("Provider connection failed: timed out")
+                return ModelResponse("Plastic Man", self.spec.key, self.spec.model, {}, {"output_tokens": 8})
+        provider = TimeoutThenOk()
+        providers = ProviderRegistry(); providers.register(provider)
+        capabilities = CapabilityRegistry()
+        capabilities.register(
+            CapabilitySpec(
+                id="reasoning.general",
+                description="reason",
+                executor_kind="model",
+                verifier_id="core.nonempty",
+                budget=ExecutionBudget(max_attempts=3),
+            )
+        )
+        task = self.store.create_task(
+            objective="Identify the fictional character",
+            success_criteria=("produce a truthful answer",),
+            authority_scope="interpret",
+        )
+        self.store.add_step(
+            task.id,
+            description="Identify the character",
+            capability="reasoning.general",
+            metadata={"accept_all_criteria": True},
+        )
+        result = TaskRuntime(
+            store=self.store,
+            capabilities=capabilities,
+            model_router=ModelRouter(providers),
+        ).run_until_blocked(task.id)
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(provider.calls, 2)
+        executions = self.store.list_executions(task.id)
+        self.assertEqual([item.provider for item in executions], ["xai:expert", "xai:expert"])
+        self.assertEqual(executions[0].status, "abstain")
+        self.assertIn("timed out", executions[0].error or "")
+        self.assertEqual(executions[1].status, "pass")
+        self.assertEqual(self.store.list_criteria(task.id)[0].status, "accepted")
+
+    def test_timeout_fails_over_when_another_provider_remains(self):
+        class TimeoutProvider:
+            def __init__(self):
+                self.spec = ProviderSpec("first", "m1", "fake", {"reasoning.general": 0.99}, priority=100)
+                self.calls = 0
+            def generate(self, request):
+                self.calls += 1
+                raise ProviderHTTPError("Provider connection failed: timed out")
+        class OkProvider:
+            def __init__(self):
+                self.spec = ProviderSpec("second", "m2", "fake", {"reasoning.general": 0.90}, priority=90)
+                self.calls = 0
+            def generate(self, request):
+                self.calls += 1
+                return ModelResponse("recovered", self.spec.key, self.spec.model, {}, {"output_tokens": 8})
+        first = TimeoutProvider(); second = OkProvider()
+        providers = ProviderRegistry(); providers.register(first); providers.register(second)
+        capabilities = CapabilityRegistry()
+        capabilities.register(
+            CapabilitySpec(
+                id="reasoning.general",
+                description="reason",
+                executor_kind="model",
+                verifier_id="core.nonempty",
+                budget=ExecutionBudget(max_attempts=3),
+            )
+        )
+        task = self.task(authority="interpret")
+        self.store.add_step(
+            task.id,
+            description="Reason",
+            capability="reasoning.general",
+            metadata={"accept_all_criteria": True},
+        )
+        result = TaskRuntime(
+            store=self.store,
+            capabilities=capabilities,
+            model_router=ModelRouter(providers),
+        ).run_until_blocked(task.id)
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(first.calls, 1)
+        self.assertEqual(second.calls, 1)
+        executions = self.store.list_executions(task.id)
+        self.assertEqual([item.provider for item in executions], ["first", "second"])
+        self.assertEqual(executions[0].status, "abstain")
+        self.assertEqual(executions[1].status, "pass")
+
+    def test_auth_http_error_excludes_the_sole_provider(self):
+        class AuthFail:
+            def __init__(self):
+                self.spec = ProviderSpec("xai:expert", "grok", "fake", {"reasoning.general": 1.0})
+                self.calls = 0
+            def generate(self, request):
+                self.calls += 1
+                raise ProviderHTTPError("HTTP 401 from provider: unauthorized")
+        provider = AuthFail()
+        providers = ProviderRegistry(); providers.register(provider)
+        capabilities = CapabilityRegistry()
+        capabilities.register(
+            CapabilitySpec(
+                id="reasoning.general",
+                description="reason",
+                executor_kind="model",
+                verifier_id="core.nonempty",
+                budget=ExecutionBudget(max_attempts=3),
+            )
+        )
+        task = self.task(authority="interpret")
+        self.store.add_step(
+            task.id,
+            description="Reason",
+            capability="reasoning.general",
+            metadata={"accept_all_criteria": True},
+        )
+        result = TaskRuntime(
+            store=self.store,
+            capabilities=capabilities,
+            model_router=ModelRouter(providers),
+        ).run_until_blocked(task.id)
+        self.assertNotEqual(result.status, "completed")
+        self.assertEqual(provider.calls, 1)
+        executions = self.store.list_executions(task.id)
+        self.assertEqual(executions[0].status, "abstain")
+        self.assertIn("HTTP 401", executions[0].error or "")
+        self.assertTrue(any(item.status == "blocked" for item in executions[1:]))
+
+    def test_auth_http_error_fails_over_to_next_provider(self):
+        class AuthFail:
+            def __init__(self):
+                self.spec = ProviderSpec("first", "m1", "fake", {"reasoning.general": 0.99}, priority=100)
+                self.calls = 0
+            def generate(self, request):
+                self.calls += 1
+                raise ProviderHTTPError("HTTP 403 from provider: forbidden")
+        class OkProvider:
+            def __init__(self):
+                self.spec = ProviderSpec("second", "m2", "fake", {"reasoning.general": 0.90}, priority=90)
+                self.calls = 0
+            def generate(self, request):
+                self.calls += 1
+                return ModelResponse("recovered", self.spec.key, self.spec.model, {}, {"output_tokens": 8})
+        first = AuthFail(); second = OkProvider()
+        providers = ProviderRegistry(); providers.register(first); providers.register(second)
+        capabilities = CapabilityRegistry()
+        capabilities.register(
+            CapabilitySpec(
+                id="reasoning.general",
+                description="reason",
+                executor_kind="model",
+                verifier_id="core.nonempty",
+                budget=ExecutionBudget(max_attempts=3),
+            )
+        )
+        task = self.task(authority="interpret")
+        self.store.add_step(
+            task.id,
+            description="Reason",
+            capability="reasoning.general",
+            metadata={"accept_all_criteria": True},
+        )
+        result = TaskRuntime(
+            store=self.store,
+            capabilities=capabilities,
+            model_router=ModelRouter(providers),
+        ).run_until_blocked(task.id)
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(first.calls, 1)
+        self.assertEqual(second.calls, 1)
+        executions = self.store.list_executions(task.id)
+        self.assertEqual([item.provider for item in executions], ["first", "second"])
+        self.assertEqual(executions[0].status, "abstain")
+        self.assertEqual(executions[1].status, "pass")
+
+    def test_exclude_provider_keys_keeps_sole_transient_and_exiles_auth(self):
+        timeout = SimpleNamespace(
+            provider="xai:expert",
+            status="abstain",
+            error="Provider connection failed: timed out",
+        )
+        auth = SimpleNamespace(
+            provider="xai:expert",
+            status="abstain",
+            error="HTTP 401 from provider: unauthorized",
+        )
+        rework = SimpleNamespace(
+            provider="loop",
+            status="rework",
+            error="output appears to be looping",
+        )
+        self.assertFalse(_provider_failure_is_permanent("abstain", timeout.error))
+        self.assertTrue(_provider_failure_is_permanent("abstain", auth.error))
+        self.assertFalse(_provider_failure_is_permanent("rework", rework.error))
+        self.assertEqual(
+            _exclude_provider_keys((timeout,), remaining_route_exists=lambda exclude: False),
+            (),
+        )
+        self.assertEqual(
+            _exclude_provider_keys((timeout,), remaining_route_exists=lambda exclude: True),
+            ("xai:expert",),
+        )
+        self.assertEqual(
+            _exclude_provider_keys((auth,), remaining_route_exists=lambda exclude: False),
+            ("xai:expert",),
+        )
+        self.assertEqual(
+            _exclude_provider_keys((rework,), remaining_route_exists=lambda exclude: True),
+            (),
+        )
 
     def test_successful_side_effect_receipt_is_durable_evidence(self):
         capabilities = CapabilityRegistry(); capabilities.register(CapabilitySpec(id="external.receipted", description="receipted action", executor_kind="tool", required_authority="communicate", side_effects=("external_change",), idempotent=False, verifier_id="core.receipt"), lambda request: CapabilityOutcome("pass", output=None, receipt={"ok": True, "external_id": "r1"}, claims=({"kind": "executed", "subject": "external.receipted", "value": "done"},)))

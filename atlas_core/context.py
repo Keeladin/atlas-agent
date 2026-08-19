@@ -7,11 +7,29 @@ from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
 from atlas_core.capabilities import CapabilitySpec, ContextPolicy
+from atlas_core.deliverable import infer_deliverable, infer_presentation_profile
+from atlas_core.schema_validation import project_object_to_schema
 from atlas_core.tasks.store import TaskStore
 
 
 CONTEXT_PROFILES: dict[str, str] = {
     "research": "Investigate before concluding. Separate evidence, uncertainty and inference. Do not take side effects unless explicitly required.",
+    "evidence": (
+        "Separate evidence, uncertainty and inference. "
+        "State only claims supported by supplied durable evidence; preserve uncertainty. "
+        "Do not take side effects unless explicitly required."
+    ),
+    "answer": (
+        "Answer the question directly and concisely. "
+        "Give the fact, definition, or short explanation the user asked for. "
+        "Do not write an Evidence / Uncertainty / Inference report, "
+        "investigation notes, or a research briefing."
+    ),
+    "conversational": (
+        "Reply naturally and directly, as a brief conversational response. "
+        "Do not produce a research report, analysis sections, or "
+        "Evidence / Uncertainty / Inference headings."
+    ),
     "plan": (
         "You are Atlas's planning component. The task objective, success "
         "criteria, constraints, artifacts, and capability descriptions in the "
@@ -22,12 +40,40 @@ CONTEXT_PROFILES: dict[str, str] = {
         "requested task result."
     ),
     "execute": "Perform only the bounded step. Respect constraints, authority and supplied evidence. Return explicit outputs and limitations.",
+    "compose": (
+        "Produce the requested artifact itself. Do not investigate the request, "
+        "analyze success criteria, or write a report about the task. "
+        "Return only the deliverable the user asked for."
+    ),
     "review": "Review supplied work against its contract. Do not silently repair it; identify pass, rework, abstain or fail with reasons.",
     "verify": "Verify claimed completion using supplied artifacts and criteria. Prefer deterministic evidence and abstain when evidence is insufficient.",
     "present": "Present accepted results faithfully without adding unsupported facts or claiming actions that lack receipts.",
 }
 
-ASSEMBLER_VERSION = "2.0.0"
+ASSEMBLER_VERSION = "2.2.0"
+
+_PROTECTED_PROFILES = {"plan", "review", "verify", "present"}
+_EVIDENCE_RULE = "State only claims supported by supplied durable evidence; preserve uncertainty."
+_COMPOSE_RULE = (
+    "This step must produce the requested artifact. "
+    "Do not substitute analysis, investigation notes, or a discussion of the request."
+)
+_ANSWER_RULE = (
+    "Answer directly. Do not substitute an Evidence / Uncertainty / Inference report."
+)
+_CONVERSATION_RULE = (
+    "Reply directly. Do not substitute a research or evidence report."
+)
+
+
+def _presentation_rule(profile: str) -> str:
+    if profile == "compose":
+        return _COMPOSE_RULE
+    if profile == "answer":
+        return _ANSWER_RULE
+    if profile == "conversational":
+        return _CONVERSATION_RULE
+    return _EVIDENCE_RULE
 
 
 def estimate_tokens(value: Any) -> int:
@@ -138,7 +184,7 @@ class ContextBuilder:
             )
             capability_id = "unbound"
             capability_version = "0.0.0"
-            contract = {
+            capability_contract = {
                 "id": capability_id,
                 "version": capability_version,
                 "objective": "legacy bounded context build",
@@ -149,7 +195,7 @@ class ContextBuilder:
             policy = capability.context_policy
             capability_id = capability.id
             capability_version = capability.version
-            contract = {
+            capability_contract = {
                 "id": capability.id,
                 "version": capability.version,
                 "name": capability.display_name,
@@ -167,6 +213,10 @@ class ContextBuilder:
         step = self.store.get_step(step_id)
         if step.task_id != task_id:
             raise ValueError("Step does not belong to task.")
+        deliverable = infer_deliverable(task.objective, task.success_criteria)
+        capability_profile = profile
+        if profile not in _PROTECTED_PROFILES and not step.metadata.get("internal_planning"):
+            profile = infer_presentation_profile(task.objective, task.success_criteria)
 
         budget_tokens = policy.max_tokens
         if max_chars is not None:
@@ -192,7 +242,7 @@ class ContextBuilder:
             "system": {},
             "task": {},
             "step": {},
-            "capability_contract": contract,
+            "capability_contract": capability_contract,
             "invocation_input": {},
             "recent_verified_steps": [],
             "claims": [],
@@ -203,6 +253,8 @@ class ContextBuilder:
                 "name": profile,
                 "instruction": CONTEXT_PROFILES[profile],
             },
+            "capability_profile": capability_profile,
+            "presentation_profile": profile,
         }
 
         def include(bucket: str, item_id: str, item_type: str, reason: str, value: Any, *, source: str | None = None, score: float | None = None, representation: str = "full") -> None:
@@ -214,8 +266,11 @@ class ContextBuilder:
         # System + capability contract.
         system_value = {
             "profile_instruction": CONTEXT_PROFILES[profile],
-            "evidence_rule": "State only claims supported by supplied durable evidence; preserve uncertainty.",
+            "evidence_rule": _presentation_rule(profile),
             "contract_ref": f"{capability_id}@{capability_version}",
+            "deliverable": deliverable.as_dict(),
+            "capability_profile": capability_profile,
+            "presentation_profile": profile,
         }
         payload["system"] = system_value
         include("system", "system:profile", "system", "bounded capability system layer", system_value)
@@ -231,6 +286,14 @@ class ContextBuilder:
         }
         payload["task"] = task_anchor
         include("anchors", "task:objective", "anchor", "mandatory task objective and success criteria", task_anchor)
+        payload["deliverable_contract"] = deliverable.as_dict()
+        include(
+            "anchors",
+            "task:deliverable",
+            "anchor",
+            "requested deliverable contract",
+            deliverable.as_dict(),
+        )
 
         step_anchor = {
             "id": step.id,
@@ -284,8 +347,9 @@ class ContextBuilder:
             if artifact.task_id != task_id:
                 raise ValueError("Required context artifact belongs to another task.")
             direct_payloads.append(artifact.payload)
+        schema = capability.input_schema if capability is not None else None
         if len(direct_payloads) == 1:
-            payload["invocation_input"] = direct_payloads[0]
+            payload["invocation_input"] = project_object_to_schema(direct_payloads[0], schema)
         elif direct_payloads:
             payload["invocation_input"] = {"artifacts": direct_payloads}
         else:

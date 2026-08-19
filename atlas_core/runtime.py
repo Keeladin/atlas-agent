@@ -4,7 +4,7 @@ from atlas_core.capabilities import CapabilityRegistry
 from atlas_core.events import EventBus
 from atlas_core.providers import ModelRouter
 from atlas_core.tasks import TaskStore
-from atlas_core.verification import CompletionVerifier, VerifierRegistry
+from atlas_core.verification import CompletionVerifier, OutcomeGate, SemanticOutcomeVerifier, VerifierRegistry
 from atlas_core.context import ContextBuilder
 from atlas_core.tools import ToolGateway
 from .runtime_types import RuntimeBudget, RuntimeResult, RecoveryResult
@@ -25,6 +25,7 @@ class TaskRuntime(RuntimeLifecycleMixin, RuntimeExecutionMixin, RuntimeFinishMix
         event_bus: EventBus | None = None,
         tool_gateway: ToolGateway | None = None,
         budget: RuntimeBudget | None = None,
+        outcome_gate: OutcomeGate | None = None,
     ) -> None:
         self.store = store
         self.capabilities = capabilities
@@ -35,3 +36,6 @@ class TaskRuntime(RuntimeLifecycleMixin, RuntimeExecutionMixin, RuntimeFinishMix
         self.budget = budget or RuntimeBudget()
         self.context_builder = ContextBuilder(store)
         self.completion = CompletionVerifier(store)
+        self.outcome_gate = outcome_gate or OutcomeGate(
+            semantic=SemanticOutcomeVerifier(model_router) if model_router is not None else None
+        )

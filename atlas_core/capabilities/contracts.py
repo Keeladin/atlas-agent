@@ -139,6 +139,7 @@ class CapabilitySpec:
     input_schema: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] = field(default_factory=dict)
     output_kind: str = "capability_result"
+    requires_artifact_kinds: tuple[str, ...] = ()
     allowed_tools: tuple[str, ...] = ()
     side_effects: tuple[str, ...] = ()
     context_profile: str = "execute"

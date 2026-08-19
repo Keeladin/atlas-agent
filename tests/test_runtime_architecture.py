@@ -10,7 +10,7 @@ from atlas_core.capabilities import CapabilityOutcome, CapabilityRegistry, Capab
 from atlas_core.context import ContextBuilder
 from atlas_core.evals import EvalCase, EvalHarness
 from atlas_core.providers import (
-    AnthropicMessagesProvider, GeminiGenerateContentProvider, ModelRequest, ModelResponse, ModelRouter, OpenAICompatibleChatProvider, OpenAIResponsesProvider, ProviderRegistry, ProviderSpec
+    AnthropicMessagesProvider, GeminiGenerateContentProvider, ModelRequest, ModelResponse, ModelRouter, ModelRoutingError, OpenAICompatibleChatProvider, OpenAIResponsesProvider, ProviderRegistry, ProviderSpec
 )
 from atlas_core.runtime import RuntimeBudget, TaskRuntime
 from atlas_core.planner import TaskPlanner
@@ -174,6 +174,20 @@ class AtlasRuntimeTests(unittest.TestCase):
         spec = CapabilitySpec(id="reasoning.deep", description="deep", executor_kind="model", verifier_id="core.nonempty", privacy="local_only")
         route = ModelRouter(registry).select(spec, context_chars=1000)
         self.assertEqual(route.provider.spec.key, "local")
+
+    def test_router_explains_when_context_exceeds_provider_window(self):
+        registry = ProviderRegistry()
+        local = FakeProvider(
+            ProviderSpec("local:resident", "atlas", "fake", {"reasoning.general": 0.5}, local=True, max_context_chars=30000)
+        )
+        registry.register(local)
+        spec = CapabilitySpec(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty")
+        with self.assertRaises(ModelRoutingError) as raised:
+            ModelRouter(registry).select(spec, context_chars=48000)
+        self.assertIn("reasoning.general", str(raised.exception))
+        self.assertIn("context 48000 > max_context_chars 30000", str(raised.exception))
+        route = ModelRouter(registry).select(spec, context_chars=12000)
+        self.assertEqual(route.provider.spec.key, "local:resident")
 
     def test_model_capability_routes_and_records_provider(self):
         providers = ProviderRegistry()

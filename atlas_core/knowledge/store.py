@@ -56,6 +56,44 @@ def _load(value: str | None) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+_SEARCH_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how",
+    "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "was",
+    "what", "when", "where", "which", "who", "why", "with",
+}
+
+MIN_SEARCH_OVERLAP_RATIO = 0.25
+MIN_SEARCH_OVERLAP_COUNT = 2
+MAX_SEARCH_RESULT_CHARS = 6_000
+
+
+def content_tokens(text: str) -> tuple[str, ...]:
+    tokens = re.findall(r"[\w-]+", (text or "").casefold(), flags=re.UNICODE)
+    return tuple(
+        token
+        for token in tokens
+        if token not in _SEARCH_STOPWORDS and len(token) > 2
+    )
+
+
+def token_overlap(query_tokens: tuple[str, ...] | set[str], text: str) -> tuple[int, float]:
+    query = {token for token in query_tokens if token}
+    if not query:
+        return 0, 0.0
+    overlap = query & set(content_tokens(text))
+    return len(overlap), len(overlap) / len(query)
+
+
+def hit_is_relevant(query_tokens: tuple[str, ...] | set[str], text: str) -> bool:
+    query = tuple(token for token in query_tokens if token)
+    if not query:
+        return False
+    count, ratio = token_overlap(query, text)
+    if len(query) <= 2:
+        return count >= 1
+    return count >= MIN_SEARCH_OVERLAP_COUNT and ratio >= MIN_SEARCH_OVERLAP_RATIO
+
+
 def normalize_knowledge_text(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n").strip()
 
@@ -264,6 +302,16 @@ class KnowledgeStore:
             raise KeyError(f"Unknown knowledge document: {document_id}")
         return self._document_from_row(row)
 
+    def list_documents(self, *, limit: int = 100) -> tuple[KnowledgeDocument, ...]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("Knowledge document limit must be between 1 and 1000.")
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT * FROM knowledge_documents ORDER BY created_at DESC, id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return tuple(self._document_from_row(row) for row in rows)
+
     def get_chunk(self, chunk_id: str) -> KnowledgeChunk:
         with self._db() as db:
             row = db.execute(
@@ -283,9 +331,10 @@ class KnowledgeStore:
         if limit < 1 or limit > 100:
             raise ValueError("Knowledge search limit must be between 1 and 100.")
 
-        tokens = re.findall(r"[\w-]+", query.casefold(), flags=re.UNICODE)
+        tokens = content_tokens(query)
         if not tokens:
             return ()
+        candidate_limit = min(100, max(limit * 5, limit))
 
         with self._db() as db:
             if self._has_fts():
@@ -297,25 +346,34 @@ class KnowledgeStore:
                     "JOIN knowledge_documents d ON d.id=c.document_id "
                     "WHERE knowledge_fts MATCH ? "
                     "ORDER BY rank ASC LIMIT ?",
-                    (fts_query, limit),
+                    (fts_query, candidate_limit),
                 ).fetchall()
-                return tuple(
-                    SearchHit(self._chunk_from_row(row), float(row["rank"]))
+                ranked = [
+                    (self._chunk_from_row(row), token_overlap(tokens, row["text"]))
                     for row in rows
-                )
+                ]
+            else:
+                clauses = " OR ".join("lower(c.text) LIKE ?" for _ in tokens)
+                params = [f"%{token}%" for token in tokens]
+                rows = db.execute(
+                    "SELECT c.*,d.title,d.source_uri FROM knowledge_chunks c "
+                    "JOIN knowledge_documents d ON d.id=c.document_id "
+                    f"WHERE {clauses} ORDER BY c.document_id,c.ordinal LIMIT ?",
+                    (*params, candidate_limit),
+                ).fetchall()
+                ranked = [
+                    (self._chunk_from_row(row), token_overlap(tokens, row["text"]))
+                    for row in rows
+                ]
 
-            clauses = " OR ".join("lower(c.text) LIKE ?" for _ in tokens)
-            params = [f"%{token}%" for token in tokens]
-            rows = db.execute(
-                "SELECT c.*,d.title,d.source_uri FROM knowledge_chunks c "
-                "JOIN knowledge_documents d ON d.id=c.document_id "
-                f"WHERE {clauses} ORDER BY c.document_id,c.ordinal LIMIT ?",
-                (*params, limit),
-            ).fetchall()
-            return tuple(
-                SearchHit(self._chunk_from_row(row), float(index))
-                for index, row in enumerate(rows)
-            )
+        relevant: list[SearchHit] = []
+        for chunk, (_count, ratio) in ranked:
+            if not hit_is_relevant(tokens, chunk.text):
+                continue
+            relevant.append(SearchHit(chunk, ratio))
+            if len(relevant) >= limit:
+                break
+        return tuple(relevant)
 
     @staticmethod
     def _document_from_row(row: sqlite3.Row) -> KnowledgeDocument:

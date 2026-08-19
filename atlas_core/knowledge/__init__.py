@@ -1,13 +1,26 @@
-from .capabilities import register_knowledge_capabilities
+from .capabilities import (
+    grounded_answer_from_hits,
+    ingest_request_from_task,
+    is_knowledge_question,
+    parse_ingest_objective,
+    parse_search_objective,
+    register_knowledge_capabilities,
+    resolve_knowledge_source,
+    search_query_from_task,
+)
 from .store import (
+    MAX_SEARCH_RESULT_CHARS,
     IngestResult,
     KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeStore,
     SearchHit,
     chunk_text,
+    content_tokens,
+    hit_is_relevant,
     normalize_knowledge_text,
     source_content_sha256,
+    token_overlap,
 )
 
 __all__ = [
@@ -15,9 +28,20 @@ __all__ = [
     "KnowledgeChunk",
     "KnowledgeDocument",
     "KnowledgeStore",
+    "MAX_SEARCH_RESULT_CHARS",
     "SearchHit",
     "chunk_text",
+    "content_tokens",
+    "hit_is_relevant",
+    "token_overlap",
+    "grounded_answer_from_hits",
+    "ingest_request_from_task",
+    "is_knowledge_question",
     "normalize_knowledge_text",
+    "parse_ingest_objective",
+    "parse_search_objective",
     "register_knowledge_capabilities",
+    "resolve_knowledge_source",
+    "search_query_from_task",
     "source_content_sha256",
 ]

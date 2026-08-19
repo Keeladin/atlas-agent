@@ -7,6 +7,28 @@ from typing import Any
 from atlas_core.tasks import TaskStore
 
 
+def task_failure_reason(store: TaskStore, task_id: str) -> str | None:
+    """Human-facing reason for a failed task, or None if the task is not failed."""
+    task = store.get_task(task_id)
+    if task.status != "failed":
+        return None
+    for item in reversed(store.list_executions(task_id)):
+        if item.status in {"fail", "blocked", "abstain", "rework"}:
+            if item.error:
+                return item.error
+            return f"{item.capability} ended in {item.status}"
+    for event in reversed(store.list_events(task_id)):
+        if event.name == "task.failed":
+            reason = (event.payload or {}).get("reason")
+            if reason:
+                return str(reason)
+    failed_steps = [step for step in store.list_steps(task_id) if step.status == "failed"]
+    if failed_steps:
+        step = failed_steps[-1]
+        return f"Step {step.ordinal} ({step.capability}) failed."
+    return "Task failed without a recorded execution error."
+
+
 @dataclass(frozen=True)
 class TaskPresentation:
     task_id: str
@@ -17,6 +39,7 @@ class TaskPresentation:
     claims: tuple[dict[str, Any], ...]
     pending_approvals: tuple[dict[str, Any], ...]
     failures: tuple[dict[str, Any], ...]
+    failure_reason: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -28,6 +51,7 @@ class TaskPresentation:
             "claims": list(self.claims),
             "pending_approvals": list(self.pending_approvals),
             "failures": list(self.failures),
+            "failure_reason": self.failure_reason,
         }
 
     def render_markdown(self) -> str:
@@ -35,24 +59,43 @@ class TaskPresentation:
             f"# Atlas task {self.task_id}",
             "",
             f"**Status:** {self.status}",
-            "",
-            self.objective,
-            "",
-            "## Success criteria",
         ]
+        if self.failure_reason:
+            lines.extend(["", f"**Failure:** {self.failure_reason}"])
+        lines.extend(["", self.objective, "", "## Success criteria"])
         for item in self.criteria:
             marker = "✓" if item["status"] == "accepted" else "✗" if item["status"] == "rejected" else "•"
             evidence = ", ".join(item["evidence_artifact_ids"]) or "no accepted evidence"
             lines.append(f"- {marker} {item['text']} — `{item['status']}` — evidence: {evidence}")
-        if self.outputs:
+        if self.failures:
+            lines.extend(["", "## Why it failed"])
+            for item in self.failures:
+                lines.append(
+                    f"- `{item['capability']}` → `{item['status']}`: {item['error'] or 'no error text'}"
+                )
+        answers = [item for item in self.outputs if item["kind"] == "grounded_answer"]
+        searches = [item for item in self.outputs if item["kind"] == "knowledge_search_results"]
+        other = [item for item in self.outputs if item["kind"] not in {"grounded_answer", "knowledge_search_results"}]
+        if answers:
+            lines.extend(["", "## Grounded answer"])
+            for item in answers:
+                lines.append(item["preview"])
+        if searches:
+            lines.extend(["", "## Retrieved sources"])
+            for item in searches:
+                lines.append(item["preview"])
+        if other:
             lines.extend(["", "## Accepted outputs"])
-            for item in self.outputs:
+            for item in other:
                 lines.append(
                     f"- `{item['kind']}` `{item['id']}` sha256 `{item['sha256'][:16]}…`: {item['preview']}"
                 )
-        if self.claims:
+        remaining_claims = self.claims if not searches else tuple(
+            item for item in self.claims if item["kind"] != "retrieved"
+        )
+        if remaining_claims:
             lines.extend(["", "## Recorded claims"])
-            for item in self.claims:
+            for item in remaining_claims:
                 lines.append(
                     f"- **{item['kind']}** `{item['subject']}` = {item['preview']} "
                     f"(evidence: {', '.join(item['evidence_artifact_ids']) or 'none'})"
@@ -62,12 +105,6 @@ class TaskPresentation:
             for item in self.pending_approvals:
                 lines.append(
                     f"- `{item['id']}` requires `{item['required_authority']}`: {item['requested_action']}"
-                )
-        if self.failures:
-            lines.extend(["", "## Execution failures / blocks"])
-            for item in self.failures:
-                lines.append(
-                    f"- `{item['execution_id']}` `{item['capability']}` → `{item['status']}`: {item['error'] or 'no error text'}"
                 )
         return "\n".join(lines).rstrip() + "\n"
 
@@ -80,6 +117,43 @@ def _preview(value: Any, limit: int = 1200) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _clip(text: str, limit: int) -> str:
+    compact = " ".join((text or "").split())
+    return compact if len(compact) <= limit else compact[: limit - 1] + "…"
+
+
+def _format_search_results(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return _preview(payload)
+    results = payload.get("results") or []
+    lines = [
+        f"Query: {payload.get('query') or ''}",
+        f"{len(results)} source-grounded hit(s).",
+        "",
+    ]
+    for index, hit in enumerate(results, start=1):
+        if not isinstance(hit, dict):
+            continue
+        title = hit.get("title") or hit.get("source_uri") or "Untitled"
+        source = hit.get("source_uri") or ""
+        digest = (hit.get("sha256") or "")[:12]
+        lines.append(f"{index}. {title}")
+        if source and source != title:
+            lines.append(f"   {source}")
+        lines.append(f"   {_clip(str(hit.get('text') or ''), 360)}")
+        if digest:
+            lines.append(f"   hash {digest}…")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _format_claim_value(kind: str, value: Any) -> str:
+    if kind == "retrieved" and isinstance(value, dict):
+        title = value.get("title") or value.get("source_uri") or "retrieved chunk"
+        return f"{title}: {_clip(str(value.get('text') or ''), 220)}"
+    return _preview(value)
+
+
 class TaskPresenter:
     """Deterministic user-facing projection of durable runtime truth."""
 
@@ -87,6 +161,7 @@ class TaskPresenter:
         "verification_result",
         "execution_receipt",
         "task_plan",
+        "planning_request",
         "morning_request",
         "knowledge_ingest_request",
         "knowledge_search_request",
@@ -120,12 +195,24 @@ class TaskPresenter:
             if task.status == "completed" and accepted_evidence and artifact.id not in accepted_evidence:
                 # Completed presentations privilege criterion-backed outputs.
                 continue
+            if artifact.kind == "capability_result" and task.status != "completed":
+                continue
+            if artifact.kind == "knowledge_search_results":
+                preview = _format_search_results(artifact.payload)
+                hits = artifact.payload.get("results") if isinstance(artifact.payload, dict) else []
+            elif artifact.kind == "grounded_answer" and isinstance(artifact.payload, str):
+                preview = artifact.payload.strip()
+                hits = []
+            else:
+                preview = _preview(artifact.payload)
+                hits = []
             outputs.append(
                 {
                     "id": artifact.id,
                     "kind": artifact.kind,
                     "sha256": artifact.sha256,
-                    "preview": _preview(artifact.payload),
+                    "preview": preview,
+                    "hits": hits if isinstance(hits, list) else [],
                 }
             )
         claims = tuple(
@@ -133,7 +220,7 @@ class TaskPresenter:
                 "id": item.id,
                 "kind": item.kind,
                 "subject": item.subject,
-                "preview": _preview(item.value),
+                "preview": _format_claim_value(item.kind, item.value),
                 "evidence_artifact_ids": list(item.evidence_artifact_ids),
                 "confidence": item.confidence,
             }
@@ -169,4 +256,5 @@ class TaskPresenter:
             claims=claims,
             pending_approvals=approvals,
             failures=failures,
+            failure_reason=task_failure_reason(self.store, task_id),
         )

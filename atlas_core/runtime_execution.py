@@ -1,17 +1,78 @@
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from atlas_core.authority import authority_allows
-from atlas_core.capabilities import CapabilityOutcome, CapabilityRegistryError, CapabilityRequest
+from atlas_core.capabilities import CapabilityOutcome, CapabilityRegistryError, CapabilityRequest, CapabilitySpec
 from atlas_core.context import ContextBuilder
 from atlas_core.events import RuntimeEvent
+from atlas_core.knowledge import ingest_request_from_task, search_query_from_task
 from atlas_core.providers import ModelRequest, ModelRoutingError
 from atlas_core.tasks import InvalidTransitionError, StepRecord
 from atlas_core.schema_validation import SchemaValidationError, validate_json
 from .runtime_types import RuntimeResult, RecoveryResult
+
+_REQUEST_KINDS = {
+    "knowledge.search": "knowledge_search_request",
+    "knowledge.ingest_text": "knowledge_ingest_request",
+}
+_AUTH_HTTP_CODES = {401, 403}
+_HTTP_STATUS_RE = re.compile(r"\bHTTP (\d{3})\b")
+
+
+def _http_status_from_provider_error(error: str | None) -> int | None:
+    if not error:
+        return None
+    match = _HTTP_STATUS_RE.search(error)
+    return int(match.group(1)) if match else None
+
+
+def _provider_failure_is_permanent(status: str, error: str | None) -> bool:
+    if status == "fail":
+        return True
+    if status != "abstain":
+        return False
+    if "credential is not configured" in (error or "").lower():
+        return True
+    return _http_status_from_provider_error(error) in _AUTH_HTTP_CODES
+
+
+def _exclude_provider_keys(
+    previous: tuple[Any, ...],
+    *,
+    remaining_route_exists: Callable[[tuple[str, ...]], bool],
+) -> tuple[str, ...]:
+    """Exclude dead providers without exiling a sole transient failure.
+
+    Fail and auth-like abstain are always excluded. Other abstain (timeout,
+    connection error) is excluded only when another candidate can still be
+    selected. Rework is never treated as a provider death.
+    """
+    permanent: list[str] = []
+    transient: list[str] = []
+    seen_permanent: set[str] = set()
+    seen_transient: set[str] = set()
+    for item in previous:
+        provider = item.provider
+        if not provider:
+            continue
+        if item.status == "fail" or _provider_failure_is_permanent(item.status, item.error):
+            if provider not in seen_permanent:
+                permanent.append(provider)
+                seen_permanent.add(provider)
+        elif item.status == "abstain" and provider not in seen_transient:
+            transient.append(provider)
+            seen_transient.add(provider)
+    proposed = tuple(dict.fromkeys([*permanent, *transient]))
+    if not proposed:
+        return ()
+    if remaining_route_exists(proposed):
+        return proposed
+    return tuple(permanent)
 
 class RuntimeExecutionMixin:
     def _execute_step(self, step: StepRecord) -> bool:
@@ -57,6 +118,24 @@ class RuntimeExecutionMixin:
 
         spec = binding.spec
         task = self.store.get_task(step.task_id)
+        try:
+            step = self._ensure_invocation_artifacts(step, spec, task)
+        except ValueError as exc:
+            execution = self.store.begin_execution(
+                step.task_id,
+                step_id=step.id,
+                capability=spec.id,
+                capability_version=spec.version,
+            )
+            self.store.finish_execution(execution.id, status="fail", error=str(exc))
+            self._emit(
+                step.task_id,
+                "capability.completed",
+                step_id=step.id,
+                execution_id=execution.id,
+                payload={"capability": spec.id, "status": "fail"},
+            )
+            return True
 
         approved_override = self._approved_for_step(
             step,
@@ -270,10 +349,20 @@ class RuntimeExecutionMixin:
                 "blocked",
                 error="task model-call budget exhausted",
             )
-        failed_providers = tuple(
-            item.provider
-            for item in previous
-            if item.status in {"abstain", "fail"} and item.provider
+        def remaining_route_exists(exclude: tuple[str, ...]) -> bool:
+            try:
+                self.model_router.select(
+                    spec,
+                    context_chars=pack.chars,
+                    exclude_provider_keys=exclude,
+                )
+            except ModelRoutingError:
+                return False
+            return True
+
+        failed_providers = _exclude_provider_keys(
+            previous,
+            remaining_route_exists=remaining_route_exists,
         )
         try:
             route = self.model_router.select(
@@ -369,6 +458,42 @@ class RuntimeExecutionMixin:
                     "provider": route.provider.spec.key,
                 },
             )
+
+    def _ensure_invocation_artifacts(self, step: StepRecord, spec: CapabilitySpec, task) -> StepRecord:
+        required = list((spec.input_schema or {}).get("required") or [])
+        if not required or step.input_artifact_ids:
+            return step
+        payload = self._invocation_payload_from_task(spec, task, step)
+        if payload is None:
+            raise ValueError(
+                f"{spec.id} requires {required} in a direct input artifact; "
+                "this step was planned without one."
+            )
+        artifact = self.store.put_artifact(
+            task.id,
+            step_id=step.id,
+            kind=_REQUEST_KINDS.get(spec.id, "capability_request"),
+            payload=payload,
+            metadata={"synthesized_invocation_input": True, "capability": spec.id},
+        )
+        return self.store.set_step_input_artifact_ids(step.id, (artifact.id,))
+
+    @staticmethod
+    def _invocation_payload_from_task(spec: CapabilitySpec, task, step: StepRecord) -> dict[str, Any] | None:
+        if spec.id == "knowledge.search":
+            return {
+                "query": search_query_from_task(
+                    objective=task.objective,
+                    description=step.description,
+                ),
+                "limit": 8,
+            }
+        if spec.id == "knowledge.ingest_text":
+            return ingest_request_from_task(
+                objective=task.objective,
+                description=step.description,
+            )
+        return None
 
     def _complete_human_step(self, step: StepRecord, spec: Any, approval: Any) -> bool:
         previous = self.store.list_executions(step.task_id, step_id=step.id)

@@ -1,4 +1,4 @@
-from .config import load_provider_registry
+from .config import load_provider_registry, load_provider_registry_from_data
 from .contracts import ModelProvider, ModelRequest, ModelResponse, ProviderSpec
 from .http import AnthropicMessagesProvider, GeminiGenerateContentProvider, OpenAICompatibleChatProvider, OpenAIResponsesProvider, ProviderHTTPError
 from .registry import ProviderRegistry, ProviderRegistryError
@@ -23,4 +23,5 @@ __all__ = [
     "ProviderSpec",
     "RouteDecision",
     "load_provider_registry",
+    "load_provider_registry_from_data",
 ]

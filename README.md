@@ -431,7 +431,7 @@ This surface is **not authenticated**. Bind it to localhost or a trusted LAN onl
 ### Run Companion
 
 ```bash
-python -m atlas_companion.server \
+uv run python -m atlas_companion.server \
   --db instance/atlas.db \
   --providers config/runtime-providers.local.json \
   --host 127.0.0.1 \
@@ -486,7 +486,8 @@ atlas-agent/
 
 ## Requirements
 
-- Python **3.12**
+- [uv](https://docs.astral.sh/uv/)
+- Python **3.12**, installed and used through uv (`requires-python = ">=3.12,<3.13"`)
 - Git
 - Node.js if running the Mobile fixture suite
 - Optional OpenAI-compatible local model endpoint for planning/model capabilities
@@ -500,17 +501,18 @@ cd atlas-agent
 
 ## Python environment
 
+Install Python 3.12 through uv and sync the locked project environment from `pyproject.toml` and `uv.lock`:
+
 ```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-python --version
+uv python install 3.12
+uv sync --frozen
 ```
 
 ## Validate the checkout
 
 ```bash
-python -W error::ResourceWarning -m unittest discover -s tests -q
-python -m compileall -q atlas_core atlas_companion atlas_morning tests
+uv run python -W error::ResourceWarning -m unittest discover -s tests -q
+uv run python -m compileall -q atlas_core atlas_morning tests
 node atlas_mobile/run_fixtures.js
 ```
 
@@ -520,7 +522,7 @@ These are the same classes of checks run by GitHub Actions.
 
 ```bash
 mkdir -p instance
-python -m atlas_core --db instance/atlas.db tasks
+uv run python -m atlas_core --db instance/atlas.db tasks
 ```
 
 ---
@@ -530,7 +532,7 @@ python -m atlas_core --db instance/atlas.db tasks
 The CLI remains the canonical engineering and recovery interface. Companion is the general LAN-local browser interface. Both enter the same TaskRuntime.
 
 ```text
-python -m atlas_core [--db PATH] [--providers CONFIG] COMMAND
+uv run python -m atlas_core [--db PATH] [--providers CONFIG] COMMAND
 ```
 
 Commands:
@@ -553,7 +555,7 @@ tasks        List durable tasks
 ### Index local knowledge
 
 ```bash
-python -m atlas_core \
+uv run python -m atlas_core \
   --db instance/atlas.db \
   index-text "Atlas Constitution.md"
 ```
@@ -561,7 +563,7 @@ python -m atlas_core \
 Search it:
 
 ```bash
-python -m atlas_core \
+uv run python -m atlas_core \
   --db instance/atlas.db \
   search "What is Atlas?"
 ```
@@ -593,7 +595,7 @@ curl http://127.0.0.1:1234/v1/models
 ### Create a planned task
 
 ```bash
-python -m atlas_core \
+uv run python -m atlas_core \
   --db instance/atlas.db \
   --providers config/runtime-providers.local.json \
   plan "Explain the purpose of Atlas's durable task runtime" \
@@ -603,14 +605,14 @@ python -m atlas_core \
 Then inspect/run/present:
 
 ```bash
-python -m atlas_core --db instance/atlas.db status <TASK_ID>
+uv run python -m atlas_core --db instance/atlas.db status <TASK_ID>
 
-python -m atlas_core \
+uv run python -m atlas_core \
   --db instance/atlas.db \
   --providers config/runtime-providers.local.json \
   run <TASK_ID>
 
-python -m atlas_core --db instance/atlas.db result <TASK_ID>
+uv run python -m atlas_core --db instance/atlas.db result <TASK_ID>
 ```
 
 ---
@@ -620,8 +622,9 @@ python -m atlas_core --db instance/atlas.db result <TASK_ID>
 GitHub Actions currently runs:
 
 ```bash
-python -W error::ResourceWarning -m unittest discover -s tests -q
-python -m compileall -q atlas_core atlas_companion atlas_morning tests
+uv sync --frozen
+uv run python -W error::ResourceWarning -m unittest discover -s tests -q
+uv run python -m compileall -q atlas_core atlas_morning tests
 node atlas_mobile/run_fixtures.js
 ```
 

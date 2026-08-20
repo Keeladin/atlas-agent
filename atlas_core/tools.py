@@ -364,7 +364,10 @@ class ToolGateway:
 
 
 class MCPClientProtocol:
-    """Transport-neutral surface expected from an MCP client adapter."""
+    """Transport-neutral surface expected from an MCP client adapter.
+
+    Streamable HTTP is implemented by ``atlas_core.mcp_http.StreamableHTTPMCPClient``.
+    """
 
     def list_tools(self) -> list[dict[str, Any]]: ...
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]: ...

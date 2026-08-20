@@ -16,12 +16,15 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
-          python-version: '3.12'
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install Python dependencies
+        run: uv sync --frozen
       - name: Python regression suite
-        run: python -W error::ResourceWarning -m unittest discover -s tests -q
+        run: uv run python -W error::ResourceWarning -m unittest discover -s tests -q
       - name: Compile runtime and workflow packages
-        run: python -m compileall -q atlas_core atlas_morning tests
+        run: uv run python -m compileall -q atlas_core atlas_morning tests
       - name: Mobile fixture suite
         run: node atlas_mobile/run_fixtures.js

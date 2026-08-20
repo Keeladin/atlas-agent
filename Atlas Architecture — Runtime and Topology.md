@@ -585,8 +585,9 @@ The repository test suite covers the current runtime invariants including durabl
 CI runs:
 
 ```bash
-python -W error::ResourceWarning -m unittest discover -s tests -q
-python -m compileall -q atlas_core atlas_morning tests
+uv sync --frozen
+uv run python -W error::ResourceWarning -m unittest discover -s tests -q
+uv run python -m compileall -q atlas_core atlas_morning tests
 node atlas_mobile/run_fixtures.js
 ```
 

@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "server_name": "atlas-n8n",
+  "url": "http://127.0.0.1:5678/mcp-server/http",
+  "tool_prefix": "mcp.n8n",
+  "timeout_sec": 30,
+  "read_timeout_sec": 300,
+  "secret_ref": "ATLAS_N8N_MCP_TOKEN"
+}

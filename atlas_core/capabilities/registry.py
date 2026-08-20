@@ -15,7 +15,9 @@ def _version_key(value: str) -> tuple[int, int, int]:
 
 
 @dataclass(frozen=True)
-class CapabilityBinding:
+class CapabilityRegistration:
+    """Runtime handler record for a CapabilitySpec. Not a deployment binding."""
+
     spec: CapabilitySpec
     handler: CapabilityHandler | None = None
 
@@ -28,7 +30,7 @@ class CapabilityRegistry:
     """Version-aware registry of Atlas capability contracts."""
 
     def __init__(self) -> None:
-        self._bindings: dict[tuple[str, str], CapabilityBinding] = {}
+        self._registrations: dict[tuple[str, str], CapabilityRegistration] = {}
 
     def register(
         self,
@@ -38,7 +40,7 @@ class CapabilityRegistry:
         replace: bool = False,
     ) -> None:
         key = (spec.id, spec.version)
-        if key in self._bindings and not replace:
+        if key in self._registrations and not replace:
             raise CapabilityRegistryError(
                 f"Capability already registered: {spec.id}@{spec.version}"
             )
@@ -46,40 +48,40 @@ class CapabilityRegistry:
             raise CapabilityRegistryError(
                 f"{spec.executor_kind} capability requires a handler: {spec.id}"
             )
-        self._bindings[key] = CapabilityBinding(spec, handler)
+        self._registrations[key] = CapabilityRegistration(spec, handler)
 
-    def get(self, capability_id: str, version: str | None = None) -> CapabilityBinding:
+    def get(self, capability_id: str, version: str | None = None) -> CapabilityRegistration:
         if version is not None:
             try:
-                return self._bindings[(capability_id, version)]
+                return self._registrations[(capability_id, version)]
             except KeyError as exc:
                 raise CapabilityRegistryError(
                     f"Unknown capability: {capability_id}@{version}"
                 ) from exc
 
         candidates = [
-            binding
-            for (candidate_id, _), binding in self._bindings.items()
-            if candidate_id == capability_id and not binding.spec.deprecated
+            registration
+            for (candidate_id, _), registration in self._registrations.items()
+            if candidate_id == capability_id and not registration.spec.deprecated
         ]
         if not candidates:
             # A pinned task may still legitimately refer to a deprecated version;
             # unpinned resolution never silently chooses one.
-            if any(key[0] == capability_id for key in self._bindings):
+            if any(key[0] == capability_id for key in self._registrations):
                 raise CapabilityRegistryError(
                     f"Capability has no active version: {capability_id}"
                 )
             raise CapabilityRegistryError(f"Unknown capability: {capability_id}")
         return max(candidates, key=lambda item: _version_key(item.spec.version))
 
-    def resolve_ref(self, reference: str) -> CapabilityBinding:
+    def resolve_ref(self, reference: str) -> CapabilityRegistration:
         if "@" not in reference:
             return self.get(reference)
         capability_id, version = reference.rsplit("@", 1)
         return self.get(capability_id, version)
 
     def specs(self, *, include_deprecated: bool = True) -> tuple[CapabilitySpec, ...]:
-        specs = [binding.spec for binding in self._bindings.values()]
+        specs = [registration.spec for registration in self._registrations.values()]
         if not include_deprecated:
             specs = [spec for spec in specs if not spec.deprecated]
         return tuple(sorted(specs, key=lambda spec: (spec.id, _version_key(spec.version))))
@@ -105,6 +107,8 @@ class CapabilityRegistry:
             "required_authority": spec.required_authority,
             "allowed_tools": list(spec.allowed_tools),
             "side_effects": list(spec.side_effects),
+            "side_effect_class": spec.effective_side_effect_class,
+            "confirmation": spec.confirmation,
             "context_profile": spec.context_profile,
             "context_policy": {
                 "max_tokens": spec.context_policy.max_tokens,

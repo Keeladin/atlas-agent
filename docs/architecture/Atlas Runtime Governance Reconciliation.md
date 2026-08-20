@@ -25,8 +25,9 @@ A capability may define:
 - human description and bounded responsibility;
 - executor kind;
 - input/output schemas;
-- allowed ToolDescriptor references;
+- allowed ToolDescriptor references (runtime execution-frame allow-list, not vendor identity);
 - required authority;
+- confirmation requirement (`none` or `required`; action property, not authority approval; not enforced yet);
 - side-effect classification;
 - idempotency;
 - context policy;
@@ -39,6 +40,8 @@ A capability may define:
 - deprecation/replacement metadata.
 
 Durable planned steps may pin an exact capability version. Every execution records the exact version used.
+
+Discovery never equals exposure. Deployment bindings (`CapabilityBinding`) are not part of capability identity and do not grant authority. Unmapped provider tools are not capability consumers' tools. See [Capability Awareness](./Capability%20Awareness.md) and [Security and Intent Model](./Atlas%20Security%20and%20Intent%20Model.md).
 
 ---
 

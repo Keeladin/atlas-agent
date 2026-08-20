@@ -379,6 +379,8 @@ Tool Gateway
 
 Transport is selected at the edge rather than embedded in core runtime semantics.
 
+Discovery never equals exposure. MCP-discovered tools remain provider inventory until an Atlas `CapabilitySpec` explicitly binds them. See [Capability Awareness](./docs/architecture/Capability%20Awareness.md).
+
 ---
 
 # Current domain responsibilities

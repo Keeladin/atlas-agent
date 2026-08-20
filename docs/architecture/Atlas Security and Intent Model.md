@@ -12,6 +12,32 @@ Related: [Capability Awareness](./Capability%20Awareness.md), [Runtime Governanc
 
 ---
 
+## Layers
+
+```text
+Capability     Stable Atlas concept          (CapabilitySpec)
+Binding        Deployment implementation     (CapabilityBinding)
+Tool           Runtime executable            (ToolDescriptor / ToolGateway)
+Provider       External/internal integration (N8NMCPProvider, APIs, internal code)
+Policy         Future decision layer         (exposure; not on the spec)
+```
+
+Replacing `n8n.execute_workflow` with `temporal.run_workflow` must not change capability id, prompts, authority rules, or confirmation rules.
+
+Invariants:
+
+```text
+Discovery != Capability
+
+Binding != Permission
+
+Authority != Confirmation
+
+Tool != Capability
+```
+
+---
+
 ## 1. Capability
 
 A **capability** describes an action Atlas understands as a **product concept**. It is independent of implementation.
@@ -32,7 +58,11 @@ A capability is **not**:
 - execution authority
 - a confirmation of a specific payload
 
-Canonical type today: `CapabilitySpec`. Discovery, policy, and invoke paths must not invent a second ontology beside it.
+Canonical type today: `CapabilitySpec`. It holds Atlas meaning: id, description, `side_effect_class`, `required_authority`, and `confirmation` (`none` | `required`). It does not hold n8n, MCP tool names, provider selection, or mode permissions.
+
+`allowed_tools` on the spec is a **runtime execution-frame** allow-list of ToolDescriptor refs. It is not capability identity and must not become a vendor tool list (`mcp.n8n.execute_workflow`).
+
+Discovery, policy, and invoke paths must not invent a second ontology beside `CapabilitySpec`.
 
 ---
 
@@ -77,6 +107,17 @@ Atlas:
 
 **Discovery != exposure.** A tool sitting on a provider gateway is not a capability the model should plan with.
 
+A **CapabilityBinding** is deployment data:
+
+```text
+capability_id:  automation.workflow.execute
+provider:       n8n
+implementation: execute_workflow
+version:        1
+```
+
+Binding does not grant authority. A capability may exist with zero bindings. Several bindings may implement one capability.
+
 ---
 
 ## 3. Authority
@@ -112,13 +153,20 @@ Insufficient standing grant may still pause work for an **authority elevation** 
 
 ## 4. Confirmation (future concept)
 
+Do not reuse Atlas **approval**. That word already means **authority escalation**:
+
+```text
+Authority approval:
+    May this work item perform this class of action?
+```
+
 **Confirmation** answers:
 
 ```text
 Should Atlas execute this exact action now?
 ```
 
-It is a separate future concept from authority. It is not implemented in this document.
+It is an action property (`confirmation: none | required`), not an invoke flag and not an authority grant. The execution flow is not implemented in this document.
 
 Example:
 
@@ -190,9 +238,13 @@ CHAT and ADVANCED_CONVERSATION must not jump from intent to ToolGateway. WORK is
 ```text
 Discovery != Capability
 
+Binding != Permission
+
 Capability != Permission
 
 Authority != Confirmation
+
+Tool != Capability
 
 Intent != Execution
 
@@ -244,5 +296,5 @@ Unmapped n8n tools stay off the control plane until someone writes a capability 
 
 - Not enterprise IAM (no users, roles, or ACLs in this model).
 - Not a change to current SQLite task state.
-- Not enforcement of `CapabilitySpec.approval` or confirmation in TaskRuntime.
+- Not enforcement of confirmation or exposure in TaskRuntime.
 - Not a reason to hide capabilities from awareness; hide **unauthorized handles**, not **product meaning**.

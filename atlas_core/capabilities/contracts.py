@@ -10,6 +10,8 @@ from atlas_core.authority import validate_authority
 ExecutorKind = Literal["deterministic", "tool", "model", "composite", "human"]
 PrivacyRoute = Literal["local_only", "cloud_allowed", "cloud_preferred"]
 DataClassification = Literal["public", "internal", "sensitive"]
+ConfirmationRequirement = Literal["none", "required"]
+CapabilitySideEffectClass = Literal["none", "reversible", "irreversible", "external_effect"]
 
 _SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
@@ -122,11 +124,16 @@ class RetryPolicy:
 
 @dataclass(frozen=True)
 class CapabilitySpec:
-    """Versioned Atlas capability contract.
+    """Versioned Atlas capability contract: stable product meaning.
 
     This is the reconciled form of the advisory's Specialist Contract: Atlas
     retains one persistent identity and specialist behaviour is expressed as a
     bounded capability execution profile instead of a second agent ontology.
+
+    This spec does not encode vendor tool names, MCP discovery, provider
+    selection, or mode permissions. Deployment implementations live on
+    ``CapabilityBinding``. ``allowed_tools`` remains a runtime execution-frame
+    allow-list of ToolDescriptor refs, not capability identity.
     """
 
     id: str
@@ -142,6 +149,8 @@ class CapabilitySpec:
     requires_artifact_kinds: tuple[str, ...] = ()
     allowed_tools: tuple[str, ...] = ()
     side_effects: tuple[str, ...] = ()
+    side_effect_class: CapabilitySideEffectClass | None = None
+    confirmation: ConfirmationRequirement = "none"
     context_profile: str = "execute"
     context_policy: ContextPolicy = field(default_factory=ContextPolicy)
     eligible_providers: tuple[str, ...] = ()
@@ -178,6 +187,12 @@ class CapabilitySpec:
             raise ValueError("replaced_by must not be blank")
         if len(set(self.allowed_tools)) != len(self.allowed_tools):
             raise ValueError("allowed_tools must not contain duplicates")
+        if self.confirmation not in {"none", "required"}:
+            raise ValueError(f"Unsupported confirmation requirement: {self.confirmation}")
+        if self.side_effect_class is not None and self.side_effect_class not in {
+            "none", "reversible", "irreversible", "external_effect",
+        }:
+            raise ValueError(f"Unsupported side_effect_class: {self.side_effect_class}")
         # Preserve the older explicit char budget as a hard upper safety ceiling
         # while context_policy becomes the declarative source of assembly policy.
         if self.context_policy.approximate_char_budget > self.budget.max_context_chars:
@@ -209,6 +224,14 @@ class CapabilitySpec:
     @property
     def ref(self) -> str:
         return f"{self.id}@{self.version}"
+
+    @property
+    def effective_side_effect_class(self) -> str:
+        if self.side_effect_class is not None:
+            return self.side_effect_class
+        if not self.side_effects:
+            return "none"
+        return "reversible" if self.idempotent else "irreversible"
 
 
 @dataclass(frozen=True)

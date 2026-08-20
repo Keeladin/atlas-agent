@@ -3,6 +3,8 @@
 **Status:** Foundation only. No mode enforcement, UI, or persistence.  
 **Canonical type:** `CapabilitySpec` — this is not a second ontology.
 
+Related: [Security and Intent Model](./Atlas%20Security%20and%20Intent%20Model.md), [Capability Exposure and Mode Interaction](./Capability%20Exposure%20and%20Mode%20Interaction.md).
+
 ## Invariant
 
 **Discovery never equals exposure.** Binding is not permission. A tool is not a capability.

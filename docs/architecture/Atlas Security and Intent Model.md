@@ -8,7 +8,7 @@ Atlas is a personal operational agent. It must neither pretend capabilities do n
 
 This note names the concepts that must stay distinct so later control-plane and WORK-mode work does not collapse them.
 
-Related: [Capability Awareness](./Capability%20Awareness.md), [Runtime Governance](./Atlas%20Runtime%20Governance%20Reconciliation.md).
+Related: [Capability Awareness](./Capability%20Awareness.md), [Capability Exposure and Mode Interaction](./Capability%20Exposure%20and%20Mode%20Interaction.md), [Runtime Governance](./Atlas%20Runtime%20Governance%20Reconciliation.md).
 
 ---
 

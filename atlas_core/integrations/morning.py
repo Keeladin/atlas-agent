@@ -3,7 +3,13 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from atlas_core.capabilities import CapabilityOutcome, CapabilityRegistry, CapabilitySpec, ExecutionBudget
+from atlas_core.capabilities import (
+    CapabilityExecutionProfile,
+    CapabilityOutcome,
+    CapabilityRegistry,
+    ExecutionBudget,
+    require,
+)
 from atlas_core.verification import VerificationResult, VerifierRegistry
 
 
@@ -76,11 +82,10 @@ def register_morning_workflow(
 ) -> None:
     verifiers.register("morning.output_contract", _verify_morning, replace=True)
     capabilities.register(
-        CapabilitySpec(
-            id="operations.morning_pack.generate",
-            description="Generate the frozen V1 TMM morning pack from a configured source.",
+        require("operations.morning_pack.generate"),
+        CapabilityExecutionProfile(
+            capability_id="operations.morning_pack.generate",
             executor_kind="deterministic",
-            required_authority="read",
             input_schema={
                 "type": "object",
                 "required": ["input", "config"],

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.capability_fixtures import make_registration, register_cap
 
 import tempfile
 import sqlite3
@@ -8,7 +9,7 @@ from pathlib import Path
 from atlas_core.capabilities import (
     CapabilityOutcome,
     CapabilityRegistry,
-    CapabilitySpec,
+    
     ContextPolicy,
     ExecutionBudget,
 )
@@ -118,27 +119,27 @@ class RuntimeGovernanceTests(unittest.TestCase):
     def test_capability_registry_resolves_latest_but_exact_version_can_be_pinned(self):
         registry = CapabilityRegistry()
         registry.register(
-            CapabilitySpec(
+            make_registration(
                 id="demo.versioned", version="1.0.0", description="v1",
                 executor_kind="deterministic", verifier_id="core.nonempty",
             ),
             lambda request: CapabilityOutcome("pass", output="v1"),
         )
         registry.register(
-            CapabilitySpec(
+            make_registration(
                 id="demo.versioned", version="2.0.0", description="v2",
                 executor_kind="deterministic", verifier_id="core.nonempty",
             ),
             lambda request: CapabilityOutcome("pass", output="v2"),
         )
-        self.assertEqual(registry.get("demo.versioned").spec.version, "2.0.0")
-        self.assertEqual(registry.get("demo.versioned", "1.0.0").spec.version, "1.0.0")
+        self.assertEqual(registry.get("demo.versioned").profile.version, "2.0.0")
+        self.assertEqual(registry.get("demo.versioned", "1.0.0").profile.version, "1.0.0")
 
     def test_task_step_pins_capability_version_into_execution_truth(self):
         registry = CapabilityRegistry()
         for version, text in (("1.0.0", "old"), ("2.0.0", "new")):
             registry.register(
-                CapabilitySpec(id="demo.pin", version=version, description=text, executor_kind="deterministic", verifier_id="core.nonempty"),
+                make_registration(id="demo.pin", version=version, description=text, executor_kind="deterministic", verifier_id="core.nonempty"),
                 lambda request, _text=text: CapabilityOutcome("pass", output=_text),
             )
         task = self.task()
@@ -152,13 +153,13 @@ class RuntimeGovernanceTests(unittest.TestCase):
 
     def test_context_manifest_is_persisted_before_model_call(self):
         registry = CapabilityRegistry()
-        spec = CapabilitySpec(id="reasoning.manifest", version="1.3.0", description="reason", executor_kind="model", verifier_id="core.nonempty")
+        spec = make_registration(id="reasoning.manifest", version="1.3.0", description="reason", executor_kind="model", verifier_id="core.nonempty")
         registry.register(spec)
         providers = ProviderRegistry()
         provider = InspectingProvider(ProviderSpec("inspect", "m", "fake", {spec.id: 1.0}), self.store, text="grounded result")
         providers.register(provider)
         task = self.task()
-        self.store.add_step(task.id, description="Reason once", capability=spec.id, capability_version=spec.version, metadata={"accept_all_criteria": True})
+        self.store.add_step(task.id, description="Reason once", capability=spec.id, capability_version=spec.profile.version, metadata={"accept_all_criteria": True})
         result = TaskRuntime(store=self.store, capabilities=registry, model_router=ModelRouter(providers)).run_until_blocked(task.id)
         self.assertEqual(result.status, "completed")
         self.assertTrue(provider.manifest_seen_before_call)
@@ -169,13 +170,13 @@ class RuntimeGovernanceTests(unittest.TestCase):
 
     def test_context_manifest_is_immutable_per_execution(self):
         registry = CapabilityRegistry()
-        registry.register(CapabilitySpec(id="demo.manifest", description="bounded", executor_kind="deterministic", verifier_id="core.nonempty"), lambda request: CapabilityOutcome("pass", output={"ok": True}))
+        registry.register(make_registration(id="demo.manifest", description="bounded", executor_kind="deterministic", verifier_id="core.nonempty"), lambda request: CapabilityOutcome("pass", output={"ok": True}))
         task = self.task()
         step = self.store.add_step(task.id, description="Do", capability="demo.manifest")
         execution = self.store.begin_execution(task.id, step_id=step.id, capability="demo.manifest")
-        spec = registry.get("demo.manifest").spec
-        pack = ContextBuilder(self.store).build(task.id, step.id, artifact_ids=(), execution_id=execution.id, capability=spec)
-        kwargs = dict(task_id=task.id, step_id=step.id, execution_id=execution.id, capability=spec.id, capability_version=spec.version, assembler_version=pack.manifest.assembler_version, budget_tokens=pack.manifest.budget_tokens, total_tokens=pack.manifest.total_tokens, manifest=pack.manifest.as_dict(), manifest_id=pack.manifest.manifest_id)
+        spec = registry.get("demo.manifest")
+        pack = ContextBuilder(self.store).build(task.id, step.id, artifact_ids=(), execution_id=execution.id, registration=spec)
+        kwargs = dict(task_id=task.id, step_id=step.id, execution_id=execution.id, capability=spec.id, capability_version=spec.profile.version, assembler_version=pack.manifest.assembler_version, budget_tokens=pack.manifest.budget_tokens, total_tokens=pack.manifest.total_tokens, manifest=pack.manifest.as_dict(), manifest_id=pack.manifest.manifest_id)
         self.store.write_context_manifest(**kwargs)
         with self.assertRaises(InvalidTransitionError):
             self.store.write_context_manifest(**kwargs)
@@ -184,9 +185,9 @@ class RuntimeGovernanceTests(unittest.TestCase):
         task = self.task()
         step = self.store.add_step(task.id, description="Bound context", capability="demo.context")
         artifacts = tuple(self.store.put_artifact(task.id, kind="source", payload={"n": i, "text": "x" * 100}) for i in range(3))
-        spec = CapabilitySpec(id="demo.context", description="bounded", executor_kind="deterministic", verifier_id="core.nonempty", context_policy=ContextPolicy(max_tokens=1000, max_artifact_items=1))
+        spec = make_registration(id="demo.context", description="bounded", executor_kind="deterministic", verifier_id="core.nonempty", context_policy=ContextPolicy(max_tokens=1000, max_artifact_items=1))
         execution = self.store.begin_execution(task.id, step_id=step.id, capability=spec.id)
-        pack = ContextBuilder(self.store).build(task.id, step.id, artifact_ids=tuple(item.id for item in artifacts), execution_id=execution.id, capability=spec)
+        pack = ContextBuilder(self.store).build(task.id, step.id, artifact_ids=tuple(item.id for item in artifacts), execution_id=execution.id, registration=spec)
         self.assertEqual(len(pack.payload["artifacts"]), 1)
         dropped_ids = {item.id for item in pack.manifest.dropped}
         self.assertTrue({artifacts[1].id, artifacts[2].id} <= dropped_ids)
@@ -213,7 +214,7 @@ class RuntimeGovernanceTests(unittest.TestCase):
         def handler(request):
             calls["n"] += 1
             return CapabilityOutcome("pass", output={"ok": True})
-        registry.register(CapabilitySpec(id="demo.input", description="typed input", executor_kind="deterministic", input_schema={"type": "object", "required": ["value"], "properties": {"value": {"type": "integer"}}, "additionalProperties": False}, verifier_id="core.nonempty"), handler)
+        registry.register(make_registration(id="demo.input", description="typed input", executor_kind="deterministic", input_schema={"type": "object", "required": ["value"], "properties": {"value": {"type": "integer"}}, "additionalProperties": False}, verifier_id="core.nonempty"), handler)
         task = self.task()
         input_artifact = self.store.put_artifact(task.id, kind="input", payload={"value": "wrong"})
         self.store.add_step(task.id, description="Typed", capability="demo.input", input_artifact_ids=(input_artifact.id,))
@@ -224,7 +225,7 @@ class RuntimeGovernanceTests(unittest.TestCase):
 
     def test_capability_output_schema_is_enforced(self):
         registry = CapabilityRegistry()
-        registry.register(CapabilitySpec(id="demo.output", description="typed output", executor_kind="deterministic", output_schema={"type": "object", "required": ["value"], "properties": {"value": {"type": "integer"}}}, verifier_id="core.nonempty", budget=ExecutionBudget(max_attempts=1)), lambda request: CapabilityOutcome("pass", output={"value": "wrong"}))
+        registry.register(make_registration(id="demo.output", description="typed output", executor_kind="deterministic", output_schema={"type": "object", "required": ["value"], "properties": {"value": {"type": "integer"}}}, verifier_id="core.nonempty", budget=ExecutionBudget(max_attempts=1)), lambda request: CapabilityOutcome("pass", output={"value": "wrong"}))
         task = self.task()
         self.store.add_step(task.id, description="Typed output", capability="demo.output")
         result = TaskRuntime(store=self.store, capabilities=registry).run_until_blocked(task.id)
@@ -235,7 +236,7 @@ class RuntimeGovernanceTests(unittest.TestCase):
 
     def test_planner_uses_context_manifest_and_pins_planned_capability_versions(self):
         plan_text = ('{"steps":[{"key":"a","description":"Do","capability":"demo.work","dependencies":[],"satisfies_criteria":[1]}],"notes":[]}')
-        planning = CapabilitySpec(id="planning.general", version="2.1.0", description="plan", executor_kind="model", required_authority="interpret", context_profile="plan", verifier_id="core.nonempty")
+        planning = make_registration(id="planning.general", version="2.1.0", description="plan", executor_kind="model", required_authority="interpret", context_profile="plan", verifier_id="core.nonempty")
         providers = ProviderRegistry()
         provider = InspectingProvider(ProviderSpec("planner", "planner-model", "fake", {planning.id: 1.0}), self.store, text=plan_text)
         providers.register(provider)

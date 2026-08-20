@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from atlas_core.capabilities.contracts import CapabilitySpec
+from atlas_core.capabilities.execution import CapabilityExecutionProfile
 from atlas_core.deliverable import (
     INTERNAL_ARTIFACT_KINDS,
     check_deliverable,
@@ -27,7 +27,7 @@ class VerificationResult:
     details: dict[str, Any] = field(default_factory=dict)
 
 
-Verifier = Callable[[CapabilitySpec, Any, dict[str, Any]], VerificationResult]
+Verifier = Callable[[CapabilityExecutionProfile, Any, dict[str, Any]], VerificationResult]
 
 
 def _repetitive_output_reason(text: str) -> str | None:
@@ -66,7 +66,7 @@ class VerifierRegistry:
             raise ValueError(f"Verifier already registered: {verifier_id}")
         self._verifiers[verifier_id] = verifier
 
-    def verify(self, verifier_id: str, spec: CapabilitySpec, output: Any, context: dict[str, Any]) -> VerificationResult:
+    def verify(self, verifier_id: str, spec: CapabilityExecutionProfile, output: Any, context: dict[str, Any]) -> VerificationResult:
         try:
             verifier = self._verifiers[verifier_id]
         except KeyError as exc:
@@ -74,7 +74,7 @@ class VerifierRegistry:
         return verifier(spec, output, context)
 
     @staticmethod
-    def _nonempty(spec: CapabilitySpec, output: Any, context: dict[str, Any]) -> VerificationResult:
+    def _nonempty(spec: CapabilityExecutionProfile, output: Any, context: dict[str, Any]) -> VerificationResult:
         if output is None:
             return VerificationResult("rework", "capability returned no usable output")
         if isinstance(output, str):
@@ -87,13 +87,13 @@ class VerifierRegistry:
         return VerificationResult("pass", "output present")
 
     @staticmethod
-    def _receipt(spec: CapabilitySpec, output: Any, context: dict[str, Any]) -> VerificationResult:
+    def _receipt(spec: CapabilityExecutionProfile, output: Any, context: dict[str, Any]) -> VerificationResult:
         receipt = context.get("execution_receipt")
         ok = isinstance(receipt, dict) and bool(receipt.get("ok"))
         return VerificationResult("pass" if ok else "fail", "side-effect receipt confirmed" if ok else "side effect lacks a successful receipt")
 
     @staticmethod
-    def _deliverable(spec: CapabilitySpec, output: Any, context: dict[str, Any]) -> VerificationResult:
+    def _deliverable(spec: CapabilityExecutionProfile, output: Any, context: dict[str, Any]) -> VerificationResult:
         task = context.get("task") or {}
         contract = infer_deliverable(
             str(task.get("objective") or ""),
@@ -106,7 +106,7 @@ class VerifierRegistry:
             {
                 "contract": contract.as_dict(),
                 "produced_type": produced,
-                "capability": spec.id,
+                "capability": spec.capability_id,
             },
         )
 
@@ -118,7 +118,7 @@ class CompletionDecision:
     reasons: tuple[str, ...]
 
 
-def step_claims_user_criteria(step: StepRecord, spec: CapabilitySpec) -> bool:
+def step_claims_user_criteria(step: StepRecord, spec: CapabilityExecutionProfile) -> bool:
     if step.metadata.get("internal_planning"):
         return False
     if step.metadata.get("accept_all_criteria") or spec.metadata.get("accept_all_criteria"):
@@ -141,13 +141,13 @@ class OutcomeGate:
     def evaluate(
         self,
         *,
-        spec: CapabilitySpec,
+        profile: CapabilityExecutionProfile,
         output: Any,
         context: dict[str, Any],
         step: StepRecord,
         task: TaskRecord,
     ) -> VerificationResult:
-        if not step_claims_user_criteria(step, spec):
+        if not step_claims_user_criteria(step, profile):
             return VerificationResult("pass", "step does not claim task success criteria")
         contract = infer_deliverable(task.objective, task.success_criteria)
         ok, summary, produced = check_deliverable(contract, output)
@@ -160,13 +160,13 @@ class OutcomeGate:
             return VerificationResult("rework", summary, details)
         if (
             self.semantic is not None
-            and spec.executor_kind == "model"
+            and profile.executor_kind == "model"
             and (
                 contract.requires_semantic_check
                 or has_quality_criteria(task.success_criteria)
             )
         ):
-            semantic = self.semantic.verify(spec, output, context, contract=contract, task=task)
+            semantic = self.semantic.verify(profile, output, context, contract=contract, task=task)
             details["semantic"] = {
                 "status": semantic.status,
                 "summary": semantic.summary,
@@ -202,7 +202,7 @@ class SemanticOutcomeVerifier:
 
     def verify(
         self,
-        spec: CapabilitySpec,
+        spec: CapabilityExecutionProfile,
         output: Any,
         context: dict[str, Any],
         *,
@@ -219,10 +219,15 @@ class SemanticOutcomeVerifier:
         }
         prompt = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         try:
-            route = self.model_router.select(spec, context_chars=len(prompt))
+            route = self.model_router.select(
+                spec.capability_id,
+                context_chars=len(prompt),
+                privacy=spec.privacy,
+                eligible_providers=spec.eligible_providers,
+            )
             response = route.provider.generate(
                 ModelRequest(
-                    spec.id,
+                    spec.capability_id,
                     self._SYSTEM,
                     prompt,
                     max_output_chars=min(2_000, spec.budget.max_output_chars or 2_000),

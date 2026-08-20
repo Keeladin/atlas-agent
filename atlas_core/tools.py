@@ -11,12 +11,6 @@ from typing import Any, Literal
 
 from atlas_core.authority import require_authority
 from atlas_core.schema_validation import SchemaValidationError, validate_json
-from atlas_core.capabilities import (
-    CapabilityOutcome,
-    CapabilityRequest,
-    CapabilitySpec,
-    ExecutionBudget,
-)
 
 
 _SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
@@ -273,67 +267,6 @@ class ToolGateway:
                     receipt={"ok": False},
                 )
         return result
-
-    def capability(
-        self,
-        tool_id: str,
-        *,
-        version: str | None = None,
-        output_kind: str = "tool_result",
-        budget: ExecutionBudget | None = None,
-    ) -> tuple[CapabilitySpec, Callable[[CapabilityRequest], CapabilityOutcome]]:
-        spec, _handler = self.get(tool_id, version)
-        capability = CapabilitySpec(
-            id=tool_id,
-            version=spec.version,
-            name=spec.display_name,
-            description=spec.description,
-            objective=f"Invoke the bounded tool {spec.display_name} under its descriptor constraints.",
-            executor_kind="tool",
-            required_authority=spec.required_authority,
-            input_schema=spec.input_schema,
-            output_schema=spec.output_schema,
-            output_kind=output_kind,
-            allowed_tools=(spec.ref,),
-            side_effects=spec.side_effects,
-            verifier_id=("core.receipt" if spec.side_effects else spec.verifier_id),
-            verification_required=True,
-            idempotent=spec.idempotent,
-            data_classification=spec.privacy_level,
-            budget=budget or ExecutionBudget(),
-            tags=spec.tags,
-        )
-
-        def capability_handler(request: CapabilityRequest) -> CapabilityOutcome:
-            arguments: dict[str, Any] = {}
-            candidate_ids = request.direct_input_artifact_ids or request.input_artifact_ids
-            artifacts_by_id = {
-                str(item.get("id")): item
-                for item in request.context.get("artifacts", [])
-                if isinstance(item, dict)
-            }
-            for artifact_id in reversed(candidate_ids):
-                item = artifacts_by_id.get(artifact_id)
-                candidate = item.get("payload") if item else None
-                if isinstance(candidate, dict):
-                    arguments = dict(candidate)
-                    break
-            result = self.invoke(
-                tool_id,
-                arguments,
-                authority_scope=spec.required_authority,
-                version=spec.version,
-            )
-            return CapabilityOutcome(
-                "pass" if result.ok else "fail",
-                output=result.output,
-                output_kind=output_kind,
-                receipt=result.receipt,
-                metrics=result.metrics,
-                error=result.error,
-            )
-
-        return capability, capability_handler
 
     @staticmethod
     def _constraint_error(spec: ToolDescriptor, arguments: dict[str, Any]) -> str | None:

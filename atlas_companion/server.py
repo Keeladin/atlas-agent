@@ -206,7 +206,7 @@ class CompanionService:
             )
         if self.runtime.model_router is None:
             raise ValueError("Task creation requires a configured server-side provider registry.")
-        planning = self.runtime.capabilities.get("planning.general").spec
+        planning = self.runtime.capabilities.get("planning.general")
         manifest = [item for item in self.runtime.capabilities.manifest() if item["id"] != planning.id]
         task, _ = TaskPlanner(
             store=self.runtime.store,
@@ -582,7 +582,7 @@ class CompanionService:
             task.id,
             description="Chunk and index extracted text.",
             capability="knowledge.ingest_text",
-            capability_version=self.runtime.capabilities.get("knowledge.ingest_text").spec.version,
+            capability_version=self.runtime.capabilities.get("knowledge.ingest_text").profile.version,
             input_artifact_ids=(request.id,),
             metadata={"accept_all_criteria": True},
         )
@@ -613,7 +613,7 @@ class CompanionService:
             task.id,
             description="Retrieve matching knowledge chunks.",
             capability="knowledge.search",
-            capability_version=self.runtime.capabilities.get("knowledge.search").spec.version,
+            capability_version=self.runtime.capabilities.get("knowledge.search").profile.version,
             input_artifact_ids=(request.id,),
             metadata={"satisfies_criteria": [1]} if question else {"accept_all_criteria": True},
         )
@@ -622,7 +622,7 @@ class CompanionService:
                 task.id,
                 description="Compose a source-grounded answer from retrieved chunks.",
                 capability="knowledge.answer",
-                capability_version=self.runtime.capabilities.get("knowledge.answer").spec.version,
+                capability_version=self.runtime.capabilities.get("knowledge.answer").profile.version,
                 dependencies=(search.id,),
                 metadata={"satisfies_criteria": [2]},
             )

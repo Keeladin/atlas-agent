@@ -78,12 +78,12 @@ def main() -> None:
         resolved = str(source.resolve())
         task = store.create_task(objective=f"Index local knowledge source {source.name}", success_criteria=("The source is durably indexed with chunk provenance.",), authority_scope="modify_internal", metadata={"interface": "cli", "workflow": "knowledge_ingest"})
         request = store.put_artifact(task.id, kind="knowledge_ingest_request", payload={"title": args.title or source.name, "source_path": resolved, "source_uri": args.source_uri or resolved, "content_sha256": source_content_sha256(text), "byte_size": source.stat().st_size, "chunk_chars": args.chunk_chars, "overlap_chars": args.overlap_chars})
-        store.add_step(task.id, description="Chunk and index extracted text.", capability="knowledge.ingest_text", capability_version=runtime.capabilities.get("knowledge.ingest_text").spec.version, input_artifact_ids=(request.id,), metadata={"accept_all_criteria": True})
+        store.add_step(task.id, description="Chunk and index extracted text.", capability="knowledge.ingest_text", capability_version=runtime.capabilities.get("knowledge.ingest_text").profile.version, input_artifact_ids=(request.id,), metadata={"accept_all_criteria": True})
         _print_result(runtime.run_until_blocked(task.id)); return
     if args.command == "search":
         task = store.create_task(objective=f"Search Atlas knowledge for: {args.query}", success_criteria=("A source-grounded local knowledge search result is produced.",), authority_scope="read", metadata={"interface": "cli", "workflow": "knowledge_search"})
         request = store.put_artifact(task.id, kind="knowledge_search_request", payload={"query": args.query, "limit": args.limit})
-        store.add_step(task.id, description="Retrieve matching knowledge chunks.", capability="knowledge.search", capability_version=runtime.capabilities.get("knowledge.search").spec.version, input_artifact_ids=(request.id,), metadata={"accept_all_criteria": True})
+        store.add_step(task.id, description="Retrieve matching knowledge chunks.", capability="knowledge.search", capability_version=runtime.capabilities.get("knowledge.search").profile.version, input_artifact_ids=(request.id,), metadata={"accept_all_criteria": True})
         _print_result(runtime.run_until_blocked(task.id)); print(TaskPresenter(store).build(task.id).render_markdown()); return
     if args.command == "tasks":
         for task in store.list_tasks(status=args.status): print(f"{task.id}\t{task.status}\t{task.objective}")
@@ -101,7 +101,7 @@ def main() -> None:
         runtime.resume_blocked(args.task_id); _print_result(runtime.run_until_blocked(args.task_id)); return
     if args.command == "plan":
         if runtime.model_router is None: raise SystemExit("--providers is required for planning")
-        planning = runtime.capabilities.get("planning.general").spec
+        planning = runtime.capabilities.get("planning.general")
         manifest = [item for item in runtime.capabilities.manifest() if item["id"] != planning.id]
         planner = TaskPlanner(store=store, model_router=runtime.model_router, planning_capability=planning, capability_manifest=manifest)
         task, plan = planner.plan_and_create(objective=args.objective, success_criteria=tuple(args.criterion), constraints=tuple(args.constraint), authority_scope=args.authority, metadata={"interface": "cli"})
@@ -111,7 +111,7 @@ def main() -> None:
     if args.command == "morning":
         task = store.create_task(objective="Generate the TMM morning operational pack.", success_criteria=("The frozen Morning Workflow produces a verified non-empty pack for the requested operational day.",), authority_scope="read", metadata={"interface": "cli", "workflow": "morning_v1"})
         input_artifact = store.put_artifact(task.id, kind="morning_request", payload={"input": str(Path(args.input)), "config": str(Path(args.config)), "aliases": str(Path(args.aliases)) if args.aliases else None, "corrections": str(Path(args.corrections)) if args.corrections else None, "day": args.day})
-        store.add_step(task.id, description="Generate and verify the morning pack.", capability="operations.morning_pack.generate", capability_version=runtime.capabilities.get("operations.morning_pack.generate").spec.version, input_artifact_ids=(input_artifact.id,), metadata={"accept_all_criteria": True})
+        store.add_step(task.id, description="Generate and verify the morning pack.", capability="operations.morning_pack.generate", capability_version=runtime.capabilities.get("operations.morning_pack.generate").profile.version, input_artifact_ids=(input_artifact.id,), metadata={"accept_all_criteria": True})
         result = runtime.run_until_blocked(task.id); _print_result(result)
         packs = [artifact for artifact in store.list_artifacts(task.id) if artifact.kind == "morning_pack"]
         if packs: print(packs[-1].payload["markdown"])

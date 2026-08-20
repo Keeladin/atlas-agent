@@ -4,11 +4,12 @@ import re
 from pathlib import Path
 
 from atlas_core.capabilities import (
+    CapabilityExecutionProfile,
     CapabilityOutcome,
     CapabilityRegistry,
-    CapabilitySpec,
     ExecutionBudget,
     RetryPolicy,
+    require,
 )
 from atlas_core.tasks import TaskStore
 from atlas_core.verification import VerificationResult, VerifierRegistry
@@ -475,12 +476,11 @@ def register_knowledge_capabilities(
         )
 
     capabilities.register(
-        CapabilitySpec(
-            id="knowledge.ingest_text",
+        require("knowledge.ingest_text"),
+        CapabilityExecutionProfile(
+            capability_id="knowledge.ingest_text",
             version="1.1.0",
-            description="Persist and chunk extracted text into Atlas full-text knowledge with provenance.",
             executor_kind="deterministic",
-            required_authority="modify_internal",
             input_schema={
                 "type": "object",
                 "required": ["title"],
@@ -521,14 +521,10 @@ def register_knowledge_capabilities(
         ingest,
     )
     capabilities.register(
-        CapabilitySpec(
-            id="knowledge.search",
-            description=(
-                "Retrieve source-grounded chunks from Atlas's ingested local knowledge corpus only. "
-                "This is not web search and not general-world trivia."
-            ),
+        require("knowledge.search"),
+        CapabilityExecutionProfile(
+            capability_id="knowledge.search",
             executor_kind="deterministic",
-            required_authority="read",
             input_schema={
                 "type": "object",
                 "required": ["query"],
@@ -560,15 +556,10 @@ def register_knowledge_capabilities(
         search,
     )
     capabilities.register(
-        CapabilitySpec(
-            id="knowledge.answer",
-            description=(
-                "Compose a source-grounded answer from a knowledge_search_results artifact "
-                "without adding claims. Requires a prior knowledge.search step. "
-                "Not for general questions that lack ingested local sources."
-            ),
+        require("knowledge.answer"),
+        CapabilityExecutionProfile(
+            capability_id="knowledge.answer",
             executor_kind="deterministic",
-            required_authority="read",
             input_schema={
                 "type": "object",
                 "description": "Invoked with dependency artifacts; a knowledge_search_results artifact is required.",

@@ -1,8 +1,8 @@
 # Atlas Security and Intent Model
 
-**Status:** Foundation document only. Not runtime behaviour.  
+**Status:** Current capability / authority / confirmation split.  
 **Scope:** Separation of capability awareness, authority, confirmation, and execution  
-**Does not:** change code, schema, ToolGateway, MCP, or current enforcement
+**Does not:** reconnect Companion, auto-map MCP tools, or treat discovery as identity
 
 Atlas is a personal operational agent. It must neither pretend capabilities do not exist nor execute unintended external actions.
 
@@ -15,11 +15,13 @@ Related: [Capability Awareness](./Capability%20Awareness.md), [Capability Exposu
 ## Layers
 
 ```text
-Capability     Stable Atlas concept          (CapabilitySpec)
-Binding        Deployment implementation     (CapabilityBinding)
+Capability     Stable Atlas concept          (CapabilityDefinition / catalog())
+Profile        This deployment               (CapabilityExecutionProfile)
+Registration   Executable Work record        (CapabilityRegistration)
+Binding        Implementation pointer        (CapabilityBinding)
 Tool           Runtime executable            (ToolDescriptor / ToolGateway)
 Provider       External/internal integration (N8NMCPProvider, APIs, internal code)
-Policy         Future decision layer         (exposure; not on the spec)
+Policy         Future decision layer         (exposure; not on the definition)
 ```
 
 Replacing `n8n.execute_workflow` with `temporal.run_workflow` must not change capability id, prompts, authority rules, or confirmation rules.
@@ -29,9 +31,17 @@ Invariants:
 ```text
 Discovery != Capability
 
+Capability != Implementation
+
+Capability != Permission
+
 Binding != Permission
 
 Authority != Confirmation
+
+Intent != Execution
+
+Execution != Verification
 
 Tool != Capability
 ```
@@ -58,11 +68,13 @@ A capability is **not**:
 - execution authority
 - a confirmation of a specific payload
 
-Canonical type today: `CapabilitySpec`. It holds Atlas meaning: id, description, `side_effect_class`, `required_authority`, and `confirmation` (`none` | `required`). It does not hold n8n, MCP tool names, provider selection, or mode permissions.
+Canonical type today: `CapabilityDefinition`. It holds Atlas meaning: id, description, `side_effect_class`, `required_authority`, and `confirmation` (`none` | `required`). It does not hold n8n, MCP tool names, provider selection, tools, handlers, or mode permissions.
 
-`allowed_tools` on the spec is a **runtime execution-frame** allow-list of ToolDescriptor refs. It is not capability identity and must not become a vendor tool list (`mcp.n8n.execute_workflow`).
+`CapabilityExecutionProfile` is deployment availability: binding, tools, verifier, version, budgets. `allowed_tools` on a Work runtime frame is a ToolDescriptor allow-list from that profile. It is not capability identity and must not become a vendor tool list (`mcp.n8n.execute_workflow`).
 
-Discovery, policy, and invoke paths must not invent a second ontology beside `CapabilitySpec`.
+`CapabilityRegistration` is the Work execution binding (definition + profile + handler). `TaskRuntime` executes registrations. It does not mint catalog identity.
+
+Discovery, policy, and invoke paths must not invent a second ontology beside `CapabilityDefinition`. `CapabilitySpec` is removed.
 
 ---
 
@@ -201,7 +213,7 @@ When implemented, confirmation should be a durable pause bound to the payload, n
 Intent
   |
   v
-Capability
+CapabilityDefinition
   |
   v
 Authority
@@ -210,7 +222,13 @@ Authority
 Confirmation
   |
   v
-ToolGateway
+CapabilityExecutionProfile
+  |
+  v
+CapabilityRegistration
+  |
+  v
+TaskRuntime / ToolGateway
   |
   v
 Provider
@@ -222,14 +240,16 @@ Evidence / Verification
 | Stage | Question |
 |---|---|
 | Intent | What does the operator want? |
-| Capability | What Atlas product action is that? |
+| Capability | What Atlas product action is that? (`CapabilityDefinition`) |
 | Authority | May this work item do that *class* of action? |
 | Confirmation | May *this payload* run now? |
+| Profile | Can this deployment perform it? (`CapabilityExecutionProfile`) |
+| Registration | Work handler + profile for `TaskRuntime` |
 | ToolGateway | Invoke the bound implementation under constraints |
 | Provider | MCP / API / internal code |
 | Evidence / Verification | Did it actually happen? A model sentence is not completion |
 
-CHAT and ADVANCED_CONVERSATION must not jump from intent to ToolGateway. WORK is the execution context. This document does not wire those modes.
+Chat and Advanced must not jump from intent to ToolGateway. Work is the execution context. Companion is not reconnected to those composition roots in this model.
 
 ---
 
@@ -238,9 +258,11 @@ CHAT and ADVANCED_CONVERSATION must not jump from intent to ToolGateway. WORK is
 ```text
 Discovery != Capability
 
-Binding != Permission
+Capability != Implementation
 
 Capability != Permission
+
+Binding != Permission
 
 Authority != Confirmation
 
@@ -257,6 +279,7 @@ Also:
 - Side-effect class informs defaults; it is not itself confirmation policy.
 - ToolGateway enforces execution; it does not define Atlas meaning.
 - MCP is transport and inventory, not ontology.
+- Handler registration does not create `catalog()` identity.
 
 ---
 

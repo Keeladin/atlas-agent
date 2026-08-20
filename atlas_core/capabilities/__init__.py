@@ -1,16 +1,18 @@
+from .awareness import CapabilityAwareness, brief_catalog, catalog
 from .bindings import CapabilityBinding, CapabilityBindingIndex
 from .builtin import register_intelligence_capabilities
 from .contracts import (
     CapabilityOutcome,
     CapabilityRequest,
     CapabilitySideEffectClass,
-    CapabilitySpec,
     ConfirmationRequirement,
     ContextPolicy,
     ExecutionBudget,
     HybridWeights,
     RetryPolicy,
 )
+from .definition import CapabilityDefinition, lookup, require
+from .execution import CapabilityExecutionProfile
 from .exposure import (
     CapabilityExposure,
     ExposureKind,
@@ -25,8 +27,11 @@ from .registry import (
 )
 
 __all__ = [
+    "CapabilityAwareness",
     "CapabilityBinding",
     "CapabilityBindingIndex",
+    "CapabilityDefinition",
+    "CapabilityExecutionProfile",
     "CapabilityExposure",
     "CapabilityHandler",
     "CapabilityOutcome",
@@ -35,7 +40,6 @@ __all__ = [
     "CapabilityRegistryError",
     "CapabilityRequest",
     "CapabilitySideEffectClass",
-    "CapabilitySpec",
     "ConfirmationRequirement",
     "ContextPolicy",
     "ExecutionBudget",
@@ -44,5 +48,9 @@ __all__ = [
     "HybridWeights",
     "InteractionMode",
     "RetryPolicy",
+    "brief_catalog",
+    "catalog",
+    "lookup",
     "register_intelligence_capabilities",
+    "require",
 ]

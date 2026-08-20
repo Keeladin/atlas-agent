@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.capability_fixtures import make_registration, register_cap
 
 import tempfile
 import unittest
@@ -7,7 +8,7 @@ from pathlib import Path
 from atlas_core.capabilities import (
     CapabilityOutcome,
     CapabilityRegistry,
-    CapabilitySpec,
+    
     ExecutionBudget,
 )
 from atlas_core.context import ContextBuilder
@@ -127,7 +128,7 @@ class OutcomeValidationTests(unittest.TestCase):
         providers.register(provider)
         capabilities = CapabilityRegistry()
         capabilities.register(
-            CapabilitySpec(
+            make_registration(
                 id="reasoning.general",
                 description="reason",
                 executor_kind="model",
@@ -177,7 +178,7 @@ class OutcomeValidationTests(unittest.TestCase):
         providers.register(provider)
         capabilities = CapabilityRegistry()
         capabilities.register(
-            CapabilitySpec(
+            make_registration(
                 id="reasoning.general",
                 description="reason",
                 executor_kind="model",
@@ -223,7 +224,7 @@ class OutcomeValidationTests(unittest.TestCase):
             description="Write the story",
             capability="reasoning.general",
         )
-        spec = CapabilitySpec(
+        spec = make_registration(
             id="reasoning.general",
             description="reason",
             executor_kind="model",
@@ -234,7 +235,7 @@ class OutcomeValidationTests(unittest.TestCase):
             task.id,
             step.id,
             artifact_ids=(),
-            capability=spec,
+            registration=spec,
         )
         self.assertEqual(pack.payload["deliverable_contract"]["kind"], "narrative")
         self.assertEqual(pack.payload["context_profile"]["name"], "compose")
@@ -254,7 +255,7 @@ class OutcomeValidationTests(unittest.TestCase):
             description="Answer the question",
             capability="reasoning.general",
         )
-        spec = CapabilitySpec(
+        spec = make_registration(
             id="reasoning.general",
             description="reason",
             executor_kind="model",
@@ -265,7 +266,7 @@ class OutcomeValidationTests(unittest.TestCase):
             task.id,
             step.id,
             artifact_ids=(),
-            capability=spec,
+            registration=spec,
         )
         self.assertEqual(infer_deliverable(task.objective, task.success_criteria).kind, "answer")
         self.assertEqual(infer_presentation_profile(task.objective, task.success_criteria), "answer")
@@ -338,7 +339,7 @@ class OutcomeValidationTests(unittest.TestCase):
     def test_completion_failure_fails_the_task_instead_of_waiting(self):
         capabilities = CapabilityRegistry()
         capabilities.register(
-            CapabilitySpec(
+            make_registration(
                 id="demo.pass",
                 description="pass",
                 executor_kind="deterministic",
@@ -380,14 +381,14 @@ class OutcomeValidationTests(unittest.TestCase):
                 )
 
         class Router:
-            def select(self, spec, *, context_chars, exclude_provider_keys=()):
+            def select(self, spec, *, context_chars, exclude_provider_keys=(), **kwargs):
                 class Route:
                     provider = Provider()
 
                 return Route()
 
         gate = OutcomeGate(semantic=SemanticOutcomeVerifier(Router()))
-        spec = CapabilitySpec(
+        spec = make_registration(
             id="reasoning.general",
             description="reason",
             executor_kind="model",
@@ -404,7 +405,7 @@ class OutcomeValidationTests(unittest.TestCase):
             metadata={"satisfies_criteria": [1]},
         )
         result = gate.evaluate(
-            spec=spec,
+            profile=spec.profile,
             output=STORY_ARTIFACT,
             context={},
             step=step,
@@ -423,7 +424,7 @@ class OutcomeValidationTests(unittest.TestCase):
                 return ModelResponse(verdict_text, "v", "v", {}, {})
 
         class Router:
-            def select(self, spec, *, context_chars, exclude_provider_keys=()):
+            def select(self, spec, *, context_chars, exclude_provider_keys=(), **kwargs):
                 class Route:
                     provider = Provider()
 
@@ -435,7 +436,7 @@ class OutcomeValidationTests(unittest.TestCase):
         gate = self._semantic_gate(
             '{"status":"pass","requested_type":"narrative","produced_type":"narrative","summary":"story present"}'
         )
-        spec = CapabilitySpec(
+        spec = make_registration(
             id="reasoning.general",
             description="reason",
             executor_kind="model",
@@ -451,7 +452,7 @@ class OutcomeValidationTests(unittest.TestCase):
             capability="reasoning.general",
             metadata={"satisfies_criteria": [1]},
         )
-        result = gate.evaluate(spec=spec, output=STORY_ARTIFACT, context={}, step=step, task=task)
+        result = gate.evaluate(profile=spec.profile, output=STORY_ARTIFACT, context={}, step=step, task=task)
         self.assertEqual(result.status, "pass")
         self.assertEqual(result.details.get("layer"), "semantic")
         self.assertEqual(result.details["semantic"]["status"], "pass")
@@ -459,7 +460,7 @@ class OutcomeValidationTests(unittest.TestCase):
 
     def test_quality_abstain_does_not_pass_the_gate(self):
         gate = self._semantic_gate("not a verdict")
-        spec = CapabilitySpec(
+        spec = make_registration(
             id="reasoning.general",
             description="reason",
             executor_kind="model",
@@ -475,7 +476,7 @@ class OutcomeValidationTests(unittest.TestCase):
             capability="reasoning.general",
             metadata={"satisfies_criteria": [1]},
         )
-        result = gate.evaluate(spec=spec, output=STORY_ARTIFACT, context={}, step=step, task=task)
+        result = gate.evaluate(profile=spec.profile, output=STORY_ARTIFACT, context={}, step=step, task=task)
         self.assertEqual(result.status, "abstain")
         self.assertEqual(result.details.get("layer"), "semantic")
         self.assertEqual(result.details["semantic"]["status"], "abstain")
@@ -483,7 +484,7 @@ class OutcomeValidationTests(unittest.TestCase):
 
     def test_semantic_abstain_without_quality_still_passes_type_check(self):
         gate = self._semantic_gate("not a verdict")
-        spec = CapabilitySpec(
+        spec = make_registration(
             id="reasoning.general",
             description="reason",
             executor_kind="model",
@@ -499,7 +500,7 @@ class OutcomeValidationTests(unittest.TestCase):
             capability="reasoning.general",
             metadata={"satisfies_criteria": [1]},
         )
-        result = gate.evaluate(spec=spec, output=STORY_ARTIFACT, context={}, step=step, task=task)
+        result = gate.evaluate(profile=spec.profile, output=STORY_ARTIFACT, context={}, step=step, task=task)
         self.assertEqual(result.status, "pass")
         self.assertEqual(result.details["semantic"]["status"], "abstain")
         self.assertEqual(result.details.get("layer"), "deterministic")
@@ -519,7 +520,7 @@ class OutcomeValidationTests(unittest.TestCase):
         providers.register(provider)
         capabilities = CapabilityRegistry()
         capabilities.register(
-            CapabilitySpec(
+            make_registration(
                 id="reasoning.general",
                 description="reason",
                 executor_kind="model",
@@ -568,7 +569,7 @@ class OutcomeValidationTests(unittest.TestCase):
         providers.register(provider)
         capabilities = CapabilityRegistry()
         capabilities.register(
-            CapabilitySpec(
+            make_registration(
                 id="reasoning.general",
                 description="reason",
                 executor_kind="model",
@@ -608,12 +609,12 @@ class OutcomeValidationTests(unittest.TestCase):
         registry = VerifierRegistry()
         result = registry.verify(
             "core.deliverable",
-            CapabilitySpec(
+            make_registration(
                 id="reasoning.general",
                 description="reason",
                 executor_kind="model",
                 verifier_id="core.deliverable",
-            ),
+            ).profile,
             ANALYSIS_ARTIFACT,
             {
                 "task": {

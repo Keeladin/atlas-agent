@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.capability_fixtures import make_registration, register_cap
 
 import tempfile
 import unittest
@@ -7,7 +8,7 @@ from pathlib import Path
 from atlas_core.capabilities import (
     CapabilityOutcome,
     CapabilityRegistry,
-    CapabilitySpec,
+    
     ExecutionBudget,
 )
 from atlas_core.runtime import TaskRuntime
@@ -40,7 +41,7 @@ class NonIdempotentRetryTests(unittest.TestCase):
             )
             capabilities = CapabilityRegistry()
             capabilities.register(
-                CapabilitySpec(
+                make_registration(
                     id="mail.send",
                     description="send once",
                     executor_kind="tool",

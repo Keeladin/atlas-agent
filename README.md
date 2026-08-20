@@ -18,7 +18,7 @@ Atlas 2.0 is under active development. The durable runtime and core governance c
 |---|---|
 | Durable TaskRuntime | **Implemented** |
 | SQLite task / step / execution state | **Implemented** |
-| Versioned capability contracts | **Implemented** |
+| CapabilityDefinition catalog + execution profiles | **Implemented** |
 | ContextBuilder + immutable ContextManifest | **Implemented** |
 | Verification and completion gates | **Implemented** |
 | Explicit authority / approvals | **Implemented** |
@@ -57,7 +57,7 @@ Atlas completes work when durable task state and required evidence satisfy expli
 2. **Tasks are durable.** Work survives model calls, context limits and process restarts.
 3. **Execution depth is not chat/tool-round depth.** Long work is many bounded execution frames.
 4. **Deterministic work stays deterministic.** Calculation, filtering, validation, state transitions and known business rules prefer ordinary software.
-5. **Capabilities have contracts.** Inputs, outputs, authority, side effects, budgets, retry behaviour and verification are explicit.
+5. **Capability meaning is independent of execution.** `CapabilityDefinition` is identity. `CapabilityExecutionProfile` is this deployment. `CapabilityRegistration` is the Work binding. `TaskRuntime` executes work.
 6. **Models are providers, not architecture.** Providers can change without changing task semantics.
 7. **Context is assembled, not accumulated.** Each execution receives a fresh bounded projection of durable state.
 8. **State lives outside the model context.**
@@ -96,7 +96,7 @@ flowchart TB
         TP[Task Plane\nobjective • criteria • constraints • authority]
         RT[TaskRuntime\ndependencies • retries • checkpoints • budgets]
         CB[ContextBuilder\nbounded execution projection]
-        CR[Capability Registry\nversioned CapabilitySpec]
+        CR[CapabilityDefinition catalog\n+ Work registrations]
         TG[Tool Gateway\nToolDescriptor + MCP bridge]
         MR[Model Router\nlocal / cloud providers]
         VR[Verification\npass • rework • abstain • fail • blocked]
@@ -150,12 +150,14 @@ flowchart TB
 
 ### What the topology means
 
-- **The runtime owns the task**, not the resident model.
-- **Capabilities sit below task semantics.** A task can route to deterministic code, a tool, a model, a composite responsibility or a human gate.
-- **The model router sits below capabilities.** A capability may be satisfied by different providers without changing the task contract.
+- **ChatRuntime, AdvancedRuntime, and WorkRuntime are independent composition roots.**
+- **Chat and Advanced know capabilities without executing them.** Identity is `catalog()`.
+- **WorkRuntime owns execution.** `TaskRuntime` is the Work engine, not the product identity constructor.
+- **Capability meaning is independent of deployment.** A catalog capability may have no profile on this host.
+- **The model router sits below capabilities.** A capability may be satisfied by different providers without changing the definition.
 - **State is structural and durable.** The context window is a workspace, not a database.
-- **Mobile and Companion are interfaces, not other agents.** Companion is the owner/admin surface; Mobile Capture is bounded supervisor reporting.
-- **MCP is an edge protocol, not Atlas's internal ontology.**
+- **Mobile and Companion are interfaces, not other agents.** Companion remains a LAN-local TaskRuntime surface and is not reconnected to the three roots here. Mobile Capture is bounded supervisor reporting.
+- **MCP is an edge protocol, not Atlas's internal ontology.** Discovery does not create catalog identity.
 
 ---
 
@@ -253,28 +255,36 @@ The durable task is the owner of substantive work. Individual model calls and to
 
 ---
 
-# Capability contracts
+# Capability ownership
 
-Every executable responsibility is described by a versioned `CapabilitySpec`.
+Atlas knows capabilities independently of whether this deployment can execute them.
 
-A capability can define:
+```text
+CapabilityDefinition
+        |
+        | meaning
+        v
 
-- ID/version/description;
-- executor kind;
-- input/output schemas;
-- required authority;
-- side effects and idempotency;
-- context policy;
-- eligible providers;
-- allowed tools;
-- privacy/data classification;
-- execution/tool/cost budgets;
-- retry policy;
-- parallel safety;
-- verifier;
-- deprecation/replacement metadata.
+CapabilityExecutionProfile
+        |
+        | deployment
+        v
 
-Durable planned steps can pin an exact capability version. Executions record the exact version used.
+CapabilityRegistration
+        |
+        | executable Work implementation
+        v
+
+TaskRuntime
+```
+
+`CapabilityDefinition` is identity (`catalog()` / `lookup()`): id, description, required authority, confirmation, side-effect class.
+
+`CapabilityExecutionProfile` is this deployment: version, executor kind, schemas, tools, verifier, budgets, binding, retry, privacy.
+
+`CapabilityRegistration` is the Work-engine record. `TaskRuntime` executes it. Handler registration, MCP discovery, and ToolGateway do not create catalog identity.
+
+Durable planned steps can pin an exact profile version. Executions record the exact version used.
 
 ---
 
@@ -379,7 +389,7 @@ Tool Gateway
 
 Transport is selected at the edge rather than embedded in core runtime semantics.
 
-Discovery never equals exposure. MCP-discovered tools remain provider inventory until an Atlas `CapabilitySpec` explicitly binds them. See [Capability Awareness](./docs/architecture/Capability%20Awareness.md).
+Discovery never equals exposure. MCP-discovered tools remain provider inventory until a `CapabilityDefinition` exists and this deployment supplies a `CapabilityExecutionProfile` that binds them. See [Capability Awareness](./docs/architecture/Capability%20Awareness.md).
 
 ---
 
@@ -450,7 +460,10 @@ Then open `http://127.0.0.1:8787`. Use a LAN `--host` only on a trusted network.
 atlas-agent/
 ├── atlas_core/
 │   ├── tasks/                durable runtime records and SQLite stores
-│   ├── capabilities/         CapabilitySpec contracts + registry
+│   ├── capabilities/         CapabilityDefinition catalog, profiles, Work registry
+│   ├── chat/                 ChatRuntime composition root
+│   ├── advanced/             AdvancedRuntime composition root
+│   ├── work/                 WorkRuntime composition root
 │   ├── providers/            provider contracts, routing, adapters, eval scores
 │   ├── knowledge/            SQLite / FTS ingestion and retrieval
 │   ├── integrations/         domain responsibility adapters
@@ -638,6 +651,7 @@ Architectural regression requirements include:
 - retries do not rewrite previous execution truth;
 - authority can pause and resume one bounded action;
 - capability version pinning survives durable execution;
+- catalog identity is independent of handler registration, MCP discovery, and ToolGateway;
 - ContextManifest exists before provider/handler invocation;
 - ContextManifest cannot be overwritten for an execution;
 - bounded context records dropped candidates and reasons;

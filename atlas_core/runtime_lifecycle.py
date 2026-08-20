@@ -133,7 +133,7 @@ class RuntimeLifecycleMixin:
         serial: list[StepRecord] = []
         for step in ready:
             try:
-                spec = self.capabilities.get(step.capability or "", step.capability_version).spec
+                spec = self.capabilities.get(step.capability or "", step.capability_version).profile
                 is_parallel = spec.parallel_safe
             except CapabilityRegistryError:
                 is_parallel = False
@@ -192,7 +192,7 @@ class RuntimeLifecycleMixin:
             if step.status != "blocked" or step.id in pending_approval_steps:
                 continue
             try:
-                spec = self.capabilities.get(step.capability or "", step.capability_version).spec
+                spec = self.capabilities.get(step.capability or "", step.capability_version).profile
             except CapabilityRegistryError:
                 continue
             attempts = self.store.list_executions(task_id, step_id=step.id)
@@ -230,7 +230,7 @@ class RuntimeLifecycleMixin:
                 continue
             try:
                 binding = self.capabilities.get(execution.capability, execution.capability_version)
-                spec = binding.spec
+                spec = binding.profile
             except CapabilityRegistryError:
                 spec = None
 

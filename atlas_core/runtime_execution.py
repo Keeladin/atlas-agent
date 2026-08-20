@@ -7,7 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from atlas_core.authority import authority_allows
-from atlas_core.capabilities import CapabilityOutcome, CapabilityRegistryError, CapabilityRequest, CapabilitySpec
+from atlas_core.capabilities import CapabilityOutcome, CapabilityRegistryError, CapabilityRequest
+from atlas_core.capabilities.execution import CapabilityExecutionProfile
 from atlas_core.context import ContextBuilder
 from atlas_core.events import RuntimeEvent
 from atlas_core.knowledge import ingest_request_from_task, search_query_from_task
@@ -116,16 +117,17 @@ class RuntimeExecutionMixin:
             )
             return True
 
-        spec = binding.spec
+        definition = binding.definition
+        profile = binding.profile
         task = self.store.get_task(step.task_id)
         try:
-            step = self._ensure_invocation_artifacts(step, spec, task)
+            step = self._ensure_invocation_artifacts(step, profile, task)
         except ValueError as exc:
             execution = self.store.begin_execution(
                 step.task_id,
                 step_id=step.id,
-                capability=spec.id,
-                capability_version=spec.version,
+                capability=profile.capability_id,
+                capability_version=profile.version,
             )
             self.store.finish_execution(execution.id, status="fail", error=str(exc))
             self._emit(
@@ -133,34 +135,34 @@ class RuntimeExecutionMixin:
                 "capability.completed",
                 step_id=step.id,
                 execution_id=execution.id,
-                payload={"capability": spec.id, "status": "fail"},
+                payload={"capability": profile.capability_id, "status": "fail"},
             )
             return True
 
         approved_override = self._approved_for_step(
             step,
-            spec.required_authority,
+            definition.required_authority,
         )
 
-        if spec.executor_kind == "human":
+        if profile.executor_kind == "human":
             if approved_override is None:
                 self._request_authority_approval(
                     step,
-                    spec.required_authority,
+                    definition.required_authority,
                     requested_action=step.description,
                 )
                 return True
-            return self._complete_human_step(step, spec, approved_override)
+            return self._complete_human_step(step, profile, approved_override)
 
         if (
-            not authority_allows(task.authority_scope, spec.required_authority)
+            not authority_allows(task.authority_scope, definition.required_authority)
             and approved_override is None
         ):
-            self._request_authority_approval(step, spec.required_authority)
+            self._request_authority_approval(step, definition.required_authority)
             return True
 
         previous = self.store.list_executions(step.task_id, step_id=step.id)
-        if len(previous) >= spec.budget.max_attempts:
+        if len(previous) >= profile.budget.max_attempts:
             self.store.set_step_status(step.id, "failed")
             self._emit(
                 step.task_id,
@@ -168,7 +170,7 @@ class RuntimeExecutionMixin:
                 step_id=step.id,
                 payload={
                     "reason": "capability attempt limit reached",
-                    "max_attempts": spec.budget.max_attempts,
+                    "max_attempts": profile.budget.max_attempts,
                 },
             )
             return True
@@ -177,8 +179,8 @@ class RuntimeExecutionMixin:
         execution = self.store.begin_execution(
             step.task_id,
             step_id=step.id,
-            capability=spec.id,
-            capability_version=spec.version,
+            capability=profile.capability_id,
+            capability_version=profile.version,
             input_artifact_ids=input_ids,
         )
         self._emit(
@@ -187,8 +189,8 @@ class RuntimeExecutionMixin:
             step_id=step.id,
             execution_id=execution.id,
             payload={
-                "capability": spec.id,
-                "capability_version": spec.version,
+                "capability": profile.capability_id,
+                "capability_version": profile.version,
                 "provider": None,
                 "attempt": execution.attempt,
             },
@@ -196,14 +198,14 @@ class RuntimeExecutionMixin:
 
         try:
             tool_descriptors = ()
-            if spec.allowed_tools:
+            if profile.tools:
                 if self.tool_gateway is None:
                     raise ValueError(
                         "capability contract declares allowed_tools but no ToolGateway is configured"
                     )
                 tool_descriptors = tuple(
                     descriptor.as_context_dict()
-                    for descriptor in self.tool_gateway.descriptors(spec.allowed_tools)
+                    for descriptor in self.tool_gateway.descriptors(profile.tools)
                 )
             previous_manifest_id = None
             failure_reason = None
@@ -217,8 +219,8 @@ class RuntimeExecutionMixin:
                 step.id,
                 artifact_ids=input_ids,
                 execution_id=execution.id,
-                capability=spec,
-                max_chars=spec.budget.max_context_chars,
+                registration=binding,
+                max_chars=profile.budget.max_context_chars,
                 tool_descriptors=tool_descriptors,
                 required_artifact_ids=tuple(step.input_artifact_ids),
                 previous_manifest_id=previous_manifest_id,
@@ -227,7 +229,7 @@ class RuntimeExecutionMixin:
             try:
                 validate_json(
                     pack.payload.get("invocation_input"),
-                    spec.input_schema,
+                    profile.input_schema,
                     path="$.invocation_input",
                 )
             except SchemaValidationError as exc:
@@ -236,8 +238,8 @@ class RuntimeExecutionMixin:
                 step.task_id,
                 step_id=step.id,
                 execution_id=execution.id,
-                capability=spec.id,
-                capability_version=spec.version,
+                capability=profile.capability_id,
+                capability_version=profile.version,
                 assembler_version=pack.manifest.assembler_version,
                 budget_tokens=pack.manifest.budget_tokens,
                 total_tokens=pack.manifest.total_tokens,
@@ -252,8 +254,8 @@ class RuntimeExecutionMixin:
                 payload={
                     "manifest_id": manifest_record.id,
                     "sha256": manifest_record.sha256,
-                    "capability": spec.id,
-                    "capability_version": spec.version,
+                    "capability": profile.capability_id,
+                    "capability_version": profile.version,
                     "tokens": pack.manifest.total_tokens,
                     "budget": pack.manifest.budget_tokens,
                 },
@@ -269,7 +271,7 @@ class RuntimeExecutionMixin:
                 "capability.completed",
                 step_id=step.id,
                 execution_id=execution.id,
-                payload={"capability": spec.id, "status": "fail"},
+                payload={"capability": profile.capability_id, "status": "fail"},
             )
             self.store.create_checkpoint(
                 step.task_id,
@@ -277,10 +279,10 @@ class RuntimeExecutionMixin:
             )
             return True
 
-        if spec.executor_kind == "model":
+        if profile.executor_kind == "model":
             outcome = self._execute_model_frame(
                 step,
-                spec,
+                profile,
                 execution.id,
                 pack,
                 previous,
@@ -296,14 +298,14 @@ class RuntimeExecutionMixin:
             request = CapabilityRequest(
                 step.task_id,
                 step.id,
-                spec.id,
+                profile.capability_id,
                 pack.payload,
                 input_ids,
                 execution.attempt,
-                capability_version=spec.version,
+                capability_version=profile.version,
                 direct_input_artifact_ids=direct_ids,
                 dependency_artifact_ids=dependency_ids,
-                idempotency_key=f"{step.task_id}:{step.id}:{spec.id}",
+                idempotency_key=f"{step.task_id}:{step.id}:{profile.capability_id}",
             )
             try:
                 outcome = (
@@ -319,7 +321,7 @@ class RuntimeExecutionMixin:
 
         self._finish_frame(
             step,
-            spec,
+            profile,
             execution.id,
             pack.payload,
             outcome,
@@ -329,7 +331,7 @@ class RuntimeExecutionMixin:
     def _execute_model_frame(
         self,
         step: StepRecord,
-        spec: Any,
+        profile: CapabilityExecutionProfile,
         execution_id: str,
         pack: Any,
         previous: tuple[Any, ...],
@@ -352,8 +354,10 @@ class RuntimeExecutionMixin:
         def remaining_route_exists(exclude: tuple[str, ...]) -> bool:
             try:
                 self.model_router.select(
-                    spec,
+                    profile.capability_id,
                     context_chars=pack.chars,
+                    privacy=profile.privacy,
+                    eligible_providers=profile.eligible_providers,
                     exclude_provider_keys=exclude,
                 )
             except ModelRoutingError:
@@ -366,8 +370,10 @@ class RuntimeExecutionMixin:
         )
         try:
             route = self.model_router.select(
-                spec,
+                profile.capability_id,
                 context_chars=pack.chars,
+                privacy=profile.privacy,
+                eligible_providers=profile.eligible_providers,
                 exclude_provider_keys=failed_providers,
             )
         except ModelRoutingError as exc:
@@ -376,22 +382,22 @@ class RuntimeExecutionMixin:
         estimated_input_tokens = pack.tokens
         estimated_output_tokens = max(
             1,
-            ((spec.budget.max_output_chars or 8_000) + 3) // 4,
+            ((profile.budget.max_output_chars or 8_000) + 3) // 4,
         )
         projected_call_cost = route.provider.spec.estimate_cost_usd(
             input_tokens=estimated_input_tokens,
             output_tokens=estimated_output_tokens,
         )
         if (
-            spec.budget.max_cost_usd is not None
+            profile.budget.max_cost_usd is not None
             and projected_call_cost is not None
-            and projected_call_cost > spec.budget.max_cost_usd
+            and projected_call_cost > profile.budget.max_cost_usd
         ):
             return CapabilityOutcome(
                 "blocked",
                 error=(
                     "projected provider cost exceeds capability budget: "
-                    f"{projected_call_cost:.6f}>{spec.budget.max_cost_usd:.6f}"
+                    f"{projected_call_cost:.6f}>{profile.budget.max_cost_usd:.6f}"
                 ),
             )
         if (
@@ -419,15 +425,15 @@ class RuntimeExecutionMixin:
         try:
             response = route.provider.generate(
                 ModelRequest(
-                    capability_id=spec.id,
+                    capability_id=profile.capability_id,
                     system=pack.payload["context_profile"]["instruction"],
                     input=pack.as_text(),
-                    max_output_chars=spec.budget.max_output_chars,
+                    max_output_chars=profile.budget.max_output_chars,
                     metadata={
                         "task_id": step.task_id,
                         "step_id": step.id,
                         "context_manifest_id": pack.manifest.manifest_id,
-                        "capability_version": spec.version,
+                        "capability_version": profile.version,
                     },
                 )
             )
@@ -441,7 +447,7 @@ class RuntimeExecutionMixin:
             return CapabilityOutcome(
                 "pass",
                 output=response.text,
-                output_kind=spec.output_kind,
+                output_kind=profile.output_kind,
                 metrics=metrics,
                 receipt={
                     "ok": True,
@@ -459,28 +465,28 @@ class RuntimeExecutionMixin:
                 },
             )
 
-    def _ensure_invocation_artifacts(self, step: StepRecord, spec: CapabilitySpec, task) -> StepRecord:
-        required = list((spec.input_schema or {}).get("required") or [])
+    def _ensure_invocation_artifacts(self, step: StepRecord, profile: CapabilityExecutionProfile, task) -> StepRecord:
+        required = list((profile.input_schema or {}).get("required") or [])
         if not required or step.input_artifact_ids:
             return step
-        payload = self._invocation_payload_from_task(spec, task, step)
+        payload = self._invocation_payload_from_task(profile, task, step)
         if payload is None:
             raise ValueError(
-                f"{spec.id} requires {required} in a direct input artifact; "
+                f"{profile.capability_id} requires {required} in a direct input artifact; "
                 "this step was planned without one."
             )
         artifact = self.store.put_artifact(
             task.id,
             step_id=step.id,
-            kind=_REQUEST_KINDS.get(spec.id, "capability_request"),
+            kind=_REQUEST_KINDS.get(profile.capability_id, "capability_request"),
             payload=payload,
-            metadata={"synthesized_invocation_input": True, "capability": spec.id},
+            metadata={"synthesized_invocation_input": True, "capability": profile.capability_id},
         )
         return self.store.set_step_input_artifact_ids(step.id, (artifact.id,))
 
     @staticmethod
-    def _invocation_payload_from_task(spec: CapabilitySpec, task, step: StepRecord) -> dict[str, Any] | None:
-        if spec.id == "knowledge.search":
+    def _invocation_payload_from_task(profile: CapabilityExecutionProfile, task, step: StepRecord) -> dict[str, Any] | None:
+        if profile.capability_id == "knowledge.search":
             return {
                 "query": search_query_from_task(
                     objective=task.objective,
@@ -488,24 +494,24 @@ class RuntimeExecutionMixin:
                 ),
                 "limit": 8,
             }
-        if spec.id == "knowledge.ingest_text":
+        if profile.capability_id == "knowledge.ingest_text":
             return ingest_request_from_task(
                 objective=task.objective,
                 description=step.description,
             )
         return None
 
-    def _complete_human_step(self, step: StepRecord, spec: Any, approval: Any) -> bool:
+    def _complete_human_step(self, step: StepRecord, profile: CapabilityExecutionProfile, approval: Any) -> bool:
         previous = self.store.list_executions(step.task_id, step_id=step.id)
-        if len(previous) >= spec.budget.max_attempts:
+        if len(previous) >= profile.budget.max_attempts:
             self.store.set_step_status(step.id, "failed")
             return True
         input_ids = self.store.dependency_output_artifact_ids(step.id)
         execution = self.store.begin_execution(
             step.task_id,
             step_id=step.id,
-            capability=spec.id,
-            capability_version=spec.version,
+            capability=profile.capability_id,
+            capability_version=profile.version,
             provider="human",
             input_artifact_ids=input_ids,
         )
@@ -514,7 +520,7 @@ class RuntimeExecutionMixin:
             "capability.started",
             step_id=step.id,
             execution_id=execution.id,
-            payload={"capability": spec.id, "provider": "human"},
+            payload={"capability": profile.capability_id, "provider": "human"},
         )
         outcome = CapabilityOutcome(
             "pass",
@@ -524,15 +530,15 @@ class RuntimeExecutionMixin:
                 "note": approval.decision_note,
                 "requested_action": approval.requested_action,
             },
-            output_kind=spec.output_kind or "human_decision",
+            output_kind=profile.output_kind or "human_decision",
             receipt={"ok": True, "approval_id": approval.id},
             claims=(
                 {
                     "kind": "executed",
-                    "subject": f"human_gate.{spec.id}",
+                    "subject": f"human_gate.{profile.capability_id}",
                     "value": approval.status,
                 },
             ),
         )
-        self._finish_frame(step, spec, execution.id, {}, outcome)
+        self._finish_frame(step, profile, execution.id, {}, outcome)
         return True

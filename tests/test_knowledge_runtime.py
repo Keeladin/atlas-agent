@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.capability_fixtures import make_registration, register_cap
 
 import json
 import tempfile
@@ -6,7 +7,6 @@ import unittest
 from pathlib import Path
 
 from atlas_core.bootstrap import build_runtime
-from atlas_core.capabilities import CapabilitySpec
 from atlas_core.context import ContextBuilder
 from atlas_core.knowledge import (
     MAX_SEARCH_RESULT_CHARS,
@@ -76,7 +76,7 @@ class KnowledgeRuntimeTests(unittest.TestCase):
             task.id,
             description="Chunk and index extracted text.",
             capability="knowledge.ingest_text",
-            capability_version=runtime.capabilities.get("knowledge.ingest_text").spec.version,
+            capability_version=runtime.capabilities.get("knowledge.ingest_text").profile.version,
             input_artifact_ids=(request.id,),
             metadata={"accept_all_criteria": True},
         )
@@ -576,7 +576,7 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         self.assertNotIn(hits[0].chunk.text[:80], claim_blob)
 
     def test_search_verifier_rejects_off_topic_result_lists(self):
-        spec = CapabilitySpec(
+        spec = make_registration(
             id="knowledge.search",
             description="search",
             executor_kind="deterministic",

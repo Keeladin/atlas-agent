@@ -2,7 +2,7 @@
 
 **Status:** Design document only. Not runtime behaviour.  
 **Scope:** Boundary between capability awareness, mode exposure, task intent, and execution  
-**Does not:** enforce policy, change ToolGateway, CapabilitySpec, MCP, schema, UI, or WORK execution
+**Does not:** enforce policy, change ToolGateway, MCP, schema, UI, or reconnect Companion
 
 Related: [Capability Awareness](./Capability%20Awareness.md), [Security and Intent Model](./Atlas%20Security%20and%20Intent%20Model.md).
 
@@ -55,7 +55,7 @@ Execution
 
 | Layer | Question | Must not |
 |---|---|---|
-| Capability | What product action exists? | Name n8n / MCP tools as identity |
+| Capability (`CapabilityDefinition`) | What product action exists? | Name n8n / MCP tools as identity |
 | Exposure | May this **mode** explain, brief, or execute it? | Grant authority or confirmation |
 | Task Brief | What does **this work** intend? | Invoke ToolGateway |
 | Runtime frame | Which **bound tools** may this WORK frame call? | Dump the provider inventory |
@@ -176,9 +176,9 @@ may resolve to:
 
 The model must not select providers directly. The frame is built from:
 
-1. the Task Brief’s capability list
-2. explicit `CapabilityBinding` rows for this deployment
-3. `allowed_tools` as a **frame** allow-list of ToolDescriptor refs
+1. the Task Brief’s capability list (`catalog()` ids)
+2. `CapabilityExecutionProfile` for this deployment, including any `CapabilityBinding`
+3. `allowed_tools` as a **frame** allow-list of ToolDescriptor refs from that profile
 4. ToolGateway as the invoke boundary
 
 The frame is narrower than provider inventory. `list_credentials` and `archive_workflow` stay out unless a reviewed capability binds them into **this** work.
@@ -204,8 +204,12 @@ Provider discovery != capability exposure
 Also:
 
 - Discovery != capability
+- Capability != implementation
+- Capability != permission
 - Binding != permission
 - Tool != capability
+- Intent != execution
+- Execution != verification
 - A conversational “yes” is not confirmation
 - WORK `execute` exposure still requires standing grant and, where declared, payload confirmation
 
@@ -262,6 +266,6 @@ Unmapped MCP tools never appear on this plane.
 ## What this is not
 
 - Not runtime enforcement
-- Not a change to ToolGateway, CapabilitySpec, or MCP
+- Not a change to ToolGateway, MCP, or `CapabilityDefinition` identity
 - Not RBAC, users, or ACLs
 - Not a reason to hide product meaning; hide **handles**, not **awareness**

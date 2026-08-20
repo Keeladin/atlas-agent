@@ -10,38 +10,46 @@ It is not an advisory or historical reconciliation record. These are the current
 
 ---
 
-## 1. Capability contract is the execution contract
+## 1. Capability meaning is not the execution contract
 
 Atlas remains one persistent agent.
 
 Planning, research, coding, analysis, data work, tool use and action execution are represented as bounded capabilities or execution contexts, not autonomous named agents.
 
-`CapabilitySpec` is the canonical versioned capability contract.
+Ownership:
 
-A capability may define:
+```text
+CapabilityDefinition
+        |
+        | meaning
+        v
 
-- stable ID;
-- SemVer version;
-- human description and bounded responsibility;
-- executor kind;
-- input/output schemas;
-- allowed ToolDescriptor references (runtime execution-frame allow-list, not vendor identity);
-- required authority;
-- confirmation requirement (`none` or `required`; action property, not authority approval; not enforced yet);
-- side-effect classification;
-- idempotency;
-- context policy;
-- eligible providers;
-- privacy/data classification;
-- verifier;
-- execution/tool/cost budgets;
-- retry behaviour;
-- parallel safety;
-- deprecation/replacement metadata.
+CapabilityExecutionProfile
+        |
+        | deployment
+        v
 
-Durable planned steps may pin an exact capability version. Every execution records the exact version used.
+CapabilityRegistration
+        |
+        | executable Work implementation
+        v
 
-Discovery never equals exposure. Deployment bindings (`CapabilityBinding`) are not part of capability identity and do not grant authority. Unmapped provider tools are not capability consumers' tools. See [Capability Awareness](./Capability%20Awareness.md) and [Security and Intent Model](./Atlas%20Security%20and%20Intent%20Model.md).
+TaskRuntime
+```
+
+`CapabilityDefinition` is capability identity (`catalog()` / `lookup()`): stable id, description, `required_authority`, confirmation (`none` or `required`; action property, not authority approval; not enforced yet), and side-effect class.
+
+`CapabilityExecutionProfile` is this deployment's availability: SemVer version, executor kind, input/output schemas, ToolDescriptor allow-list, idempotency, context policy, eligible providers, privacy/data classification, verifier, budgets, retry behaviour, parallel safety, deprecation/replacement, and optional `CapabilityBinding`.
+
+`CapabilityRegistration` is the Work-engine record (definition + profile + handler). `TaskRuntime` executes registrations. It does not mint catalog identity.
+
+Durable planned steps may pin an exact profile version. Every execution records the exact version used.
+
+A capability may exist in `catalog()` with no profile. That deployment cannot execute it. The capability still exists.
+
+Discovery never equals exposure. Deployment bindings (`CapabilityBinding`) are not part of capability identity and do not grant authority. Unmapped provider tools are not capability consumers' tools. Handler registration does not create catalog identity. See [Capability Awareness](./Capability%20Awareness.md) and [Security and Intent Model](./Atlas%20Security%20and%20Intent%20Model.md).
+
+`CapabilitySpec` is removed.
 
 ---
 
@@ -326,7 +334,13 @@ atlas_core/
 ├── tasks/
 │   └── durable task/step/execution/artifact/claim/approval/checkpoint/event state
 ├── capabilities/
-│   └── CapabilitySpec contracts + version-aware registry
+│   └── CapabilityDefinition catalog, execution profiles, Work registry
+├── chat/
+│   └── ChatRuntime composition root
+├── advanced/
+│   └── AdvancedRuntime composition root
+├── work/
+│   └── WorkRuntime composition root
 ├── providers/
 │   └── provider contracts, routing, HTTP adapters and eval scores
 ├── knowledge/
@@ -387,18 +401,19 @@ Regression coverage should preserve at minimum:
 3. artifacts are immutable and hashed;
 4. retries create new executions;
 5. capability version pinning survives durable execution;
-6. ContextManifest exists before provider/handler invocation;
-7. ContextManifest cannot be overwritten;
-8. dropped context candidates and reasons remain auditable;
-9. tool/capability schemas are enforced;
-10. tool constraints fail closed;
-11. planning uses ContextBuilder;
-12. authority can block and resume one bounded action;
-13. provider routing respects privacy and eval scores;
-14. side-effecting tools require receipts;
-15. tasks can execute beyond shallow conversational round limits;
-16. presentation profile follows intent rather than capability default;
-17. Morning, Mobile, and Companion behavioural regression suites remain green.
+6. catalog identity is independent of handler registration, MCP discovery, and ToolGateway;
+7. ContextManifest exists before provider/handler invocation;
+8. ContextManifest cannot be overwritten;
+9. dropped context candidates and reasons remain auditable;
+10. tool/capability schemas are enforced;
+11. tool constraints fail closed;
+12. planning uses ContextBuilder;
+13. authority can block and resume one bounded action;
+14. provider routing respects privacy and eval scores;
+15. side-effecting tools require receipts;
+16. tasks can execute beyond shallow conversational round limits;
+17. presentation profile follows intent rather than capability default;
+18. Morning, Mobile, and Companion behavioural regression suites remain green.
 
 ---
 
@@ -410,4 +425,4 @@ The implementation-level shorthand remains:
 Task → Capability → Artifact → Verification
 ```
 
-The TaskRuntime owns objectives, durable state, authority, execution history and completion. Capabilities perform bounded responsibilities. Artifacts/claims/receipts preserve evidence. Verification decides whether the work actually satisfies its contract.
+Work owns execution. `CapabilityDefinition` is meaning. `CapabilityExecutionProfile` is deployment availability. `CapabilityRegistration` is the Work binding. `TaskRuntime` owns objectives, durable state, authority, execution history and completion for accepted work. Artifacts/claims/receipts preserve evidence. Verification decides whether the work actually satisfies its contract.

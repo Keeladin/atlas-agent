@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.capability_fixtures import make_registration, register_cap
 
 import tempfile
 import unittest
@@ -6,7 +7,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from atlas_core.authority import authority_allows
-from atlas_core.capabilities import CapabilityOutcome, CapabilityRegistry, CapabilitySpec, ExecutionBudget
+from atlas_core.capabilities import CapabilityOutcome, CapabilityRegistry,  ExecutionBudget
 from atlas_core.context import ContextBuilder
 from atlas_core.evals import EvalCase, EvalHarness
 from atlas_core.providers import (
@@ -116,7 +117,7 @@ class AtlasRuntimeTests(unittest.TestCase):
             return CapabilityOutcome("pass", output={"step": request.step_id})
 
         for name in ("demo.a", "demo.b"):
-            caps.register(CapabilitySpec(
+            caps.register(make_registration(
                 id=name,
                 description=name,
                 executor_kind="deterministic",
@@ -144,7 +145,7 @@ class AtlasRuntimeTests(unittest.TestCase):
         def verifier(spec, output, context):
             return VerificationResult("pass" if output == "good" else "rework", "checked")
         verifiers.register("demo.retry", verifier)
-        caps.register(CapabilitySpec(id="demo.retry", description="retry", executor_kind="deterministic", verifier_id="demo.retry", budget=ExecutionBudget(max_attempts=3)), handler)
+        caps.register(make_registration(id="demo.retry", description="retry", executor_kind="deterministic", verifier_id="demo.retry", budget=ExecutionBudget(max_attempts=3)), handler)
         task = self._task()
         self.store.add_step(task.id, description="Retry work", capability="demo.retry", metadata={"accept_all_criteria": True})
         result = TaskRuntime(store=self.store, capabilities=caps, verifiers=verifiers).run_until_blocked(task.id)
@@ -153,7 +154,7 @@ class AtlasRuntimeTests(unittest.TestCase):
 
     def test_authority_can_pause_then_resume_after_explicit_approval(self):
         caps = CapabilityRegistry()
-        caps.register(CapabilitySpec(id="external.send", description="send", executor_kind="tool", required_authority="communicate", verifier_id="core.receipt"), lambda request: CapabilityOutcome("pass", output={"sent": True}, receipt={"ok": True, "message_id": "m1"}))
+        caps.register(make_registration(id="external.send", description="send", executor_kind="tool", required_authority="communicate", verifier_id="core.receipt"), lambda request: CapabilityOutcome("pass", output={"sent": True}, receipt={"ok": True, "message_id": "m1"}))
         task = self._task(authority="read")
         step = self.store.add_step(task.id, description="Send", capability="external.send", metadata={"accept_all_criteria": True})
         runtime = TaskRuntime(store=self.store, capabilities=caps)
@@ -171,8 +172,8 @@ class AtlasRuntimeTests(unittest.TestCase):
         cloud = FakeProvider(ProviderSpec("cloud", "frontier", "fake", {"reasoning.deep": 0.99}, local=False, priority=100))
         registry.register(local)
         registry.register(cloud)
-        spec = CapabilitySpec(id="reasoning.deep", description="deep", executor_kind="model", verifier_id="core.nonempty", privacy="local_only")
-        route = ModelRouter(registry).select(spec, context_chars=1000)
+        spec = make_registration(id="reasoning.deep", description="deep", executor_kind="model", verifier_id="core.nonempty", privacy="local_only")
+        route = ModelRouter(registry).select(spec.id, context_chars=1000, privacy=spec.profile.privacy)
         self.assertEqual(route.provider.spec.key, "local")
 
     def test_router_explains_when_context_exceeds_provider_window(self):
@@ -181,12 +182,12 @@ class AtlasRuntimeTests(unittest.TestCase):
             ProviderSpec("local:resident", "atlas", "fake", {"reasoning.general": 0.5}, local=True, max_context_chars=30000)
         )
         registry.register(local)
-        spec = CapabilitySpec(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty")
+        spec = make_registration(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty")
         with self.assertRaises(ModelRoutingError) as raised:
-            ModelRouter(registry).select(spec, context_chars=48000)
+            ModelRouter(registry).select(spec.id, context_chars=48000)
         self.assertIn("reasoning.general", str(raised.exception))
         self.assertIn("context 48000 > max_context_chars 30000", str(raised.exception))
-        route = ModelRouter(registry).select(spec, context_chars=12000)
+        route = ModelRouter(registry).select(spec.id, context_chars=12000)
         self.assertEqual(route.provider.spec.key, "local:resident")
 
     def test_model_capability_routes_and_records_provider(self):
@@ -194,7 +195,7 @@ class AtlasRuntimeTests(unittest.TestCase):
         fake = FakeProvider(ProviderSpec("cloud:test", "model-x", "fake", {"reasoning.general": 0.9}, priority=100))
         providers.register(fake)
         caps = CapabilityRegistry()
-        caps.register(CapabilitySpec(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty"))
+        caps.register(make_registration(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty"))
         task = self._task()
         self.store.add_step(task.id, description="Reason", capability="reasoning.general", metadata={"accept_all_criteria": True})
         result = TaskRuntime(store=self.store, capabilities=caps, model_router=ModelRouter(providers)).run_until_blocked(task.id)
@@ -205,7 +206,7 @@ class AtlasRuntimeTests(unittest.TestCase):
 
     def test_runtime_budget_is_task_lifetime_budget_not_tool_rounds(self):
         caps = CapabilityRegistry()
-        caps.register(CapabilitySpec(id="demo", description="demo", executor_kind="deterministic", verifier_id="core.nonempty"), lambda request: CapabilityOutcome("pass", output=request.step_id))
+        caps.register(make_registration(id="demo", description="demo", executor_kind="deterministic", verifier_id="core.nonempty"), lambda request: CapabilityOutcome("pass", output=request.step_id))
         task = self._task(criteria=tuple(f"c{i}" for i in range(1, 8)))
         previous = None
         for i in range(1, 8):
@@ -254,7 +255,7 @@ class AtlasRuntimeTests(unittest.TestCase):
             return CapabilityOutcome("pass", output={"sent": True}, receipt={"ok": True, "message_id": "m1"})
         verifiers = VerifierRegistry()
         verifiers.register("mail.verify", lambda spec, output, context: VerificationResult("rework", "delivery state ambiguous"))
-        caps.register(CapabilitySpec(
+        caps.register(make_registration(
             id="mail.send", description="send once", executor_kind="tool",
             required_authority="communicate", side_effects=("external_email",),
             idempotent=False, verifier_id="mail.verify", budget=ExecutionBudget(max_attempts=3),
@@ -284,7 +285,7 @@ class AtlasRuntimeTests(unittest.TestCase):
         providers = ProviderRegistry()
         fake = FakeProvider(ProviderSpec("planner", "planner-model", "fake", {"planning.general": 0.9}), text=plan_text)
         providers.register(fake)
-        planning_spec = CapabilitySpec(id="planning.general", description="plan", executor_kind="model", verifier_id="core.nonempty")
+        planning_spec = make_registration(id="planning.general", description="plan", executor_kind="model", verifier_id="core.nonempty")
         planner = TaskPlanner(
             store=self.store,
             model_router=ModelRouter(providers),
@@ -309,7 +310,7 @@ class AtlasRuntimeTests(unittest.TestCase):
         providers = ProviderRegistry()
         fake = FakeProvider(ProviderSpec("planner", "planner-model", "fake", {"planning.general": 0.9}), text=plan_text)
         providers.register(fake)
-        planning_spec = CapabilitySpec(id="planning.general", description="plan", executor_kind="model", context_profile="plan", verifier_id="core.nonempty")
+        planning_spec = make_registration(id="planning.general", description="plan", executor_kind="model", context_profile="plan", verifier_id="core.nonempty")
         planner = TaskPlanner(
             store=self.store,
             model_router=ModelRouter(providers),
@@ -337,11 +338,11 @@ class AtlasRuntimeTests(unittest.TestCase):
         registry.register(a)
         registry.register(b)
         router = ModelRouter(registry)
-        spec = CapabilitySpec(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty")
-        self.assertEqual(router.select(spec, context_chars=100).provider.spec.key, "a")
+        spec = make_registration(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty")
+        self.assertEqual(router.select(spec.id, context_chars=100).provider.spec.key, "a")
         router.record_eval_score("a", "reasoning.general", 0.5)
         router.record_eval_score("b", "reasoning.general", 0.95)
-        self.assertEqual(router.select(spec, context_chars=100).provider.spec.key, "b")
+        self.assertEqual(router.select(spec.id, context_chars=100).provider.spec.key, "b")
 
     def test_model_abstention_fails_over_to_next_provider(self):
         class FailingProvider(FakeProvider):
@@ -354,7 +355,7 @@ class AtlasRuntimeTests(unittest.TestCase):
         providers.register(first)
         providers.register(second)
         caps = CapabilityRegistry()
-        caps.register(CapabilitySpec(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty", budget=ExecutionBudget(max_attempts=3)))
+        caps.register(make_registration(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty", budget=ExecutionBudget(max_attempts=3)))
         task = self._task()
         self.store.add_step(task.id, description="Reason", capability="reasoning.general", metadata={"accept_all_criteria": True})
         result = TaskRuntime(store=self.store, capabilities=caps, model_router=ModelRouter(providers)).run_until_blocked(task.id)
@@ -366,7 +367,7 @@ class AtlasRuntimeTests(unittest.TestCase):
 
     def test_long_task_depth_survives_many_bounded_frames(self):
         caps = CapabilityRegistry()
-        caps.register(CapabilitySpec(id="deep.step", description="bounded frame", executor_kind="deterministic", verifier_id="core.nonempty"), lambda request: CapabilityOutcome("pass", output={"ordinal": request.attempt, "step": request.step_id}))
+        caps.register(make_registration(id="deep.step", description="bounded frame", executor_kind="deterministic", verifier_id="core.nonempty"), lambda request: CapabilityOutcome("pass", output={"ordinal": request.attempt, "step": request.step_id}))
         criteria = tuple(f"criterion {i}" for i in range(1, 26))
         task = self._task(criteria=criteria)
         previous = None

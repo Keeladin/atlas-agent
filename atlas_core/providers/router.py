@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from atlas_core.capabilities.contracts import CapabilitySpec
 from .contracts import ModelProvider
 from .registry import ProviderRegistry
 from .scores import ProviderScoreStore
@@ -55,10 +54,18 @@ class ModelRouter:
                 return durable.score
         return provider.spec.score_for(capability_id)
 
-    def select(self, capability: CapabilitySpec, *, context_chars: int, exclude_provider_keys: tuple[str, ...] = ()) -> RouteDecision:
+    def select(
+        self,
+        capability_id: str,
+        *,
+        context_chars: int,
+        privacy: str = "cloud_allowed",
+        eligible_providers: tuple[str, ...] = (),
+        exclude_provider_keys: tuple[str, ...] = (),
+    ) -> RouteDecision:
         candidates: list[tuple[tuple[float, int, int, int, int], ModelProvider]] = []
         skipped: list[str] = []
-        allowlist = set(capability.eligible_providers)
+        allowlist = set(eligible_providers)
         excluded = set(exclude_provider_keys)
         for provider in self.registry.providers():
             spec = provider.spec
@@ -76,25 +83,25 @@ class ModelRouter:
                     f"{spec.key} context {context_chars} > max_context_chars {spec.max_context_chars}"
                 )
                 continue
-            if capability.privacy == "local_only" and not spec.local:
+            if privacy == "local_only" and not spec.local:
                 skipped.append(f"{spec.key} is not local")
                 continue
-            competence = self.competence(provider, capability.id)
+            competence = self.competence(provider, capability_id)
             if competence is None:
-                skipped.append(f"{spec.key} has no score for {capability.id}")
+                skipped.append(f"{spec.key} has no score for {capability_id}")
                 continue
             locality = 1 if spec.local else 0
-            cloud_preference = 1 if capability.privacy == "cloud_preferred" and not spec.local else 0
+            cloud_preference = 1 if privacy == "cloud_preferred" and not spec.local else 0
             score = (competence, cloud_preference, spec.priority, locality, -spec.latency_rank)
             candidates.append((score, provider))
         if not candidates:
             detail = "; ".join(skipped) if skipped else "no providers are registered"
             raise ModelRoutingError(
-                f"No provider satisfies capability {capability.id!r} and its constraints: {detail}."
+                f"No provider satisfies capability {capability_id!r} and its constraints: {detail}."
             )
         score, provider = max(candidates, key=lambda item: item[0])
         return RouteDecision(
             provider=provider,
-            reason=f"capability={capability.id}; competence={score[0]:.3f}; privacy={capability.privacy}; context_chars={context_chars}",
+            reason=f"capability={capability_id}; competence={score[0]:.3f}; privacy={privacy}; context_chars={context_chars}",
             score=score,
         )

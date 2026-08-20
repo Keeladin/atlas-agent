@@ -27,7 +27,7 @@ Conversation is an interface to Atlas, not the source of truth.
 2. **Tasks are durable.** Substantive work survives model calls, context limits and process restarts.
 3. **Task depth is not tool-round depth.** Long work is many bounded execution frames.
 4. **Deterministic work stays deterministic.** Calculation, filtering, schema validation, state transitions and known rules prefer ordinary software.
-5. **Capabilities have contracts.** Inputs, outputs, side effects, authority, budgets, retry behaviour and verification are explicit.
+5. **Capability meaning is independent of execution.** `CapabilityDefinition` is identity. `CapabilityExecutionProfile` is this deployment. `CapabilityRegistration` is the Work binding.
 6. **Models are providers, not architecture.** Provider selection may change without changing task semantics.
 7. **Context is assembled, not accumulated.** Each execution receives a bounded projection of durable state.
 8. **State lives outside model context.**
@@ -64,7 +64,7 @@ flowchart TB
         TP[Task Plane\nobjective • criteria • constraints • authority]
         RT[TaskRuntime\ndependencies • budgets • retries • checkpoints]
         CB[ContextBuilder\nbounded projection]
-        CR[Capability Registry\nversioned CapabilitySpec]
+        CR[CapabilityDefinition catalog\n+ Work registrations]
         TG[Tool Gateway\nToolDescriptor + MCP bridge]
         MR[Model Router\nlocal / cloud providers]
         VF[Capability Verification]
@@ -118,12 +118,15 @@ flowchart TB
 
 ### Interpretation
 
-- The **TaskRuntime owns work**.
-- The **Capability Registry owns executable responsibility contracts**.
+- **ChatRuntime**, **AdvancedRuntime**, and **WorkRuntime** are independent composition roots.
+- Chat and Advanced know `CapabilityDefinition` meaning from `catalog()`. They do not execute.
+- **WorkRuntime owns execution.** It accepts a Task Brief, then uses `TaskRuntime` as the engine.
+- `CapabilityDefinition` is identity. `CapabilityExecutionProfile` is deployment availability. `CapabilityRegistration` is the Work-engine binding.
 - The **Model Router sits below capability semantics**.
 - The **ContextBuilder owns model/capability context assembly**.
-- Durable state is not stored in a conversation or model context.
+- Durable Work state is not stored in a conversation or model context.
 - Mobile Capture is an offline interface/domain surface, not a second Atlas agent.
+- Companion remains a LAN-local interface into a legacy `TaskRuntime` assembly. It is not reconnected to the three roots here.
 - MCP is an adapter protocol at the tool edge, not Atlas's internal ontology.
 
 ---
@@ -221,20 +224,47 @@ An immutable record of what context was assembled for a bounded capability/model
 
 ---
 
-## 5. Capability contract
+## 5. Capability ownership
 
-Every executable responsibility has a versioned `CapabilitySpec`.
+Atlas knows capabilities independently of whether this deployment can execute them.
 
-A capability can define:
+```text
+CapabilityDefinition
+        |
+        | meaning
+        v
+
+CapabilityExecutionProfile
+        |
+        | deployment
+        v
+
+CapabilityRegistration
+        |
+        | executable Work implementation
+        v
+
+TaskRuntime
+```
+
+`CapabilityDefinition` (`catalog()` / `lookup()`) is identity:
 
 ```text
 id
-version
 human description
+required authority
+confirmation (none | required)
+side-effect class
+```
+
+`CapabilityExecutionProfile` is this deployment:
+
+```text
+capability_id
+version
 executor kind
 input schema
 output schema / artifact kind
-required authority
 side effects
 idempotency
 context policy
@@ -245,13 +275,15 @@ execution/tool/cost budgets
 retry policy
 parallel safety
 verifier
-metadata / criterion mapping
+binding
 deprecation / replacement
 ```
 
+`CapabilityRegistration` binds definition + profile + handler for Work. `TaskRuntime` executes that registration. Handler registration, MCP discovery, and ToolGateway do not create catalog identity.
+
 Executor kinds include deterministic code, tools, model-backed work, composite responsibilities and human gates.
 
-Capabilities describe **what responsibility is being executed**. Providers/tools describe **how that responsibility is satisfied**.
+Definitions describe **what Atlas understands**. Profiles describe **whether this deployment can perform it**. Providers/tools describe **how that responsibility is satisfied**.
 
 ---
 
@@ -497,7 +529,10 @@ Audit, notifications, cost accounting and future telemetry may consume these eve
 ```text
 atlas_core/
 ├── tasks/                 durable runtime records and SQLite stores
-├── capabilities/          CapabilitySpec + registry
+├── capabilities/          CapabilityDefinition catalog, profiles, Work registry
+├── chat/                  ChatRuntime composition root
+├── advanced/              AdvancedRuntime composition root
+├── work/                  WorkRuntime composition root
 ├── providers/             provider contracts, routing, adapters, eval scores
 ├── knowledge/             SQLite/FTS ingestion and retrieval
 ├── integrations/          domain capability adapters

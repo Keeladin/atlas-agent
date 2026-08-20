@@ -18,14 +18,14 @@ class RuntimeFinishMixin:
     def _finish_frame(
         self,
         step: StepRecord,
-        spec: Any,
+        profile,
         execution_id: str,
         context: dict[str, Any],
         outcome: CapabilityOutcome,
     ) -> None:
-        if outcome.status == "pass" and spec.output_schema:
+        if outcome.status == "pass" and profile.output_schema:
             try:
-                validate_json(outcome.output, spec.output_schema, path="$.output")
+                validate_json(outcome.output, profile.output_schema, path="$.output")
             except SchemaValidationError as exc:
                 outcome = CapabilityOutcome(
                     "rework",
@@ -42,15 +42,15 @@ class RuntimeFinishMixin:
                     step_id=step.id,
                     execution_id=execution_id,
                     payload={
-                        "capability": spec.id,
-                        "capability_version": spec.version,
+                        "capability": profile.capability_id,
+                        "capability_version": profile.version,
                         "error": str(exc),
                     },
                 )
 
         if (
             outcome.status == "pass"
-            and spec.side_effects
+            and profile.side_effects
             and not (
                 isinstance(outcome.receipt, dict)
                 and outcome.receipt.get("ok") is True
@@ -70,7 +70,7 @@ class RuntimeFinishMixin:
                 "side_effect.unverified",
                 step_id=step.id,
                 execution_id=execution_id,
-                payload={"capability": spec.id},
+                payload={"capability": profile.capability_id},
             )
 
         output_ids: list[str] = []
@@ -83,8 +83,8 @@ class RuntimeFinishMixin:
                 )
             )
             if (
-                spec.budget.max_output_chars is not None
-                and size > spec.budget.max_output_chars
+                profile.budget.max_output_chars is not None
+                and size > profile.budget.max_output_chars
             ):
                 outcome = CapabilityOutcome(
                     "rework",
@@ -92,7 +92,7 @@ class RuntimeFinishMixin:
                     metrics=outcome.metrics,
                     error=(
                         "output exceeds explicit budget: "
-                        f"{size}>{spec.budget.max_output_chars}"
+                        f"{size}>{profile.budget.max_output_chars}"
                     ),
                     claims=outcome.claims,
                 )
@@ -100,10 +100,10 @@ class RuntimeFinishMixin:
                 artifact = self.store.put_artifact(
                     step.task_id,
                     step_id=step.id,
-                    kind=outcome.output_kind or spec.output_kind,
+                    kind=outcome.output_kind or profile.output_kind,
                     payload=outcome.output,
                     metadata={
-                        "capability": spec.id,
+                        "capability": profile.capability_id,
                         "execution_id": execution_id,
                         "outcome_status": outcome.status,
                     },
@@ -118,7 +118,7 @@ class RuntimeFinishMixin:
                 kind="execution_receipt",
                 payload=outcome.receipt,
                 metadata={
-                    "capability": spec.id,
+                    "capability": profile.capability_id,
                     "execution_id": execution_id,
                 },
             )
@@ -131,11 +131,11 @@ class RuntimeFinishMixin:
         verification_context["execution_receipt"] = outcome.receipt
         details: dict[str, Any] = {}
         gate: VerificationResult | None = None
-        if outcome.status == "pass" and spec.verification_required:
+        if outcome.status == "pass" and profile.verification_required:
             try:
                 verification = self.verifiers.verify(
-                    spec.verifier_id or "",
-                    spec,
+                    profile.verifier_id or "",
+                    profile,
                     outcome.output,
                     verification_context,
                 )
@@ -151,7 +151,7 @@ class RuntimeFinishMixin:
         if final_status == "pass":
             task = self.store.get_task(step.task_id)
             gate = self.outcome_gate.evaluate(
-                spec=spec,
+                profile=profile,
                 output=outcome.output,
                 context=verification_context,
                 step=step,
@@ -166,7 +166,7 @@ class RuntimeFinishMixin:
                 verification = gate
                 final_status = gate.status
         persist_verification = verification is not None and (
-            spec.verification_required or verification.status != "pass"
+            profile.verification_required or verification.status != "pass"
         )
         gate_details = details.get("outcome_gate") or {}
         if gate is not None and (
@@ -191,7 +191,7 @@ class RuntimeFinishMixin:
                 kind="verification_result",
                 payload=verifier_payload,
                 metadata={
-                    "verifier_id": spec.verifier_id,
+                    "verifier_id": profile.verifier_id,
                     "execution_id": execution_id,
                     "outcome_gate": True,
                 },
@@ -218,8 +218,8 @@ class RuntimeFinishMixin:
             error=execution_error,
         )
 
-        if final_status in spec.retry_policy.retry_on:
-            if execution.attempt >= spec.budget.max_attempts:
+        if final_status in profile.retry_policy.retry_on:
+            if execution.attempt >= profile.budget.max_attempts:
                 current_step = self.store.get_step(step.id)
                 if current_step.status not in {"failed", "pass", "skipped"}:
                     self.store.set_step_status(step.id, "failed")
@@ -228,9 +228,9 @@ class RuntimeFinishMixin:
                     "retry.exhausted",
                     step_id=step.id,
                     execution_id=execution_id,
-                    payload={"max_attempts": spec.budget.max_attempts},
+                    payload={"max_attempts": profile.budget.max_attempts},
                 )
-            elif spec.idempotent or not spec.side_effects:
+            elif profile.idempotent or not profile.side_effects:
                 current_step = self.store.get_step(step.id)
                 if current_step.status == "blocked":
                     self.store.set_step_status(step.id, "pending")
@@ -251,7 +251,7 @@ class RuntimeFinishMixin:
                 )
         elif (
             final_status in {"rework", "abstain"}
-            and final_status not in spec.retry_policy.retry_on
+            and final_status not in profile.retry_policy.retry_on
         ):
             current_step = self.store.get_step(step.id)
             if current_step.status not in {"failed", "pass", "skipped"}:
@@ -272,7 +272,7 @@ class RuntimeFinishMixin:
                 step.task_id,
                 step_id=step.id,
                 kind=claim_kind,
-                subject=str(claim.get("subject") or spec.id),
+                subject=str(claim.get("subject") or profile.capability_id),
                 value=claim.get("value"),
                 evidence_artifact_ids=claim_evidence,
                 confidence=claim.get("confidence"),
@@ -287,7 +287,7 @@ class RuntimeFinishMixin:
             self._accept_declared_criteria(
                 step,
                 criterion_evidence,
-                spec.metadata,
+                profile.metadata,
             )
 
         self.store.create_checkpoint(
@@ -302,7 +302,7 @@ class RuntimeFinishMixin:
             step_id=step.id,
             execution_id=execution_id,
             payload={
-                "capability": spec.id,
+                "capability": profile.capability_id,
                 "status": final_status,
                 "outputs": output_ids,
             },

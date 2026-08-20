@@ -132,7 +132,7 @@ Implemented on `main`:
 
 - durable TaskRuntime;
 - SQLite task / step / execution / artifact / claim / approval / checkpoint / event state;
-- versioned capability contracts;
+- CapabilityDefinition catalog, versioned execution profiles, and Work registrations;
 - bounded ContextBuilder and immutable ContextManifest;
 - verification and completion gates;
 - explicit authority and approvals;

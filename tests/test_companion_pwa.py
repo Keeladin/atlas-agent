@@ -174,7 +174,7 @@ class CompanionKnowledgeServiceTests(unittest.TestCase):
             task.id,
             description="Chunk and index extracted text.",
             capability="knowledge.ingest_text",
-            capability_version=self.service.runtime.capabilities.get("knowledge.ingest_text").spec.version,
+            capability_version=self.service.runtime.capabilities.get("knowledge.ingest_text").profile.version,
             input_artifact_ids=(request.id,),
             metadata={"accept_all_criteria": True},
         )
@@ -502,8 +502,8 @@ class CompanionCloudModelTests(unittest.TestCase):
         self.assertEqual(live[0]["model"], "grok-4.20-0309-reasoning")
         self.assertIn("planning.general", live[0]["scores"])
         self.assertFalse(service.provider_state.get("local:resident").get("enabled"))
-        planning = service.runtime.capabilities.get("planning.general").spec
-        decision = service.runtime.model_router.select(planning, context_chars=100)
+        planning = service.runtime.capabilities.get("planning.general")
+        decision = service.runtime.model_router.select(planning.id, context_chars=100)
         self.assertEqual(decision.provider.spec.key, "xai:expert")
         self.assertEqual(decision.provider.spec.model, "grok-4.20-0309-reasoning")
         service.enable_cloud_provider("xai:expert", False)

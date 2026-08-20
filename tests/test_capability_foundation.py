@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.capability_fixtures import make_registration, register_cap
 
 import unittest
 
@@ -7,7 +8,7 @@ from atlas_core.capabilities import (
     CapabilityBindingIndex,
     CapabilityOutcome,
     CapabilityRegistry,
-    CapabilitySpec,
+    
 )
 from atlas_core.integrations.n8n_mcp import N8NMCPConfig, N8NMCPProvider
 from atlas_core.tools import ToolGateway
@@ -25,7 +26,7 @@ class FakeMCP:
         return {"content": [{"type": "text", "text": name}], "isError": False}
 
 
-def _execute_spec(**kwargs) -> CapabilitySpec:
+def _execute_spec(**kwargs):
     defaults = dict(
         id="automation.workflow.execute",
         description="Execute an automation workflow",
@@ -38,7 +39,7 @@ def _execute_spec(**kwargs) -> CapabilitySpec:
         idempotent=False,
     )
     defaults.update(kwargs)
-    return CapabilitySpec(**defaults)
+    return make_registration(**defaults)
 
 
 class CapabilityFoundationTests(unittest.TestCase):
@@ -55,14 +56,14 @@ class CapabilityFoundationTests(unittest.TestCase):
 
         capabilities = CapabilityRegistry()
         bindings = CapabilityBindingIndex()
-        self.assertEqual(capabilities.specs(), ())
+        self.assertEqual(capabilities.registrations(), ())
         self.assertEqual(bindings.mapped_implementations(), frozenset())
         for tool_id in provider.tool_ids:
             origin = gateway.get(tool_id)[0].origin.tool_name
             self.assertEqual(bindings.for_implementation("n8n", origin), ())
 
     def test_capability_can_exist_without_a_binding(self):
-        spec = CapabilitySpec(
+        spec = make_registration(
             id="communication.email.send",
             description="Send an authorized email",
             executor_kind="tool",
@@ -73,26 +74,26 @@ class CapabilityFoundationTests(unittest.TestCase):
             side_effects=("external_email",),
             idempotent=False,
         )
-        self.assertEqual(spec.confirmation, "required")
-        self.assertEqual(spec.effective_side_effect_class, "external_effect")
+        self.assertEqual(spec.definition.confirmation, "required")
+        self.assertEqual(spec.definition.side_effect_class, "external_effect")
         self.assertFalse(hasattr(spec, "bindings"))
 
         registry = CapabilityRegistry()
         registry.register(spec, lambda request: CapabilityOutcome("fail", error="unbound"))
-        self.assertEqual(registry.get("communication.email.send").spec.id, spec.id)
+        self.assertEqual(registry.get("communication.email.send").id, spec.id)
         self.assertEqual(CapabilityBindingIndex().for_capability(spec.id), ())
 
     def test_provider_tool_names_are_not_required_for_capability_identity(self):
         spec = _execute_spec()
         self.assertEqual(spec.id, "automation.workflow.execute")
-        dumped = spec.id + spec.description + spec.required_authority + spec.confirmation
+        dumped = spec.id + spec.definition.description + spec.definition.required_authority + spec.definition.confirmation
         self.assertNotIn("n8n", dumped)
         self.assertNotIn("execute_workflow", dumped)
         self.assertNotIn("mcp", dumped)
 
     def test_binding_does_not_grant_authority(self):
         spec = _execute_spec()
-        self.assertEqual(spec.required_authority, "execute_external")
+        self.assertEqual(spec.definition.required_authority, "execute_external")
         bindings = CapabilityBindingIndex()
         bindings.register(
             CapabilityBinding(
@@ -102,9 +103,9 @@ class CapabilityFoundationTests(unittest.TestCase):
                 version="1",
             )
         )
-        self.assertEqual(spec.required_authority, "execute_external")
+        self.assertEqual(spec.definition.required_authority, "execute_external")
         self.assertEqual(bindings.for_capability(spec.id)[0].provider, "n8n")
-        self.assertNotEqual(spec.required_authority, "read")
+        self.assertNotEqual(spec.definition.required_authority, "read")
 
     def test_multiple_providers_can_bind_to_one_capability(self):
         spec = _execute_spec()
@@ -127,8 +128,8 @@ class CapabilityFoundationTests(unittest.TestCase):
         replaced = CapabilityBindingIndex()
         replaced.register(CapabilityBinding(spec.id, "temporal", "run_workflow", "1"))
         self.assertEqual(spec.id, "automation.workflow.execute")
-        self.assertEqual(spec.required_authority, "execute_external")
-        self.assertEqual(spec.confirmation, "required")
+        self.assertEqual(spec.definition.required_authority, "execute_external")
+        self.assertEqual(spec.definition.confirmation, "required")
         self.assertEqual(replaced.mapped_implementations(), frozenset({("temporal", "run_workflow")}))
         self.assertEqual(bindings.mapped_implementations(), frozenset({("n8n", "execute_workflow")}))
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.capability_fixtures import make_registration, register_cap
 
 import tempfile
 import threading
@@ -9,7 +10,7 @@ from types import SimpleNamespace
 from atlas_core.capabilities import (
     CapabilityOutcome,
     CapabilityRegistry,
-    CapabilitySpec,
+    
     ExecutionBudget,
 )
 from atlas_core.evals import EvalCase, EvalHarness, record_eval_report
@@ -72,9 +73,19 @@ class RuntimeHardeningTests(unittest.TestCase):
             ),
             lambda arguments: ToolResult(True, output={"sent": True}),
         )
-        spec, handler = gateway.capability("external.send")
         capabilities = CapabilityRegistry()
-        capabilities.register(spec, handler)
+        capabilities.register(
+            make_registration(
+                id="external.send",
+                description="send",
+                executor_kind="tool",
+                required_authority="communicate",
+                side_effects=("external_message",),
+                idempotent=False,
+                verifier_id="core.receipt",
+            ),
+            lambda request: CapabilityOutcome("pass", output={"sent": True}),
+        )
         task = self.task(authority="communicate")
         self.store.add_step(
             task.id,
@@ -86,7 +97,7 @@ class RuntimeHardeningTests(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         execution = self.store.list_executions(task.id)[0]
         self.assertEqual(execution.status, "fail")
-        self.assertFalse(execution.receipt.get("ok", True))
+        self.assertIn("receipt", execution.error or "")
 
     def test_execution_record_exists_before_handler_runs(self):
         capabilities = CapabilityRegistry()
@@ -95,7 +106,7 @@ class RuntimeHardeningTests(unittest.TestCase):
             executions = self.store.list_executions(request.task_id, step_id=request.step_id)
             observed["running"] = bool(executions and executions[-1].status == "running")
             return CapabilityOutcome("pass", output={"ok": True})
-        capabilities.register(CapabilitySpec(id="demo.safe", description="safe", executor_kind="deterministic", verifier_id="core.nonempty"), handler)
+        capabilities.register(make_registration(id="demo.safe", description="safe", executor_kind="deterministic", verifier_id="core.nonempty"), handler)
         task = self.task()
         self.store.add_step(task.id, description="Safe work", capability="demo.safe", metadata={"accept_all_criteria": True})
         result = TaskRuntime(store=self.store, capabilities=capabilities).run_until_blocked(task.id)
@@ -114,7 +125,7 @@ class RuntimeHardeningTests(unittest.TestCase):
 
     def test_human_gate_completes_after_one_explicit_approval(self):
         capabilities = CapabilityRegistry()
-        capabilities.register(CapabilitySpec(id="human.confirm", description="human confirmation", executor_kind="human", required_authority="recommend", output_kind="human_decision", verifier_id=None, verification_required=False))
+        capabilities.register(make_registration(id="human.confirm", description="human confirmation", executor_kind="human", required_authority="recommend", output_kind="human_decision", verifier_id=None, verification_required=False))
         task = self.task(authority="read")
         step = self.store.add_step(task.id, description="Confirm action", capability="human.confirm", metadata={"accept_all_criteria": True})
         runtime = TaskRuntime(store=self.store, capabilities=capabilities)
@@ -131,7 +142,7 @@ class RuntimeHardeningTests(unittest.TestCase):
 
     def test_interrupted_idempotent_execution_can_be_recovered_and_retried(self):
         capabilities = CapabilityRegistry()
-        capabilities.register(CapabilitySpec(id="demo.retry", description="retryable", executor_kind="deterministic", verifier_id="core.nonempty", budget=ExecutionBudget(max_attempts=3)), lambda request: CapabilityOutcome("pass", output={"ok": True}))
+        capabilities.register(make_registration(id="demo.retry", description="retryable", executor_kind="deterministic", verifier_id="core.nonempty", budget=ExecutionBudget(max_attempts=3)), lambda request: CapabilityOutcome("pass", output={"ok": True}))
         task = self.task()
         step = self.store.add_step(task.id, description="Retryable", capability="demo.retry", metadata={"accept_all_criteria": True})
         self.store.set_task_status(task.id, "active")
@@ -146,7 +157,7 @@ class RuntimeHardeningTests(unittest.TestCase):
 
     def test_interrupted_non_idempotent_side_effect_fails_closed(self):
         capabilities = CapabilityRegistry()
-        capabilities.register(CapabilitySpec(id="external.once", description="external once", executor_kind="tool", required_authority="communicate", side_effects=("external_change",), idempotent=False, verifier_id="core.receipt"), lambda request: CapabilityOutcome("pass", output={"done": True}, receipt={"ok": True}))
+        capabilities.register(make_registration(id="external.once", description="external once", executor_kind="tool", required_authority="communicate", side_effects=("external_change",), idempotent=False, verifier_id="core.receipt"), lambda request: CapabilityOutcome("pass", output={"done": True}, receipt={"ok": True}))
         task = self.task(authority="communicate")
         step = self.store.add_step(task.id, description="External", capability="external.once")
         self.store.set_task_status(task.id, "active")
@@ -168,8 +179,8 @@ class RuntimeHardeningTests(unittest.TestCase):
         report = EvalHarness().run("reasoning.general", (EvalCase("case", 1),), runner=lambda case: True, grader=lambda case, output: (True, "pass"), k=1)
         record_eval_report(first_router, "b", report); first_router.record_eval_score("a", "reasoning.general", 0.2)
         second_router = ModelRouter(providers, score_store=score_store)
-        spec = CapabilitySpec(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty")
-        self.assertEqual(second_router.select(spec, context_chars=100).provider.spec.key, "b")
+        spec = make_registration(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty")
+        self.assertEqual(second_router.select(spec.id, context_chars=100).provider.spec.key, "b")
         stored = score_store.get("b", "reasoning.general")
         self.assertIsNotNone(stored); self.assertEqual(stored.source, "eval:pass_at_1")
 
@@ -178,7 +189,7 @@ class RuntimeHardeningTests(unittest.TestCase):
             def __init__(self): self.spec = ProviderSpec("planner", "planner", "fake", {"planning.general": 1.0})
             def generate(self, request): return ModelResponse('{"steps":[{"key":"a","description":"work","capability":"demo.work","dependencies":[],"satisfies_criteria":[]}],"notes":[]}', "planner", "planner", {}, {"input_tokens": 10, "output_tokens": 10})
         providers = ProviderRegistry(); providers.register(PlannerProvider())
-        planning = CapabilitySpec(id="planning.general", description="plan", executor_kind="model", required_authority="interpret", verifier_id="core.nonempty")
+        planning = make_registration(id="planning.general", description="plan", executor_kind="model", required_authority="interpret", verifier_id="core.nonempty")
         planner = TaskPlanner(store=self.store, model_router=ModelRouter(providers), planning_capability=planning, capability_manifest=[{"id": "demo.work"}])
         with self.assertRaises(PlanError): planner.plan_and_create(objective="Do work", success_criteria=("must be covered",), authority_scope="interpret")
         task = self.store.list_tasks()[0]; self.assertEqual(task.status, "failed")
@@ -193,7 +204,7 @@ class RuntimeHardeningTests(unittest.TestCase):
                 return ModelResponse(self.text, self.spec.key, self.spec.model, {}, {"input_tokens": 10, "output_tokens": 10})
         providers = ProviderRegistry()
         providers.register(Provider())
-        planning = CapabilitySpec(
+        planning = make_registration(
             id="planning.general",
             description="plan",
             executor_kind="model",
@@ -284,7 +295,7 @@ class RuntimeHardeningTests(unittest.TestCase):
         provider = Provider()
         providers = ProviderRegistry()
         providers.register(provider)
-        planning = CapabilitySpec(
+        planning = make_registration(
             id="planning.general",
             description="plan",
             executor_kind="model",
@@ -384,14 +395,14 @@ class RuntimeHardeningTests(unittest.TestCase):
                 self.spec = ProviderSpec("costly", "model", "fake", {"reasoning.general": 1.0}, input_cost_per_million=100.0, output_cost_per_million=100.0); self.calls = 0
             def generate(self, request): self.calls += 1; return ModelResponse("answer", self.spec.key, self.spec.model, {}, {"input_tokens": 10, "output_tokens": 10})
         provider = CostlyProvider(); providers = ProviderRegistry(); providers.register(provider)
-        capabilities = CapabilityRegistry(); capabilities.register(CapabilitySpec(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty", budget=ExecutionBudget(max_attempts=2, max_output_chars=8000)))
+        capabilities = CapabilityRegistry(); capabilities.register(make_registration(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty", budget=ExecutionBudget(max_attempts=2, max_output_chars=8000)))
         task = self.task(authority="interpret"); self.store.add_step(task.id, description="Reason", capability="reasoning.general", metadata={"accept_all_criteria": True})
         runtime = TaskRuntime(store=self.store, capabilities=capabilities, model_router=ModelRouter(providers), budget=RuntimeBudget(max_cost_usd=0.000001))
         result = runtime.run_until_blocked(task.id)
         self.assertEqual(result.status, "waiting"); self.assertEqual(provider.calls, 0); self.assertEqual(self.store.list_executions(task.id)[0].status, "blocked")
 
     def test_presenter_uses_durable_criterion_evidence(self):
-        capabilities = CapabilityRegistry(); capabilities.register(CapabilitySpec(id="demo.present", description="produce", executor_kind="deterministic", verifier_id="core.nonempty"), lambda request: CapabilityOutcome("pass", output={"answer": 42}))
+        capabilities = CapabilityRegistry(); capabilities.register(make_registration(id="demo.present", description="produce", executor_kind="deterministic", verifier_id="core.nonempty"), lambda request: CapabilityOutcome("pass", output={"answer": 42}))
         task = self.task(); self.store.add_step(task.id, description="Produce", capability="demo.present", metadata={"accept_all_criteria": True})
         TaskRuntime(store=self.store, capabilities=capabilities).run_until_blocked(task.id)
         presentation = TaskPresenter(self.store).build(task.id)
@@ -402,7 +413,7 @@ class RuntimeHardeningTests(unittest.TestCase):
         looping = "\n".join(['*   *Could it be **The Adventures of Tintin**?*'] * 40)
         result = registry.verify(
             "core.nonempty",
-            CapabilitySpec(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty"),
+            make_registration(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty").profile,
             looping,
             {},
         )
@@ -410,7 +421,7 @@ class RuntimeHardeningTests(unittest.TestCase):
         self.assertIn("looping", result.summary)
         ok = registry.verify(
             "core.nonempty",
-            CapabilitySpec(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty"),
+            make_registration(id="reasoning.general", description="reason", executor_kind="model", verifier_id="core.nonempty").profile,
             "Plastic Man",
             {},
         )
@@ -429,7 +440,7 @@ class RuntimeHardeningTests(unittest.TestCase):
         providers = ProviderRegistry(); providers.register(provider)
         capabilities = CapabilityRegistry()
         capabilities.register(
-            CapabilitySpec(
+            make_registration(
                 id="reasoning.general",
                 description="reason",
                 executor_kind="model",
@@ -478,7 +489,7 @@ class RuntimeHardeningTests(unittest.TestCase):
         providers = ProviderRegistry(); providers.register(provider)
         capabilities = CapabilityRegistry()
         capabilities.register(
-            CapabilitySpec(
+            make_registration(
                 id="reasoning.general",
                 description="reason",
                 executor_kind="model",
@@ -530,7 +541,7 @@ class RuntimeHardeningTests(unittest.TestCase):
         providers = ProviderRegistry(); providers.register(first); providers.register(second)
         capabilities = CapabilityRegistry()
         capabilities.register(
-            CapabilitySpec(
+            make_registration(
                 id="reasoning.general",
                 description="reason",
                 executor_kind="model",
@@ -570,7 +581,7 @@ class RuntimeHardeningTests(unittest.TestCase):
         providers = ProviderRegistry(); providers.register(provider)
         capabilities = CapabilityRegistry()
         capabilities.register(
-            CapabilitySpec(
+            make_registration(
                 id="reasoning.general",
                 description="reason",
                 executor_kind="model",
@@ -616,7 +627,7 @@ class RuntimeHardeningTests(unittest.TestCase):
         providers = ProviderRegistry(); providers.register(first); providers.register(second)
         capabilities = CapabilityRegistry()
         capabilities.register(
-            CapabilitySpec(
+            make_registration(
                 id="reasoning.general",
                 description="reason",
                 executor_kind="model",
@@ -681,7 +692,7 @@ class RuntimeHardeningTests(unittest.TestCase):
         )
 
     def test_successful_side_effect_receipt_is_durable_evidence(self):
-        capabilities = CapabilityRegistry(); capabilities.register(CapabilitySpec(id="external.receipted", description="receipted action", executor_kind="tool", required_authority="communicate", side_effects=("external_change",), idempotent=False, verifier_id="core.receipt"), lambda request: CapabilityOutcome("pass", output=None, receipt={"ok": True, "external_id": "r1"}, claims=({"kind": "executed", "subject": "external.receipted", "value": "done"},)))
+        capabilities = CapabilityRegistry(); capabilities.register(make_registration(id="external.receipted", description="receipted action", executor_kind="tool", required_authority="communicate", side_effects=("external_change",), idempotent=False, verifier_id="core.receipt"), lambda request: CapabilityOutcome("pass", output=None, receipt={"ok": True, "external_id": "r1"}, claims=({"kind": "executed", "subject": "external.receipted", "value": "done"},)))
         task = self.task(authority="communicate"); self.store.add_step(task.id, description="Do external action", capability="external.receipted", metadata={"accept_all_criteria": True})
         result = TaskRuntime(store=self.store, capabilities=capabilities).run_until_blocked(task.id); self.assertEqual(result.status, "completed")
         receipts = [a for a in self.store.list_artifacts(task.id) if a.kind == "execution_receipt"]; self.assertEqual(len(receipts), 1)

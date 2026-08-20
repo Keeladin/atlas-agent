@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from atlas_core.authority import authority_allows
-from atlas_core.capabilities import CapabilitySpec
+from atlas_core.capabilities import CapabilityRegistration
 from atlas_core.context import ContextBuilder
 from atlas_core.providers import ModelRequest, ModelRouter, ModelRoutingError
 from atlas_core.tasks import TaskRecord, TaskStore
@@ -81,7 +81,7 @@ class TaskPlanner:
         *,
         store: TaskStore,
         model_router: ModelRouter,
-        planning_capability: CapabilitySpec,
+        planning_capability: CapabilityRegistration,
         capability_manifest: list[dict[str, Any]],
     ) -> None:
         self.store = store
@@ -117,7 +117,7 @@ class TaskPlanner:
             metadata={
                 **(metadata or {}),
                 "planner": self.planning_capability.id,
-                "planner_version": self.planning_capability.version,
+                "planner_version": self.planning_capability.profile.version,
             },
         )
         planning_input = self.store.put_artifact(
@@ -160,13 +160,13 @@ class TaskPlanner:
             task.id,
             description="Create a bounded capability plan for this task.",
             capability=self.planning_capability.id,
-            capability_version=self.planning_capability.version,
+            capability_version=self.planning_capability.profile.version,
             input_artifact_ids=(planning_input.id,),
             metadata={"internal_planning": True},
         )
         if not authority_allows(
             authority_scope,
-            self.planning_capability.required_authority,
+            self.planning_capability.definition.required_authority,
         ):
             self.store.set_task_status(task.id, "failed")
             self.store.create_checkpoint(
@@ -175,7 +175,7 @@ class TaskPlanner:
             )
             raise PlanError(
                 "Planning requires authority "
-                f"{self.planning_capability.required_authority!r}; "
+                f"{self.planning_capability.definition.required_authority!r}; "
                 f"task grants {authority_scope!r}."
             )
         if task.status == "planned":
@@ -184,7 +184,7 @@ class TaskPlanner:
             task.id,
             step_id=planning_step.id,
             capability=self.planning_capability.id,
-            capability_version=self.planning_capability.version,
+            capability_version=self.planning_capability.profile.version,
             input_artifact_ids=(planning_input.id,),
         )
         try:
@@ -219,7 +219,7 @@ class TaskPlanner:
                     task.id,
                     step_id=planning_step.id,
                     capability=self.planning_capability.id,
-                    capability_version=self.planning_capability.version,
+                    capability_version=self.planning_capability.profile.version,
                     input_artifact_ids=(planning_input.id, rejected.id),
                 )
                 _pack, manifest_record, route, response = self._planning_generate(
@@ -447,17 +447,12 @@ class TaskPlanner:
                     )
             if str(contract.get("executor_kind") or "") != "model":
                 continue
-            probe = CapabilitySpec(
-                id=step.capability,
-                description=str(contract.get("description") or step.capability),
-                executor_kind="model",
-                version=step.capability_version or "1.0.0",
-                required_authority=str(contract.get("required_authority") or "read"),
-                privacy=str(contract.get("privacy") or "cloud_allowed"),
-                verifier_id=str(contract.get("verifier_id") or "core.nonempty"),
-            )
             try:
-                self.model_router.select(probe, context_chars=256)
+                self.model_router.select(
+                    step.capability,
+                    context_chars=256,
+                    privacy=str(contract.get("privacy") or "cloud_allowed"),
+                )
             except ModelRoutingError as exc:
                 raise PlanError(
                     f"Plan step {step.key!r} is not executable with current providers: {exc}"
@@ -480,8 +475,8 @@ class TaskPlanner:
             artifact_ids=artifact_ids,
             required_artifact_ids=(required_artifact_id,),
             execution_id=execution.id,
-            capability=self.planning_capability,
-            max_chars=self.planning_capability.budget.max_context_chars,
+            registration=self.planning_capability,
+            max_chars=self.planning_capability.profile.budget.max_context_chars,
             previous_manifest_id=previous_manifest_id,
             failure_reason=failure_reason,
         )
@@ -490,7 +485,7 @@ class TaskPlanner:
             step_id=planning_step.id,
             execution_id=execution.id,
             capability=self.planning_capability.id,
-            capability_version=self.planning_capability.version,
+            capability_version=self.planning_capability.profile.version,
             assembler_version=pack.manifest.assembler_version,
             budget_tokens=pack.manifest.budget_tokens,
             total_tokens=pack.manifest.total_tokens,
@@ -506,31 +501,33 @@ class TaskPlanner:
                 "manifest_id": manifest_record.id,
                 "sha256": manifest_record.sha256,
                 "capability": self.planning_capability.id,
-                "capability_version": self.planning_capability.version,
+                "capability_version": self.planning_capability.profile.version,
                 "tokens": pack.manifest.total_tokens,
                 "budget": pack.manifest.budget_tokens,
             },
         )
         route = self.model_router.select(
-            self.planning_capability,
+            self.planning_capability.id,
             context_chars=pack.chars,
+            privacy=self.planning_capability.profile.privacy,
+            eligible_providers=self.planning_capability.profile.eligible_providers,
         )
         projected_cost = route.provider.spec.estimate_cost_usd(
             input_tokens=pack.tokens,
             output_tokens=max(
                 1,
-                ((self.planning_capability.budget.max_output_chars or 8_000) + 3) // 4,
+                ((self.planning_capability.profile.budget.max_output_chars or 8_000) + 3) // 4,
             ),
         )
         if (
-            self.planning_capability.budget.max_cost_usd is not None
+            self.planning_capability.profile.budget.max_cost_usd is not None
             and projected_cost is not None
-            and projected_cost > self.planning_capability.budget.max_cost_usd
+            and projected_cost > self.planning_capability.profile.budget.max_cost_usd
         ):
             raise PlanError(
                 "Projected planning cost exceeds capability budget: "
                 f"{projected_cost:.6f}>"
-                f"{self.planning_capability.budget.max_cost_usd:.6f}"
+                f"{self.planning_capability.profile.budget.max_cost_usd:.6f}"
             )
         self.store.set_execution_provider(execution.id, route.provider.spec.key)
         response = route.provider.generate(
@@ -538,20 +535,20 @@ class TaskPlanner:
                 self.planning_capability.id,
                 json.dumps(pack.payload["system"], ensure_ascii=False, sort_keys=True),
                 pack.as_text(),
-                max_output_chars=self.planning_capability.budget.max_output_chars,
+                max_output_chars=self.planning_capability.profile.budget.max_output_chars,
                 metadata={
                     "task_id": task.id,
                     "step_id": planning_step.id,
                     "context_manifest_id": manifest_record.id,
-                    "capability_version": self.planning_capability.version,
+                    "capability_version": self.planning_capability.profile.version,
                     "response_format": {"type": "json_object"},
                     "plan_repair": bool(failure_reason),
                 },
             )
         )
         if (
-            self.planning_capability.budget.max_output_chars is not None
-            and len(response.text) > self.planning_capability.budget.max_output_chars
+            self.planning_capability.profile.budget.max_output_chars is not None
+            and len(response.text) > self.planning_capability.profile.budget.max_output_chars
         ):
             raise PlanError(
                 "Planner output exceeds explicit capability output budget."

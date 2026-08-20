@@ -1,19 +1,13 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
-
-from atlas_core.authority import validate_authority
-
 
 ExecutorKind = Literal["deterministic", "tool", "model", "composite", "human"]
 PrivacyRoute = Literal["local_only", "cloud_allowed", "cloud_preferred"]
 DataClassification = Literal["public", "internal", "sensitive"]
 ConfirmationRequirement = Literal["none", "required"]
 CapabilitySideEffectClass = Literal["none", "reversible", "irreversible", "external_effect"]
-
-_SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 @dataclass(frozen=True)
@@ -120,118 +114,6 @@ class RetryPolicy:
             raise ValueError("pass/fail are terminal and cannot be automatic retry states")
         if retry & stop:
             raise ValueError("retry_on and stop_on must not overlap")
-
-
-@dataclass(frozen=True)
-class CapabilitySpec:
-    """Versioned Atlas capability contract: stable product meaning.
-
-    This is the reconciled form of the advisory's Specialist Contract: Atlas
-    retains one persistent identity and specialist behaviour is expressed as a
-    bounded capability execution profile instead of a second agent ontology.
-
-    This spec does not encode vendor tool names, MCP discovery, provider
-    selection, or mode permissions. Deployment implementations live on
-    ``CapabilityBinding``. ``allowed_tools`` remains a runtime execution-frame
-    allow-list of ToolDescriptor refs, not capability identity.
-    """
-
-    id: str
-    description: str
-    executor_kind: ExecutorKind
-    version: str = "1.0.0"
-    name: str | None = None
-    objective: str | None = None
-    required_authority: str = "read"
-    input_schema: dict[str, Any] = field(default_factory=dict)
-    output_schema: dict[str, Any] = field(default_factory=dict)
-    output_kind: str = "capability_result"
-    requires_artifact_kinds: tuple[str, ...] = ()
-    allowed_tools: tuple[str, ...] = ()
-    side_effects: tuple[str, ...] = ()
-    side_effect_class: CapabilitySideEffectClass | None = None
-    confirmation: ConfirmationRequirement = "none"
-    context_profile: str = "execute"
-    context_policy: ContextPolicy = field(default_factory=ContextPolicy)
-    eligible_providers: tuple[str, ...] = ()
-    verifier_id: str | None = None
-    verification_required: bool = True
-    idempotent: bool = True
-    parallel_safe: bool = False
-    privacy: PrivacyRoute = "cloud_allowed"
-    data_classification: DataClassification = "internal"
-    budget: ExecutionBudget = field(default_factory=ExecutionBudget)
-    retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
-    tags: tuple[str, ...] = ()
-    deprecated: bool = False
-    replaced_by: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if not self.id.strip():
-            raise ValueError("Capability id must not be empty.")
-        if not self.description.strip():
-            raise ValueError("Capability description must not be empty.")
-        if not _SEMVER.match(self.version):
-            raise ValueError("Capability version must be SemVer (major.minor.patch).")
-        validate_authority(self.required_authority)
-        if self.executor_kind not in {"deterministic", "tool", "model", "composite", "human"}:
-            raise ValueError(f"Unsupported executor kind: {self.executor_kind}")
-        if self.verification_required and self.executor_kind != "human" and not self.verifier_id:
-            raise ValueError("Verified capabilities must name a verifier_id.")
-        if self.privacy not in {"local_only", "cloud_allowed", "cloud_preferred"}:
-            raise ValueError(f"Unsupported privacy route: {self.privacy}")
-        if self.data_classification not in {"public", "internal", "sensitive"}:
-            raise ValueError(f"Unsupported data classification: {self.data_classification}")
-        if self.deprecated and self.replaced_by is not None and not self.replaced_by.strip():
-            raise ValueError("replaced_by must not be blank")
-        if len(set(self.allowed_tools)) != len(self.allowed_tools):
-            raise ValueError("allowed_tools must not contain duplicates")
-        if self.confirmation not in {"none", "required"}:
-            raise ValueError(f"Unsupported confirmation requirement: {self.confirmation}")
-        if self.side_effect_class is not None and self.side_effect_class not in {
-            "none", "reversible", "irreversible", "external_effect",
-        }:
-            raise ValueError(f"Unsupported side_effect_class: {self.side_effect_class}")
-        # Preserve the older explicit char budget as a hard upper safety ceiling
-        # while context_policy becomes the declarative source of assembly policy.
-        if self.context_policy.approximate_char_budget > self.budget.max_context_chars:
-            object.__setattr__(
-                self,
-                "context_policy",
-                ContextPolicy(
-                    max_tokens=max(128, self.budget.max_context_chars // 4),
-                    max_memory_items=self.context_policy.max_memory_items,
-                    max_artifact_items=self.context_policy.max_artifact_items,
-                    max_recent_steps=self.context_policy.max_recent_steps,
-                    min_relevance_score=self.context_policy.min_relevance_score,
-                    per_item_token_cap=self.context_policy.per_item_token_cap,
-                    allow_full_artifact=self.context_policy.allow_full_artifact,
-                    must_include=self.context_policy.must_include,
-                    must_exclude=self.context_policy.must_exclude,
-                    hybrid_weights=self.context_policy.hybrid_weights,
-                ),
-            )
-
-    @property
-    def display_name(self) -> str:
-        return self.name or self.id
-
-    @property
-    def effective_objective(self) -> str:
-        return self.objective or self.description
-
-    @property
-    def ref(self) -> str:
-        return f"{self.id}@{self.version}"
-
-    @property
-    def effective_side_effect_class(self) -> str:
-        if self.side_effect_class is not None:
-            return self.side_effect_class
-        if not self.side_effects:
-            return "none"
-        return "reversible" if self.idempotent else "irreversible"
 
 
 @dataclass(frozen=True)

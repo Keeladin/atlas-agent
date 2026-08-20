@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
-from atlas_core.capabilities import CapabilitySpec, ContextPolicy
+from atlas_core.capabilities import CapabilityRegistration, ContextPolicy
 from atlas_core.deliverable import infer_deliverable, infer_presentation_profile
 from atlas_core.schema_validation import project_object_to_schema
 from atlas_core.tasks.store import TaskStore
@@ -168,7 +168,7 @@ class ContextBuilder:
         *,
         artifact_ids: tuple[str, ...],
         execution_id: str = "unpersisted",
-        capability: CapabilitySpec | None = None,
+        registration: CapabilityRegistration | None = None,
         profile: str | None = None,
         max_chars: int | None = None,
         tool_descriptors: Iterable[Mapping[str, Any]] = (),
@@ -176,7 +176,7 @@ class ContextBuilder:
         previous_manifest_id: str | None = None,
         failure_reason: str | None = None,
     ) -> ContextPack:
-        if capability is None:
+        if registration is None:
             if profile is None:
                 profile = "execute"
             policy = ContextPolicy(
@@ -190,23 +190,27 @@ class ContextBuilder:
                 "objective": "legacy bounded context build",
                 "allowed_tools": [],
             }
+            exec_budget_chars = None
         else:
-            profile = profile or capability.context_profile
-            policy = capability.context_policy
-            capability_id = capability.id
-            capability_version = capability.version
+            exec_profile = registration.profile
+            definition = registration.definition
+            profile = profile or exec_profile.context_profile
+            policy = exec_profile.context_policy
+            capability_id = definition.id
+            capability_version = exec_profile.version
             capability_contract = {
-                "id": capability.id,
-                "version": capability.version,
-                "name": capability.display_name,
-                "objective": capability.effective_objective,
-                "executor_kind": capability.executor_kind,
-                "required_authority": capability.required_authority,
-                "allowed_tools": list(capability.allowed_tools),
-                "data_classification": capability.data_classification,
-                "input_schema": capability.input_schema,
-                "output_schema": capability.output_schema,
+                "id": definition.id,
+                "version": exec_profile.version,
+                "name": registration.display_name,
+                "objective": registration.effective_objective,
+                "executor_kind": exec_profile.executor_kind,
+                "required_authority": definition.required_authority,
+                "allowed_tools": list(exec_profile.tools),
+                "data_classification": exec_profile.data_classification,
+                "input_schema": exec_profile.input_schema,
+                "output_schema": exec_profile.output_schema,
             }
+            exec_budget_chars = exec_profile.budget.max_context_chars
         if profile not in CONTEXT_PROFILES:
             raise ValueError(f"Unknown context profile: {profile}")
         task = self.store.get_task(task_id)
@@ -221,10 +225,10 @@ class ContextBuilder:
         budget_tokens = policy.max_tokens
         if max_chars is not None:
             budget_tokens = min(budget_tokens, max(128, max_chars // 4))
-        if capability is not None:
+        if exec_budget_chars is not None:
             budget_tokens = min(
                 budget_tokens,
-                max(128, capability.budget.max_context_chars // 4),
+                max(128, exec_budget_chars // 4),
             )
 
         included: list[ManifestItem] = []
@@ -347,7 +351,7 @@ class ContextBuilder:
             if artifact.task_id != task_id:
                 raise ValueError("Required context artifact belongs to another task.")
             direct_payloads.append(artifact.payload)
-        schema = capability.input_schema if capability is not None else None
+        schema = registration.profile.input_schema if registration is not None else None
         if len(direct_payloads) == 1:
             payload["invocation_input"] = project_object_to_schema(direct_payloads[0], schema)
         elif direct_payloads:

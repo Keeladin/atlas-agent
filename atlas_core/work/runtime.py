@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from atlas_core.advanced.brief import TaskBrief
-from atlas_core.authority import authority_allows, validate_authority
+from atlas_core.authority import authority_allows
 from atlas_core.capabilities import CapabilityRegistry
 from atlas_core.capabilities.definition import CapabilityDefinition, catalog, lookup
 from atlas_core.runtime import RuntimeBudget, RuntimeResult, TaskRuntime
-from atlas_core.tasks import TaskStore
+from atlas_core.tasks import TaskStore, TaskStoreError, UnknownRecordError
+from atlas_core.tasks.store_common import _new_id
 from atlas_core.tools import ToolGateway
 from atlas_core.verification import VerifierRegistry
 
-from .frame import RuntimeFrame, assemble_frame
+from .contract import (
+    ContractCapability,
+    WorkContract,
+    compile_contract,
+    work_contract_from_stored,
+)
 from .profile import ExecutionProfileIndex
 from .work import WorkError, WorkId, WorkRecord
 
@@ -36,67 +44,83 @@ class WorkRuntime:
         self._profiles = profiles
         self._tool_gateway = tool_gateway
 
-    def accept(self, brief: TaskBrief, authority_scope: str) -> WorkId:
-        granted = validate_authority(authority_scope)
-        if not authority_allows(granted, brief.required_authority):
-            raise WorkError(
-                "authority_scope "
-                f"{granted!r} does not satisfy required_authority {brief.required_authority!r}"
-            )
-        selected = tuple(self._require_definition(item) for item in brief.capabilities)
-        for definition in selected:
-            if not authority_allows(granted, definition.required_authority):
-                raise WorkError(
-                    f"authority_scope {granted!r} does not satisfy {definition.id} "
-                    f"required_authority {definition.required_authority!r}"
-                )
-
+    def accept(
+        self,
+        brief: TaskBrief,
+        authority_scope: str,
+        *,
+        inputs: Mapping[str, dict[str, Any]] | None = None,
+    ) -> WorkId:
+        requested = _validated_inputs(brief, inputs)
+        work_id = _new_id("task")
+        contract = compile_contract(
+            work_id=work_id,
+            brief=brief,
+            authority_scope=authority_scope,
+            inventory=self._profiles,
+            tools=self._tool_gateway,
+            work_budget=self._engine.budget,
+        )
         store = self._engine.store
-        task = store.create_task(
+        store.create_task(
             objective=brief.objective,
-            success_criteria=(brief.expected_effect,),
+            success_criteria=contract.success_criteria,
             constraints=brief.constraints,
-            authority_scope=granted,
+            authority_scope=contract.authority_scope,
             metadata={
                 "source": "task_brief",
                 "brief": brief.as_dict(),
+                "contract_id": contract.contract_id,
             },
+            task_id=work_id,
         )
-        capability_ids = tuple(item.id for item in selected)
-        frame = assemble_frame(
-            work_id=task.id,
-            capabilities=capability_ids,
-            authority_scope=granted,
-            definitions=self._definitions,
-            profiles=self._profiles,
-        )
-        brief_artifact = store.put_artifact(
-            task.id,
+        try:
+            store.insert_work_contract(
+                work_id=contract.work_id,
+                contract_id=contract.contract_id,
+                sha256=contract.sha256,
+                payload=contract.as_payload(),
+                compiled_at=contract.compiled_at,
+            )
+        except TaskStoreError as exc:
+            raise WorkError(str(exc)) from exc
+        store.put_artifact(
+            work_id,
             kind="task_brief",
             payload=brief.as_dict(),
             metadata={"purpose": "accepted_brief"},
         )
-        frame_artifact = store.put_artifact(
-            task.id,
-            kind="runtime_frame",
-            payload=frame.as_dict(),
-            metadata={"purpose": "execution_frame"},
-        )
-        for definition in selected:
-            store.add_step(
-                task.id,
-                description=definition.description,
-                capability=definition.id,
-                capability_version="1.0.0",
-                input_artifact_ids=(brief_artifact.id, frame_artifact.id),
+        dependencies = _kind_match_dependencies(contract.capabilities)
+        step_ids: dict[str, str] = {}
+        for pin in contract.capabilities:
+            input_ids: tuple[str, ...] = ()
+            if pin.capability_id in requested:
+                request = store.put_artifact(
+                    work_id,
+                    kind=f"{pin.capability_id.replace('.', '_')}_request",
+                    payload=requested[pin.capability_id],
+                    metadata={
+                        "purpose": "accepted_request",
+                        "capability": pin.capability_id,
+                    },
+                )
+                input_ids = (request.id,)
+            record = store.add_step(
+                work_id,
+                description=pin.definition.description,
+                capability=pin.capability_id,
+                capability_version=pin.profile_version,
+                dependencies=[step_ids[dep] for dep in dependencies[pin.capability_id]],
+                input_artifact_ids=input_ids,
                 metadata={"accept_all_criteria": True},
             )
-        store.create_checkpoint(task.id, reason="work accepted from task brief")
-        return task.id
+            step_ids[pin.capability_id] = record.id
+        store.create_checkpoint(work_id, reason="work accepted from task brief")
+        return work_id
 
     def run(self, work_id: WorkId) -> RuntimeResult:
-        frame = self.frame(work_id)
-        blocked = self._execution_block(frame)
+        contract = self.contract(work_id)
+        blocked = self._execution_block(contract)
         if blocked is not None:
             record = self.get(work_id)
             return RuntimeResult(work_id, record.status, 0, 0, blocked)
@@ -104,50 +128,77 @@ class WorkRuntime:
 
     def get(self, work_id: WorkId) -> WorkRecord:
         task = self._engine.store.get_task(work_id)
-        capabilities = tuple(
-            step.capability
-            for step in self._engine.store.list_steps(work_id)
-            if step.capability
-        )
+        contract = self.contract(work_id)
         return WorkRecord(
             id=task.id,
             objective=task.objective,
             status=task.status,
             authority_scope=task.authority_scope,
-            capabilities=capabilities,
+            capabilities=tuple(pin.capability_id for pin in contract.capabilities),
         )
 
-    def frame(self, work_id: WorkId) -> RuntimeFrame:
-        self._engine.store.get_task(work_id)
-        for artifact in reversed(self._engine.store.list_artifacts(work_id)):
-            if artifact.kind == "runtime_frame" and isinstance(artifact.payload, dict):
-                return RuntimeFrame.from_dict(artifact.payload)
-        raise WorkError(f"Work {work_id} has no runtime frame")
+    def contract(self, work_id: WorkId) -> WorkContract:
+        try:
+            row = self._engine.store.load_work_contract_row(work_id)
+        except UnknownRecordError as exc:
+            raise WorkError(str(exc)) from exc
+        except TaskStoreError as exc:
+            raise WorkError(str(exc)) from exc
+        return work_contract_from_stored(
+            work_id=row["work_id"],
+            contract_id=row["contract_id"],
+            sha256=row["sha256"],
+            payload=row["payload"],
+            compiled_at=row["compiled_at"],
+        )
 
-    def _require_definition(self, capability_id: str) -> CapabilityDefinition:
-        definition = self._definitions.get(capability_id)
-        if definition is None:
-            raise WorkError(f"Unknown capability: {capability_id}")
-        return definition
-
-    def _execution_block(self, frame: RuntimeFrame) -> str | None:
-        if not frame.capabilities:
+    def _execution_block(self, contract: WorkContract) -> str | None:
+        if not contract.capabilities:
             return UNAVAILABLE
-        for capability_id in frame.capabilities:
-            definition = self._definitions.get(capability_id)
-            if definition is None:
-                return f"Unknown capability: {capability_id}"
-            if not authority_allows(frame.authority_scope, definition.required_authority):
+        for pin in contract.capabilities:
+            if not pin.armed:
+                return UNAVAILABLE
+            if not authority_allows(contract.authority_scope, pin.required_authority):
                 return (
-                    f"authority_scope {frame.authority_scope!r} does not satisfy "
-                    f"{definition.required_authority!r}"
+                    f"authority_scope {contract.authority_scope!r} does not satisfy "
+                    f"{pin.required_authority!r}"
                 )
-            profile = self._profiles.get(capability_id)
-            if profile is None or not profile.available:
-                return UNAVAILABLE
-            if self._profiles.handler(capability_id) is None and profile.executor_kind != "model":
-                return UNAVAILABLE
         return None
+
+
+def _validated_inputs(
+    brief: TaskBrief,
+    inputs: Mapping[str, dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    if inputs is None:
+        return {}
+    allowed = set(brief.capabilities)
+    requested: dict[str, dict[str, Any]] = {}
+    for raw_key, payload in inputs.items():
+        capability_id = str(raw_key)
+        if capability_id not in allowed:
+            raise WorkError(
+                f"input is not in the accepted brief: {capability_id}"
+            )
+        if not isinstance(payload, dict):
+            raise WorkError(f"input for {capability_id} must be an object")
+        requested[capability_id] = payload
+    return requested
+
+
+def _kind_match_dependencies(
+    pins: tuple[ContractCapability, ...],
+) -> dict[str, tuple[str, ...]]:
+    dependencies: dict[str, tuple[str, ...]] = {}
+    for index, later in enumerate(pins):
+        needed = {kind for kind in later.requires_artifact_kinds if kind}
+        matched: list[str] = []
+        if needed:
+            for earlier in pins[:index]:
+                if earlier.output_kind and earlier.output_kind in needed:
+                    matched.append(earlier.capability_id)
+        dependencies[later.capability_id] = tuple(matched)
+    return dependencies
 
 
 def build_work_runtime(
@@ -161,6 +212,7 @@ def build_work_runtime(
 
     store = TaskStore(db_path)
     store.initialize()
+    store.initialize_work_schema()
     profile_index = profiles if profiles is not None else ExecutionProfileIndex()
     gateway = tool_gateway if tool_gateway is not None else ToolGateway()
     capabilities = CapabilityRegistry()

@@ -4,7 +4,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-from .store_common import RUNTIME_SCHEMA_VERSION, TaskStoreError
+from .store_common import RUNTIME_SCHEMA_VERSION, WORK_SCHEMA_VERSION, TaskStoreError
 
 
 class TaskStoreSchemaMixin:
@@ -234,4 +234,39 @@ class TaskStoreSchemaMixin:
                 db.execute(
                     "UPDATE atlas_schema_meta SET version=?,updated_at=CURRENT_TIMESTAMP WHERE component='task_runtime'",
                     (RUNTIME_SCHEMA_VERSION,),
+                )
+
+    def initialize_work_schema(self) -> None:
+        """Additive Work contract table. Not part of the TaskRuntime/Companion schema."""
+
+        with self._db() as db:
+            work_row = db.execute(
+                "SELECT version FROM atlas_schema_meta WHERE component='work_runtime'"
+            ).fetchone()
+            work_version = int(work_row["version"]) if work_row is not None else None
+            if work_version is not None and work_version > WORK_SCHEMA_VERSION:
+                raise TaskStoreError(
+                    "Task database was created by a newer Atlas work schema."
+                )
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS work_contracts (
+                    work_id TEXT PRIMARY KEY,
+                    contract_id TEXT NOT NULL UNIQUE,
+                    sha256 TEXT NOT NULL UNIQUE,
+                    payload_json TEXT NOT NULL,
+                    compiled_at TEXT NOT NULL,
+                    FOREIGN KEY (work_id) REFERENCES tasks(id) ON DELETE CASCADE
+                )
+                """
+            )
+            if work_version is None:
+                db.execute(
+                    "INSERT INTO atlas_schema_meta (component,version) VALUES ('work_runtime',?)",
+                    (WORK_SCHEMA_VERSION,),
+                )
+            elif work_version != WORK_SCHEMA_VERSION:
+                db.execute(
+                    "UPDATE atlas_schema_meta SET version=?,updated_at=CURRENT_TIMESTAMP WHERE component='work_runtime'",
+                    (WORK_SCHEMA_VERSION,),
                 )

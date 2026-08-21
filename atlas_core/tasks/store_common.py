@@ -17,3 +17,4 @@ def _payload_hash(payload: Any) -> tuple[str, str]:
 _TASK_TRANSITIONS={"planned":{"active","cancelled","failed"},"active":{"waiting","completed","failed","cancelled"},"waiting":{"active","failed","cancelled"},"completed":set(),"failed":set(),"cancelled":set()}
 _STEP_TRANSITIONS={"pending":{"running","blocked","skipped","failed"},"running":{"pass","rework","blocked","failed"},"rework":{"running","blocked","failed","skipped"},"blocked":{"pending","running","failed","skipped"},"pass":set(),"failed":set(),"skipped":set()}
 RUNTIME_SCHEMA_VERSION=2
+WORK_SCHEMA_VERSION=1

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from dataclasses import asdict
 from typing import Any, Iterable
@@ -103,10 +104,84 @@ class TaskStoreCoreMixin:
                     ).fetchone()
                 if int(row["n"]):
                     leftover.append(table)
+            present = {
+                str(item["name"])
+                for item in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if "work_contracts" in present:
+                row = db.execute(
+                    "SELECT COUNT(*) AS n FROM work_contracts WHERE work_id=?",
+                    (task_id,),
+                ).fetchone()
+                if int(row["n"]):
+                    leftover.append("work_contracts")
             if leftover:
                 raise TaskStoreError(
                     f"Task {task_id} still has rows after delete: {leftover}"
                 )
+
+    def insert_work_contract(
+        self,
+        *,
+        work_id: str,
+        contract_id: str,
+        sha256: str,
+        payload: dict[str, Any],
+        compiled_at: str,
+    ) -> None:
+        self.get_task(work_id)
+        encoded, digest = _payload_hash(payload)
+        if digest != sha256:
+            raise TaskStoreError("Work contract digest does not match payload")
+        if encoded != _json_dump(payload):
+            raise TaskStoreError("Work contract payload encoding is not canonical")
+        try:
+            with self._db() as db:
+                db.execute(
+                    """
+                    INSERT INTO work_contracts
+                        (work_id, contract_id, sha256, payload_json, compiled_at)
+                    VALUES (?,?,?,?,?)
+                    """,
+                    (work_id, contract_id, sha256, encoded, compiled_at),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise TaskStoreError(
+                f"Work contract already exists for {work_id}"
+            ) from exc
+
+    def load_work_contract_row(self, work_id: str) -> dict[str, Any]:
+        self.get_task(work_id)
+        with self._db() as db:
+            row = db.execute(
+                "SELECT work_id, contract_id, sha256, payload_json, compiled_at "
+                "FROM work_contracts WHERE work_id=?",
+                (work_id,),
+            ).fetchone()
+        if row is None:
+            raise UnknownRecordError(f"Work {work_id} has no contract")
+        payload_json = str(row["payload_json"])
+        digest = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+        if digest != str(row["sha256"]):
+            raise TaskStoreError("Work contract digest mismatch")
+        try:
+            payload = _json_load(payload_json, None)
+        except (TypeError, ValueError) as exc:
+            raise TaskStoreError("Work contract payload is not an object") from exc
+        if not isinstance(payload, dict):
+            raise TaskStoreError("Work contract payload is not an object")
+        encoded, rehash = _payload_hash(payload)
+        if encoded != payload_json or rehash != str(row["sha256"]):
+            raise TaskStoreError("Work contract digest mismatch")
+        return {
+            "work_id": str(row["work_id"]),
+            "contract_id": str(row["contract_id"]),
+            "sha256": str(row["sha256"]),
+            "payload": payload,
+            "compiled_at": str(row["compiled_at"]),
+        }
 
     def list_criteria(self, task_id: str) -> tuple[CriterionRecord, ...]:
         self.get_task(task_id)

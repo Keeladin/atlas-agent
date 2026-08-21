@@ -1,0 +1,89 @@
+export type WorkListItem = {
+  work_id: string
+  objective: string
+  status: string
+  authority_scope: string
+  created_at: string
+  updated_at: string
+}
+
+export type PendingApproval = {
+  id: string
+  work_id: string
+  step_id: string | null
+  required_authority: string
+  requested_action: string
+  status: string
+  created_at: string
+}
+
+export type PendingConfirmation = {
+  id: string
+  work_id: string
+  step_id: string
+  capability_id: string
+  payload_sha256: string
+  summary: string
+  payload: Record<string, unknown>
+  status: string
+  created_at: string
+}
+
+export type WorkDetail = {
+  work_id: string
+  objective: string
+  status: string
+  authority_scope: string
+  created_at: string
+  updated_at: string
+  phase: string
+  blocking: {
+    kind: string
+    message: string
+    confirmation_ids?: string[]
+    approval_ids?: string[]
+    execution_ids?: string[]
+  } | null
+  contract: Record<string, unknown>
+  capabilities: Array<Record<string, unknown>>
+  steps: Array<{
+    id: string
+    ordinal: number
+    description: string
+    capability: string | null
+    capability_version: string | null
+    status: string
+    dependencies: string[]
+    input_artifact_ids: string[]
+  }>
+  pending_approvals: PendingApproval[]
+  pending_confirmations: PendingConfirmation[]
+  artifacts: Array<Record<string, unknown>>
+  claims: Array<Record<string, unknown>>
+  executions: Array<Record<string, unknown>>
+  events: Array<Record<string, unknown>>
+  criteria: Array<Record<string, unknown>>
+  actions: string[]
+}
+
+export type TaskBrief = {
+  objective: string
+  capabilities: string[]
+  required_authority: string
+  expected_effect: string
+  constraints: string[]
+  deliverable_kind?: string | null
+  notes?: string | null
+}
+
+export type Conversation = {
+  id: string
+  title: string
+  turn_count: number
+  turns?: Array<{
+    id: string
+    role: string
+    content: string
+    created_at: string
+  }>
+}

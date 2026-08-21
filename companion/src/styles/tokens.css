@@ -1,0 +1,96 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b1220;
+  --bg-elevated: #121a2b;
+  --bg-panel: #162033;
+  --border: #243049;
+  --text: #e7eefc;
+  --text-muted: #9aadc9;
+  --accent: #5b8cff;
+  --accent-strong: #3d6fff;
+  --ok: #3ecf8e;
+  --warn: #f0b429;
+  --danger: #ff6b6b;
+  --authority: #c084fc;
+  --confirmation: #38bdf8;
+  --radius: 14px;
+  --shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+  --font: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --touch: 44px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--font);
+  background: radial-gradient(circle at top, #15233a, var(--bg) 45%);
+  color: var(--text);
+  line-height: 1.45;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  min-height: var(--touch);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  padding: 0.65rem 1rem;
+  cursor: pointer;
+}
+
+button.primary {
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+  border-color: transparent;
+  color: white;
+  font-weight: 600;
+}
+
+button.danger {
+  background: rgba(255, 107, 107, 0.15);
+  border-color: rgba(255, 107, 107, 0.45);
+  color: #ffb4b4;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  min-height: var(--touch);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #0d1524;
+  color: var(--text);
+  padding: 0.7rem 0.9rem;
+}
+
+textarea {
+  min-height: 120px;
+  resize: vertical;
+}

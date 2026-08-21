@@ -164,6 +164,20 @@ class ConversationStore:
             row = db.execute("SELECT * FROM conversations WHERE id=?", (cid,)).fetchone()
         return self._conversation_from_row(row)
 
+    def create(self, *, title: str = "Chat") -> Conversation:
+        conversation_id = _new_id("conversation")
+        label = " ".join((title or "").split()) or "Chat"
+        with self._db() as db:
+            db.execute(
+                "INSERT INTO conversations (id, title, metadata_json) VALUES (?,?,?)",
+                (conversation_id, label, "{}"),
+            )
+            row = db.execute(
+                "SELECT * FROM conversations WHERE id=?",
+                (conversation_id,),
+            ).fetchone()
+        return self._conversation_from_row(row)
+
     def list(self) -> tuple[Conversation, ...]:
         with self._db() as db:
             rows = db.execute(

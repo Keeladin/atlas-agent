@@ -71,6 +71,10 @@ class ChatRuntime:
             conversation=self._conversations.view(record.id),
         )
 
+    def create_conversation(self, *, title: str = "Chat") -> ConversationView:
+        record = self._conversations.create(title=title)
+        return self._conversations.view(record.id, include_turns=False)
+
     def conversation(self, conversation_id: str) -> ConversationView:
         cid = (conversation_id or "").strip()
         if cid in {"", "current"}:

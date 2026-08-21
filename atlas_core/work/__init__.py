@@ -1,6 +1,6 @@
 from .contract import ContractCapability, WorkContract, compile_contract
 from .inventory import DeploymentInventory
-from .profile import CapabilityExecutionProfile, ExecutionProfileIndex
+from .profile import CapabilityExecutionProfile
 from .resolve import (
     ImplementationResolver,
     ResolveMismatch,
@@ -15,7 +15,6 @@ __all__ = [
     "CapabilityExecutionProfile",
     "ContractCapability",
     "DeploymentInventory",
-    "ExecutionProfileIndex",
     "ImplementationResolver",
     "ResolveMismatch",
     "ResolveReport",

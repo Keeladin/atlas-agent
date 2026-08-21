@@ -11,7 +11,6 @@ from atlas_core.tools import ToolDescriptor, ToolGateway, ToolResult
 from atlas_core.work import (
     CapabilityExecutionProfile,
     DeploymentInventory,
-    ExecutionProfileIndex,
     WorkError,
     compile_contract,
 )
@@ -72,7 +71,7 @@ class WorkContractCompileTests(unittest.TestCase):
             work_id="work_1",
             brief=_brief(),
             authority_scope="execute_external",
-            inventory=ExecutionProfileIndex(),
+            inventory=DeploymentInventory(),
         )
         self.assertEqual(
             tuple(item.capability_id for item in contract.capabilities),
@@ -109,7 +108,7 @@ class WorkContractCompileTests(unittest.TestCase):
                 work_id="work_1",
                 brief=brief,
                 authority_scope="interpret",
-                inventory=ExecutionProfileIndex(),
+                inventory=DeploymentInventory(),
             )
         self.assertIn("Unknown capability", str(ctx.exception))
 
@@ -119,7 +118,7 @@ class WorkContractCompileTests(unittest.TestCase):
                 work_id="work_1",
                 brief=_brief(),
                 authority_scope="read",
-                inventory=ExecutionProfileIndex(),
+                inventory=DeploymentInventory(),
             )
         self.assertIn("required_authority", str(ctx.exception))
 
@@ -199,7 +198,7 @@ class WorkContractCompileTests(unittest.TestCase):
         self.assertTrue(contract.capability("communication.email.send").armed)
 
     def test_missing_named_tool_is_unarmed_not_work_error(self) -> None:
-        inventory = ExecutionProfileIndex()
+        inventory = DeploymentInventory()
         inventory.register(
             CapabilityExecutionProfile(
                 capability_id="communication.email.send",
@@ -231,7 +230,7 @@ class WorkContractCompileTests(unittest.TestCase):
         self.assertEqual(contract.allowed_tools, ())
 
     def test_morning_shaped_profile_arms_without_binding(self) -> None:
-        inventory = ExecutionProfileIndex()
+        inventory = DeploymentInventory()
         inventory.register(
             CapabilityExecutionProfile(
                 capability_id="operations.morning_pack.generate",
@@ -259,7 +258,7 @@ class WorkContractCompileTests(unittest.TestCase):
         self.assertEqual(pin.tools, ())
 
     def test_human_without_handler_is_armed(self) -> None:
-        inventory = ExecutionProfileIndex()
+        inventory = DeploymentInventory()
         inventory.register(
             CapabilityExecutionProfile(
                 capability_id="communication.email.send",
@@ -284,7 +283,7 @@ class WorkContractCompileTests(unittest.TestCase):
         self.assertIsNone(pin.binding)
 
     def test_model_without_handler_is_armed(self) -> None:
-        inventory = ExecutionProfileIndex()
+        inventory = DeploymentInventory()
         inventory.register(
             CapabilityExecutionProfile(
                 capability_id="reasoning.general",
@@ -306,7 +305,7 @@ class WorkContractCompileTests(unittest.TestCase):
         self.assertTrue(contract.capability("reasoning.general").armed)
 
     def test_deterministic_without_handler_is_unarmed_even_with_binding(self) -> None:
-        inventory = ExecutionProfileIndex()
+        inventory = DeploymentInventory()
         inventory.register(
             CapabilityExecutionProfile(
                 capability_id="automation.workflow.create",
@@ -328,7 +327,7 @@ class WorkContractCompileTests(unittest.TestCase):
         self.assertIsNone(pin.binding)
 
     def test_binding_snapshots_profile_implementation_only(self) -> None:
-        inventory = ExecutionProfileIndex()
+        inventory = DeploymentInventory()
         binding = CapabilityBinding(
             "automation.workflow.create", "internal", "record", "1"
         )
@@ -359,7 +358,7 @@ class WorkContractCompileTests(unittest.TestCase):
                 )
             ),
             authority_scope="execute_external",
-            inventory=ExecutionProfileIndex(),
+            inventory=DeploymentInventory(),
         )
         self.assertEqual(len(contract.capabilities), 1)
 
@@ -373,7 +372,7 @@ class WorkContractCompileTests(unittest.TestCase):
             ToolDescriptor(id="index.write", description="Write index"),
             lambda arguments: ToolResult(True, output=arguments, receipt={"ok": True}),
         )
-        inventory = ExecutionProfileIndex()
+        inventory = DeploymentInventory()
         inventory.register(
             CapabilityExecutionProfile(
                 capability_id="communication.email.send",
@@ -426,7 +425,7 @@ class WorkContractCompileTests(unittest.TestCase):
             work_id="work_1",
             brief=_brief(),
             authority_scope="execute_external",
-            inventory=ExecutionProfileIndex(),
+            inventory=DeploymentInventory(),
             work_budget=budget,
         )
         self.assertEqual(contract.work_budget, budget)
@@ -442,7 +441,7 @@ class WorkContractCompileTests(unittest.TestCase):
             ToolDescriptor(id="mail.deliver", description="v2", version="2.0.0"),
             lambda arguments: ToolResult(True, output=arguments, receipt={"ok": True}),
         )
-        inventory = ExecutionProfileIndex()
+        inventory = DeploymentInventory()
         inventory.register(
             CapabilityExecutionProfile(
                 capability_id="communication.email.send",
@@ -482,7 +481,7 @@ class WorkContractCompileTests(unittest.TestCase):
                 expected_effect="Index local knowledge",
             ),
             authority_scope="modify_internal",
-            inventory=ExecutionProfileIndex(),
+            inventory=DeploymentInventory(),
             work_budget=RuntimeBudget(),
             compiled_at=GOLDEN_COMPILED_AT,
             contract_id="contract_golden",

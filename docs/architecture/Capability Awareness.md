@@ -139,7 +139,7 @@ Binding does not grant authority. A capability may have zero bindings. Several p
 | Path | Classification |
 |---|---|
 | `catalog()` / `lookup()` / `require()` | Product identity. Only `catalog()` constructs `CapabilityDefinition`. |
-| `ExecutionProfileIndex.register` | Deployment only. `WorkRuntime` skips unknown catalog ids. |
+| `DeploymentInventory.register` | Deployment only. `WorkRuntime` skips unknown catalog ids. |
 | `CapabilityRegistry.register` | Work execution record. Does not add catalog rows. Production bootstrap passes `require(id)`. |
 | Builtin / knowledge / morning registration | Execution profiles + handlers against `require(id)`. They do not construct definitions. |
 | `ToolGateway.register` | Tool inventory |

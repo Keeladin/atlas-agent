@@ -25,7 +25,7 @@ from atlas_core.tools import MCPToolBridge, ToolDescriptor, ToolGateway, ToolRes
 from atlas_core.work import (
     UNAVAILABLE,
     CapabilityExecutionProfile,
-    ExecutionProfileIndex,
+    DeploymentInventory,
     WorkError,
     build_work_runtime,
 )
@@ -48,7 +48,7 @@ class CapabilityArchitectureTests(unittest.TestCase):
         self.assertEqual(definition.id, "communication.email.send")
         self.assertEqual(definition.required_authority, "communicate")
         self.assertEqual(definition.confirmation, "required")
-        profiles = ExecutionProfileIndex()
+        profiles = DeploymentInventory()
         self.assertIsNone(profiles.get(definition.id))
         self.assertIsNone(lookup("smtp.send"))
         self.assertIsNone(lookup("not.a.capability"))
@@ -63,7 +63,7 @@ class CapabilityArchitectureTests(unittest.TestCase):
             definition.confirmation,
             definition.side_effect_class,
         )
-        smtp = ExecutionProfileIndex()
+        smtp = DeploymentInventory()
         smtp.register(
             CapabilityExecutionProfile(
                 capability_id=definition.id,
@@ -71,7 +71,7 @@ class CapabilityArchitectureTests(unittest.TestCase):
                 verifier_id="core.nonempty",
             )
         )
-        graph = ExecutionProfileIndex()
+        graph = DeploymentInventory()
         graph.register(
             CapabilityExecutionProfile(
                 capability_id=definition.id,
@@ -173,7 +173,7 @@ class CapabilityArchitectureTests(unittest.TestCase):
                 error=result.error,
             )
 
-        profiles = ExecutionProfileIndex()
+        profiles = DeploymentInventory()
         profiles.register(
             CapabilityExecutionProfile(
                 capability_id="communication.email.send",
@@ -227,7 +227,7 @@ class CapabilityArchitectureTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         db = Path(tmp.name) / "atlas-work.db"
-        profiles = ExecutionProfileIndex()
+        profiles = DeploymentInventory()
         profiles.register(
             CapabilityExecutionProfile(
                 capability_id="synthetic.engine.only",
@@ -298,7 +298,7 @@ class CapabilityArchitectureTests(unittest.TestCase):
 
     def test_profile_index_and_tool_gateway_cannot_mint_catalog_identity(self) -> None:
         before = {item.id for item in catalog()}
-        profiles = ExecutionProfileIndex()
+        profiles = DeploymentInventory()
         profiles.register(
             CapabilityExecutionProfile(
                 capability_id="synthetic.engine.only",

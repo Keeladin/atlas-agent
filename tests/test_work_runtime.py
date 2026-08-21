@@ -13,7 +13,7 @@ from atlas_core.tasks import TaskStoreError
 from atlas_core.work import (
     UNAVAILABLE,
     CapabilityExecutionProfile,
-    ExecutionProfileIndex,
+    DeploymentInventory,
     WorkError,
     WorkRuntime,
     build_work_runtime,
@@ -106,7 +106,7 @@ class WorkRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.get(work_id).status, "planned")
 
     def test_run_with_profile_passes_through_task_runtime(self) -> None:
-        profiles = ExecutionProfileIndex()
+        profiles = DeploymentInventory()
         profiles.register(
             CapabilityExecutionProfile(
                 capability_id="automation.workflow.create",
@@ -233,7 +233,7 @@ class WorkRuntimeTests(unittest.TestCase):
             )
 
     def test_pinned_profile_version_is_used_on_steps(self) -> None:
-        profiles = ExecutionProfileIndex()
+        profiles = DeploymentInventory()
         profiles.register(
             CapabilityExecutionProfile(
                 capability_id="automation.workflow.create",
@@ -270,7 +270,7 @@ class WorkRuntimeTests(unittest.TestCase):
         )
 
     def test_inputs_attach_only_to_the_named_capability(self) -> None:
-        profiles = ExecutionProfileIndex()
+        profiles = DeploymentInventory()
         for capability_id in ("knowledge.index", "communication.email.send"):
             profiles.register(
                 CapabilityExecutionProfile(
@@ -327,7 +327,7 @@ class WorkRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime._engine.store.list_tasks(), ())
 
     def test_kind_match_dependencies_are_deterministic(self) -> None:
-        profiles = ExecutionProfileIndex()
+        profiles = DeploymentInventory()
         profiles.register(
             CapabilityExecutionProfile(
                 capability_id="knowledge.search",

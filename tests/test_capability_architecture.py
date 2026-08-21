@@ -63,21 +63,21 @@ class CapabilityArchitectureTests(unittest.TestCase):
             definition.confirmation,
             definition.side_effect_class,
         )
-        profiles = ExecutionProfileIndex()
-        profiles.register(
+        smtp = ExecutionProfileIndex()
+        smtp.register(
             CapabilityExecutionProfile(
                 capability_id=definition.id,
                 implementation=CapabilityBinding(definition.id, "smtp", "send", "1"),
                 verifier_id="core.nonempty",
             )
         )
-        profiles.register(
+        graph = ExecutionProfileIndex()
+        graph.register(
             CapabilityExecutionProfile(
                 capability_id=definition.id,
                 implementation=CapabilityBinding(definition.id, "graph", "sendMail", "1"),
                 verifier_id="core.nonempty",
-            ),
-            replace=True,
+            )
         )
         after = lookup("communication.email.send")
         assert after is not None
@@ -91,11 +91,12 @@ class CapabilityArchitectureTests(unittest.TestCase):
             ),
             before,
         )
-        swapped = profiles.get(definition.id)
+        swapped = graph.get(definition.id)
         assert swapped is not None
         assert swapped.implementation is not None
         self.assertEqual(swapped.implementation.provider, "graph")
         self.assertEqual(swapped.implementation.implementation, "sendMail")
+        self.assertEqual(smtp.get(definition.id).implementation.provider, "smtp")
         self.assertEqual(definition.id, "communication.email.send")
 
     def test_chat_awareness_exposes_no_execution(self) -> None:

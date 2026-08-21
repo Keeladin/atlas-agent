@@ -10,6 +10,7 @@ from atlas_core.tasks.store_common import _payload_hash
 from atlas_core.tools import ToolDescriptor, ToolGateway, ToolResult
 from atlas_core.work import (
     CapabilityExecutionProfile,
+    DeploymentInventory,
     ExecutionProfileIndex,
     WorkError,
     compile_contract,
@@ -40,7 +41,7 @@ def _handler(_request):
     return CapabilityOutcome("pass", output={"ok": True})
 
 
-class _TrackingIndex(ExecutionProfileIndex):
+class _TrackingIndex(DeploymentInventory):
     def __init__(self) -> None:
         super().__init__()
         self.all_calls = 0

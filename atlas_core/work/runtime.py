@@ -20,7 +20,8 @@ from .contract import (
     compile_contract,
     work_contract_from_stored,
 )
-from .profile import ExecutionProfileIndex
+from .inventory import DeploymentInventory
+from .resolve import ImplementationResolver, ResolveMismatch
 from .work import WorkError, WorkId, WorkRecord
 
 
@@ -36,7 +37,7 @@ class WorkRuntime:
         *,
         engine: TaskRuntime,
         definitions: tuple[CapabilityDefinition, ...],
-        profiles: ExecutionProfileIndex,
+        profiles: DeploymentInventory,
         tool_gateway: ToolGateway,
     ) -> None:
         self._engine = engine
@@ -120,11 +121,55 @@ class WorkRuntime:
 
     def run(self, work_id: WorkId) -> RuntimeResult:
         contract = self.contract(work_id)
-        blocked = self._execution_block(contract)
-        if blocked is not None:
+        report = ImplementationResolver().resolve(
+            contract, self._profiles, self._tool_gateway
+        )
+        if report.unarmed:
             record = self.get(work_id)
-            return RuntimeResult(work_id, record.status, 0, 0, blocked)
+            return RuntimeResult(work_id, record.status, 0, 0, UNAVAILABLE)
+        for pin in contract.capabilities:
+            if not authority_allows(contract.authority_scope, pin.required_authority):
+                record = self.get(work_id)
+                return RuntimeResult(
+                    work_id,
+                    record.status,
+                    0,
+                    0,
+                    (
+                        f"authority_scope {contract.authority_scope!r} does not satisfy "
+                        f"{pin.required_authority!r}"
+                    ),
+                )
+        if report.mismatches:
+            self._fail_resolve_mismatches(work_id, report.mismatches)
         return self._engine.run_until_blocked(work_id)
+
+    def _fail_resolve_mismatches(
+        self,
+        work_id: WorkId,
+        mismatches: tuple[ResolveMismatch, ...],
+    ) -> None:
+        store = self._engine.store
+        by_capability = {
+            step.capability: step
+            for step in store.list_steps(work_id)
+            if step.capability
+        }
+        for mismatch in mismatches:
+            step = by_capability.get(mismatch.capability_id)
+            if step is None or step.status not in {"pending", "rework", "blocked"}:
+                continue
+            execution = store.begin_execution(
+                work_id,
+                step_id=step.id,
+                capability=mismatch.capability_id,
+                capability_version=step.capability_version or "0.0.0",
+            )
+            store.finish_execution(
+                execution.id,
+                status="fail",
+                error=f"resolve mismatch: {mismatch.reason}",
+            )
 
     def get(self, work_id: WorkId) -> WorkRecord:
         task = self._engine.store.get_task(work_id)
@@ -151,19 +196,6 @@ class WorkRuntime:
             payload=row["payload"],
             compiled_at=row["compiled_at"],
         )
-
-    def _execution_block(self, contract: WorkContract) -> str | None:
-        if not contract.capabilities:
-            return UNAVAILABLE
-        for pin in contract.capabilities:
-            if not pin.armed:
-                return UNAVAILABLE
-            if not authority_allows(contract.authority_scope, pin.required_authority):
-                return (
-                    f"authority_scope {contract.authority_scope!r} does not satisfy "
-                    f"{pin.required_authority!r}"
-                )
-        return None
 
 
 def _validated_inputs(
@@ -205,7 +237,7 @@ def build_work_runtime(
     *,
     db_path: str | Path = DEFAULT_WORK_DB,
     tool_gateway: ToolGateway | None = None,
-    profiles: ExecutionProfileIndex | None = None,
+    profiles: DeploymentInventory | None = None,
     budget: RuntimeBudget | None = None,
 ) -> WorkRuntime:
     """Only composition root for WorkRuntime."""
@@ -213,7 +245,7 @@ def build_work_runtime(
     store = TaskStore(db_path)
     store.initialize()
     store.initialize_work_schema()
-    profile_index = profiles if profiles is not None else ExecutionProfileIndex()
+    profile_index = profiles if profiles is not None else DeploymentInventory()
     gateway = tool_gateway if tool_gateway is not None else ToolGateway()
     capabilities = CapabilityRegistry()
     _register_executable_profiles(capabilities, profile_index)
@@ -234,7 +266,7 @@ def build_work_runtime(
 
 def _register_executable_profiles(
     registry: CapabilityRegistry,
-    profiles: ExecutionProfileIndex,
+    profiles: DeploymentInventory,
 ) -> None:
     for profile in profiles.all():
         if not profile.available:
@@ -242,7 +274,7 @@ def _register_executable_profiles(
         definition = lookup(profile.capability_id)
         if definition is None:
             continue
-        handler = profiles.handler(profile.capability_id)
+        handler = profiles.handler(profile.capability_id, profile.version)
         if handler is None and profile.executor_kind in {"deterministic", "tool", "composite"}:
             continue
         registry.register(definition, profile, handler)

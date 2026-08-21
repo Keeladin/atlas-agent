@@ -23,7 +23,7 @@ from atlas_core.runtime_types import RuntimeBudget
 from atlas_core.tasks.store_common import _new_id, _payload_hash
 from atlas_core.tools import ToolGateway
 
-from .profile import ExecutionProfileIndex
+from .inventory import DeploymentInventory
 from .work import WorkError
 
 _DETERMINISTIC_KINDS = frozenset({"deterministic", "tool", "composite"})
@@ -139,7 +139,7 @@ def compile_contract(
     work_id: str,
     brief: TaskBrief,
     authority_scope: str,
-    inventory: ExecutionProfileIndex,
+    inventory: DeploymentInventory,
     tools: ToolGateway | None = None,
     work_budget: RuntimeBudget | None = None,
     compiled_at: str | None = None,
@@ -211,7 +211,7 @@ def compile_contract(
 
 def _compile_pin(
     definition: CapabilityDefinition,
-    inventory: ExecutionProfileIndex,
+    inventory: DeploymentInventory,
     tools: ToolGateway | None,
 ) -> ContractCapability:
     profile = inventory.get(definition.id)
@@ -226,7 +226,7 @@ def _compile_pin(
         return unarmed
 
     kind = profile.executor_kind
-    handler = inventory.handler(definition.id)
+    handler = inventory.handler(definition.id, profile.version)
     if kind in _DETERMINISTIC_KINDS and handler is None:
         return unarmed
     if kind not in _DETERMINISTIC_KINDS and kind not in _HANDLERLESS_KINDS:

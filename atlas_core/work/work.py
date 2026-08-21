@@ -6,6 +6,10 @@ from dataclasses import dataclass
 WorkId = str
 
 
+class WorkError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class WorkRecord:
     """Durable work item. Backed by the TaskRuntime store, not Chat storage."""

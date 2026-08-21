@@ -31,6 +31,14 @@ class CapabilityBinding:
     def key(self) -> tuple[str, str, str, str]:
         return (self.capability_id, self.provider, self.implementation, str(self.version))
 
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "capability_id": self.capability_id,
+            "provider": self.provider,
+            "implementation": self.implementation,
+            "version": str(self.version),
+        }
+
 
 class CapabilityBindingIndex:
     """In-memory deployment bindings. Not persisted and not an authority grant."""

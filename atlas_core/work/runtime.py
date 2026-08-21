@@ -13,15 +13,11 @@ from atlas_core.verification import VerifierRegistry
 
 from .frame import RuntimeFrame, assemble_frame
 from .profile import ExecutionProfileIndex
-from .work import WorkId, WorkRecord
+from .work import WorkError, WorkId, WorkRecord
 
 
 DEFAULT_WORK_DB = Path("instance/atlas-work.db")
 UNAVAILABLE = "implementation unavailable"
-
-
-class WorkError(RuntimeError):
-    pass
 
 
 class WorkRuntime:

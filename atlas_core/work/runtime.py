@@ -8,6 +8,7 @@ from atlas_core.advanced.brief import TaskBrief
 from atlas_core.capabilities.definition import CapabilityDefinition, catalog
 from atlas_core.runtime_types import RecoveryResult, RuntimeBudget, RuntimeResult
 from .store_common import _new_id
+from atlas_core.providers import ModelRouter
 from atlas_core.tools import ToolGateway
 from atlas_core.verification import VerifierRegistry
 
@@ -20,6 +21,7 @@ from .contract import (
 from .engine import WorkEngine
 from .inventory import DeploymentInventory
 from .resolve import ImplementationResolver
+from .model import WorkModelConsumer
 from .store import UnknownRecordError, WorkStore, WorkStoreError
 from .work import UNAVAILABLE, WorkError, WorkId, WorkRecord
 
@@ -40,10 +42,12 @@ class WorkRuntime:
         budget: RuntimeBudget | None = None,
         verifiers: VerifierRegistry | None = None,
         definitions: tuple[CapabilityDefinition, ...] | None = None,
+        providers=None,
     ) -> None:
         self.store = store
         self._profiles = inventory
         self._tool_gateway = tools
+        self._providers = providers
         self._engine = engine
         self._budget = budget or RuntimeBudget()
         self._verifiers = verifiers or VerifierRegistry()
@@ -66,6 +70,7 @@ class WorkRuntime:
             authority_scope=authority_scope,
             inventory=self._profiles,
             tools=self._tool_gateway,
+            providers=self._providers,
             work_budget=self._budget,
         )
         store = self.store
@@ -227,6 +232,7 @@ def build_work_runtime(
     profiles: DeploymentInventory | None = None,
     budget: RuntimeBudget | None = None,
     verifiers: VerifierRegistry | None = None,
+    model_router: ModelRouter | None = None,
 ) -> WorkRuntime:
     """Only composition root for WorkRuntime."""
 
@@ -235,10 +241,12 @@ def build_work_runtime(
     profile_index = profiles if profiles is not None else DeploymentInventory()
     gateway = tool_gateway if tool_gateway is not None else ToolGateway()
     verifier_registry = verifiers if verifiers is not None else VerifierRegistry()
+    consumer = None if model_router is None else WorkModelConsumer(model_router)
     engine = WorkEngine(
         store=store,
         tools=gateway,
         verifiers=verifier_registry,
+        model_consumer=consumer,
     )
     return WorkRuntime(
         store=store,
@@ -248,4 +256,5 @@ def build_work_runtime(
         budget=budget,
         verifiers=verifier_registry,
         definitions=catalog(),
+        providers=None if model_router is None else model_router.registry,
     )

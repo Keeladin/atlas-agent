@@ -1,4 +1,4 @@
-from .contract import ContractCapability, WorkContract, compile_contract
+from .contract import ContractCapability, PinnedProvider, WorkContract, compile_contract
 from .engine import WorkEngine
 from .inventory import DeploymentInventory
 from .profile import CapabilityExecutionProfile
@@ -9,6 +9,7 @@ from .resolve import (
     ResolvedCapability,
     ResolvedWork,
 )
+from .model import WorkModelConsumer, WorkModelError
 from .store import InvalidTransitionError, UnknownRecordError, WorkStore, WorkStoreError
 from .surface import ExecutionSurface, SurfaceError, project_surface
 from .runtime import WorkRuntime, build_work_runtime
@@ -20,6 +21,7 @@ __all__ = [
     "DeploymentInventory",
     "ExecutionSurface",
     "ImplementationResolver",
+    "PinnedProvider",
     "ResolveMismatch",
     "ResolveReport",
     "ResolvedCapability",
@@ -28,6 +30,8 @@ __all__ = [
     "UNAVAILABLE",
     "WorkContract",
     "WorkEngine",
+    "WorkModelConsumer",
+    "WorkModelError",
     "WorkError",
     "WorkId",
     "WorkRecord",

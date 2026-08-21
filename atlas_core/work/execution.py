@@ -18,7 +18,7 @@ from .resolve import ResolveReport, ResolvedCapability
 from .surface import ExecutionSurface, project_surface
 
 _DETERMINISTIC_KINDS = frozenset({"deterministic", "tool", "composite"})
-_SUPPORTED_KINDS = frozenset({"deterministic", "tool", "composite", "human"})
+_SUPPORTED_KINDS = frozenset({"deterministic", "tool", "composite", "human", "model"})
 
 
 class WorkExecutionMixin:
@@ -251,12 +251,16 @@ class WorkExecutionMixin:
             )
             return True
 
-        if pin.executor_kind not in _DETERMINISTIC_KINDS:
-            outcome = CapabilityOutcome(
-                "fail",
-                error="executor not implemented",
+        if pin.executor_kind == "model":
+            outcome = self._execute_model(
+                contract=contract,
+                pin=pin,
+                pack=pack,
+                execution_id=execution.id,
+                step_id=step.id,
+                previous=previous,
             )
-        else:
+        elif pin.executor_kind in _DETERMINISTIC_KINDS:
             outcome = self._invoke_handler(
                 step=step,
                 pin=pin,
@@ -265,6 +269,11 @@ class WorkExecutionMixin:
                 pack=pack,
                 execution=execution,
                 input_ids=input_ids,
+            )
+        else:
+            outcome = CapabilityOutcome(
+                "fail",
+                error="executor not implemented",
             )
 
         self._finish_frame(
@@ -276,6 +285,40 @@ class WorkExecutionMixin:
             outcome,
         )
         return True
+
+    def _execute_model(
+        self,
+        *,
+        contract: WorkContract,
+        pin: ContractCapability,
+        pack,
+        execution_id: str,
+        step_id: str,
+        previous,
+    ) -> CapabilityOutcome:
+        consumer = getattr(self, "model_consumer", None)
+        if consumer is None:
+            return CapabilityOutcome("fail", error="executor not implemented")
+
+        def set_provider(key: str) -> None:
+            self.store.set_execution_provider(execution_id, key)
+            self._emit(
+                contract.work_id,
+                "provider.selected",
+                step_id=step_id,
+                execution_id=execution_id,
+                payload={"provider": key},
+            )
+
+        return consumer.execute(
+            contract=contract,
+            pin=pin,
+            pack=pack,
+            execution_id=execution_id,
+            previous=previous,
+            work_executions=self.store.list_executions(contract.work_id),
+            set_provider=set_provider,
+        )
 
     def _invoke_handler(
         self,

@@ -22,7 +22,7 @@ CONTRACT_SOURCE = (
 
 GOLDEN_COMPILED_AT = "2026-01-01T00:00:00Z"
 GOLDEN_WORK_ID = "work_golden_unarmed_knowledge_index"
-GOLDEN_SHA256 = "0785a53c6b808793a044d5e571c954cdad7d9aa5c866ca789ec666d954949dd0"
+GOLDEN_SHA256 = "45cc6ac3d37940d8d4639e9455d1d2a451d78740f566faf71d53b1fe71a901a8"
 
 
 def _brief(**overrides) -> TaskBrief:
@@ -510,6 +510,8 @@ class WorkContractCompileTests(unittest.TestCase):
             "atlas_core.chat",
             "atlas_companion",
             "n8n",
+            "providers()",
+            ".all(",
         )
         for token in forbidden:
             with self.subTest(token=token):

@@ -31,6 +31,7 @@ ENGINE_FILES = (
     WORK_ROOT / "lifecycle.py",
     WORK_ROOT / "execution.py",
     WORK_ROOT / "finish.py",
+    WORK_ROOT / "model.py",
 )
 RUNTIME_SOURCE = (WORK_ROOT / "runtime.py").read_text(encoding="utf-8")
 ENGINE_FORBIDDEN = (
@@ -96,6 +97,7 @@ class WorkEngineTests(unittest.TestCase):
             store=runtime._engine.store,
             tools=runtime._tool_gateway,
             verifiers=verifiers,
+            model_consumer=runtime._engine.model_consumer,
         )
 
     def _resolve(self, runtime, work_id, inventory=None, gateway=None):
@@ -116,6 +118,9 @@ class WorkEngineTests(unittest.TestCase):
             self.assertNotIn("self.capabilities.get", source)
             self.assertNotIn("tools.manifest(", source)
             self.assertNotIn("self.tools.manifest", source)
+        model_source = (WORK_ROOT / "model.py").read_text(encoding="utf-8")
+        self.assertNotIn("ToolGateway", model_source)
+        self.assertNotIn("tools.invoke", model_source)
 
     def test_work_runtime_run_uses_work_engine(self) -> None:
         self.assertIn("from .engine import WorkEngine", RUNTIME_SOURCE)

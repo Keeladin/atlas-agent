@@ -11,9 +11,9 @@ class ProviderRegistry:
     def __init__(self) -> None:
         self._providers: dict[str, ModelProvider] = {}
 
-    def register(self, provider: ModelProvider, *, replace: bool = False) -> None:
+    def register(self, provider: ModelProvider) -> None:
         key = provider.spec.key
-        if key in self._providers and not replace:
+        if key in self._providers:
             raise ProviderRegistryError(f"Provider already registered: {key}")
         self._providers[key] = provider
 

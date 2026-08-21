@@ -21,6 +21,7 @@ from atlas_core.capabilities.contracts import (
 from atlas_core.capabilities.definition import CapabilityDefinition, lookup, require
 from atlas_core.runtime_types import RuntimeBudget
 from .store_common import _new_id, _payload_hash
+from atlas_core.providers.registry import ProviderRegistryError
 from atlas_core.tools import ToolGateway
 
 from .inventory import DeploymentInventory
@@ -28,6 +29,47 @@ from .work import WorkError
 
 _DETERMINISTIC_KINDS = frozenset({"deterministic", "tool", "composite"})
 _HANDLERLESS_KINDS = frozenset({"model", "human"})
+
+
+@dataclass(frozen=True)
+class PinnedProvider:
+    """Frozen execution-semantic identity of one eligible provider key."""
+
+    key: str
+    model: str
+    provider_kind: str
+    local: bool
+    max_context_chars: int
+    input_cost_per_million: float | None = None
+    output_cost_per_million: float | None = None
+    base_url: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "model": self.model,
+            "provider_kind": self.provider_kind,
+            "local": self.local,
+            "max_context_chars": self.max_context_chars,
+            "input_cost_per_million": self.input_cost_per_million,
+            "output_cost_per_million": self.output_cost_per_million,
+            "base_url": self.base_url,
+        }
+
+    def matches(self, provider) -> bool:
+        spec = provider.spec
+        live_url = getattr(provider, "base_url", None)
+        live_url = None if live_url is None else str(live_url)
+        return (
+            spec.key == self.key
+            and spec.model == self.model
+            and spec.provider_kind == self.provider_kind
+            and spec.local == self.local
+            and spec.max_context_chars == self.max_context_chars
+            and spec.input_cost_per_million == self.input_cost_per_million
+            and spec.output_cost_per_million == self.output_cost_per_million
+            and live_url == self.base_url
+        )
 
 
 @dataclass(frozen=True)
@@ -50,6 +92,7 @@ class ContractCapability:
     output_kind: str = ""
     requires_artifact_kinds: tuple[str, ...] = ()
     eligible_providers: tuple[str, ...] = ()
+    provider_snapshots: tuple[PinnedProvider, ...] = ()
     side_effects: tuple[str, ...] = ()
     idempotent: bool = True
     parallel_safe: bool = False
@@ -76,6 +119,7 @@ class ContractCapability:
             "output_kind": self.output_kind,
             "requires_artifact_kinds": list(self.requires_artifact_kinds),
             "eligible_providers": list(self.eligible_providers),
+            "provider_snapshots": [item.as_dict() for item in self.provider_snapshots],
             "side_effects": list(self.side_effects),
             "idempotent": self.idempotent,
             "parallel_safe": self.parallel_safe,
@@ -141,14 +185,16 @@ def compile_contract(
     authority_scope: str,
     inventory: DeploymentInventory,
     tools: ToolGateway | None = None,
+    providers=None,
     work_budget: RuntimeBudget | None = None,
     compiled_at: str | None = None,
     contract_id: str | None = None,
 ) -> WorkContract:
     """Compile a sealed WorkContract from a brief. Does not persist.
 
-    Iterates ``brief.capabilities`` only. Does not scan inventory, gateway
-    manifests, bindings indexes, registries, planners, or MCP.
+    Iterates ``brief.capabilities`` only. Named tools and eligible provider
+    keys are looked up exactly. Does not scan inventory, gateway manifests,
+    provider registries, bindings indexes, planners, or MCP.
     """
 
     work_id = str(work_id or "").strip()
@@ -178,7 +224,7 @@ def compile_contract(
                 f"authority_scope {granted!r} does not satisfy {definition.id} "
                 f"required_authority {definition.required_authority!r}"
             )
-        pin = _compile_pin(definition, inventory, tools)
+        pin = _compile_pin(definition, inventory, tools, providers)
         slices.append(pin)
         if pin.armed:
             for tool_ref in pin.tools:
@@ -213,6 +259,7 @@ def _compile_pin(
     definition: CapabilityDefinition,
     inventory: DeploymentInventory,
     tools: ToolGateway | None,
+    providers=None,
 ) -> ContractCapability:
     profile = inventory.get(definition.id)
     unarmed = ContractCapability(
@@ -234,7 +281,10 @@ def _compile_pin(
 
     try:
         pinned_tools = _pin_profile_tools(profile.tools, tools)
-    except KeyError:
+        provider_snapshots = _pin_eligible_providers(
+            profile.eligible_providers, providers
+        )
+    except (KeyError, ProviderRegistryError):
         return unarmed
 
     return ContractCapability(
@@ -254,6 +304,7 @@ def _compile_pin(
         output_kind=profile.output_kind,
         requires_artifact_kinds=profile.requires_artifact_kinds,
         eligible_providers=profile.eligible_providers,
+        provider_snapshots=provider_snapshots,
         side_effects=profile.side_effects,
         idempotent=profile.idempotent,
         parallel_safe=profile.parallel_safe,
@@ -264,6 +315,34 @@ def _compile_pin(
         budget=profile.budget,
         retry_policy=profile.retry_policy,
     )
+
+
+def _pin_eligible_providers(named, providers) -> tuple[PinnedProvider, ...]:
+    keys = tuple(str(key) for key in named if str(key).strip())
+    if not keys:
+        return ()
+    if providers is None:
+        raise KeyError("no provider inventory")
+    snapshots: list[PinnedProvider] = []
+    for key in keys:
+        provider = providers.get(key)
+        spec = provider.spec
+        if spec.key != key:
+            raise KeyError("provider identity mismatch")
+        base_url = getattr(provider, "base_url", None)
+        snapshots.append(
+            PinnedProvider(
+                key=spec.key,
+                model=spec.model,
+                provider_kind=spec.provider_kind,
+                local=spec.local,
+                max_context_chars=spec.max_context_chars,
+                input_cost_per_million=spec.input_cost_per_million,
+                output_cost_per_million=spec.output_cost_per_million,
+                base_url=None if base_url is None else str(base_url),
+            )
+        )
+    return tuple(snapshots)
 
 
 def _pin_profile_tools(
@@ -457,6 +536,9 @@ def _pin_from_payload(item: dict[str, Any]) -> ContractCapability:
         eligible_providers=tuple(
             str(provider) for provider in item.get("eligible_providers") or ()
         ),
+        provider_snapshots=_pinned_providers_from_payload(
+            item.get("provider_snapshots")
+        ),
         side_effects=tuple(str(effect) for effect in item.get("side_effects") or ()),
         idempotent=bool(item.get("idempotent", True)),
         parallel_safe=bool(item.get("parallel_safe")),
@@ -471,6 +553,38 @@ def _pin_from_payload(item: dict[str, Any]) -> ContractCapability:
         budget=_execution_budget_from_dict(item.get("budget")),
         retry_policy=_retry_policy_from_dict(item.get("retry_policy")),
     )
+
+
+def _pinned_providers_from_payload(payload: Any) -> tuple[PinnedProvider, ...]:
+    if not isinstance(payload, list):
+        return ()
+    snapshots: list[PinnedProvider] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        snapshots.append(
+            PinnedProvider(
+                key=str(item["key"]),
+                model=str(item["model"]),
+                provider_kind=str(item["provider_kind"]),
+                local=bool(item["local"]),
+                max_context_chars=int(item["max_context_chars"]),
+                input_cost_per_million=(
+                    None
+                    if item.get("input_cost_per_million") is None
+                    else float(item["input_cost_per_million"])
+                ),
+                output_cost_per_million=(
+                    None
+                    if item.get("output_cost_per_million") is None
+                    else float(item["output_cost_per_million"])
+                ),
+                base_url=(
+                    None if item.get("base_url") is None else str(item["base_url"])
+                ),
+            )
+        )
+    return tuple(snapshots)
 
 
 def _execution_budget_from_dict(payload: Any) -> ExecutionBudget | None:

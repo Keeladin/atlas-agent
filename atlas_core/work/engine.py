@@ -11,6 +11,7 @@ from .contract import WorkContract
 from .execution import WorkExecutionMixin
 from .finish import WorkFinishMixin
 from .lifecycle import WorkLifecycleMixin
+from .model import WorkModelConsumer
 from .resolve import ResolveReport
 
 
@@ -31,6 +32,7 @@ class WorkEngine(WorkLifecycleMixin, WorkExecutionMixin, WorkFinishMixin):
         verifiers: VerifierRegistry | None = None,
         event_bus: EventBus | None = None,
         outcome_gate: OutcomeGate | None = None,
+        model_consumer: WorkModelConsumer | None = None,
     ) -> None:
         self.store = store
         self.tools = tools
@@ -39,6 +41,7 @@ class WorkEngine(WorkLifecycleMixin, WorkExecutionMixin, WorkFinishMixin):
         self.context_builder = ContextBuilder(store)
         self.completion = CompletionVerifier(store)
         self.outcome_gate = outcome_gate or OutcomeGate()
+        self.model_consumer = model_consumer
 
     def run(self, contract: WorkContract, report: ResolveReport) -> RuntimeResult:
         return self.run_until_blocked(contract, report)

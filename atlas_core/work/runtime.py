@@ -5,11 +5,9 @@ from pathlib import Path
 from typing import Any
 
 from atlas_core.advanced.brief import TaskBrief
-from atlas_core.authority import authority_allows
-from atlas_core.capabilities import CapabilityRegistry
-from atlas_core.capabilities.definition import CapabilityDefinition, catalog, lookup
-from atlas_core.runtime import RuntimeBudget, RuntimeResult, TaskRuntime
-from atlas_core.tasks import TaskStore, TaskStoreError, UnknownRecordError
+from atlas_core.capabilities.definition import CapabilityDefinition, catalog
+from atlas_core.runtime_types import RecoveryResult, RuntimeBudget, RuntimeResult
+from atlas_core.tasks import TaskStoreError, UnknownRecordError
 from atlas_core.tasks.store_common import _new_id
 from atlas_core.tools import ToolGateway
 from atlas_core.verification import VerifierRegistry
@@ -20,9 +18,10 @@ from .contract import (
     compile_contract,
     work_contract_from_stored,
 )
+from .engine import WorkEngine
 from .inventory import DeploymentInventory
-from .resolve import ImplementationResolver, ResolveMismatch, ResolveReport
-from .surface import project_surface
+from .resolve import ImplementationResolver
+from .store import WorkStore
 from .work import UNAVAILABLE, WorkError, WorkId, WorkRecord
 
 
@@ -30,20 +29,28 @@ DEFAULT_WORK_DB = Path("instance/atlas-work.db")
 
 
 class WorkRuntime:
-    """Work composition boundary. TaskRuntime is the execution engine."""
+    """Work composition boundary. WorkEngine executes accepted contracts."""
 
     def __init__(
         self,
         *,
-        engine: TaskRuntime,
-        definitions: tuple[CapabilityDefinition, ...],
-        profiles: DeploymentInventory,
-        tool_gateway: ToolGateway,
+        store: WorkStore,
+        inventory: DeploymentInventory,
+        tools: ToolGateway,
+        engine: WorkEngine,
+        budget: RuntimeBudget | None = None,
+        verifiers: VerifierRegistry | None = None,
+        definitions: tuple[CapabilityDefinition, ...] | None = None,
     ) -> None:
+        self.store = store
+        self._profiles = inventory
+        self._tool_gateway = tools
         self._engine = engine
-        self._definitions = {item.id: item for item in definitions}
-        self._profiles = profiles
-        self._tool_gateway = tool_gateway
+        self._budget = budget or RuntimeBudget()
+        self._verifiers = verifiers or VerifierRegistry()
+        self._definitions = {
+            item.id: item for item in (definitions if definitions is not None else catalog())
+        }
 
     def accept(
         self,
@@ -60,9 +67,9 @@ class WorkRuntime:
             authority_scope=authority_scope,
             inventory=self._profiles,
             tools=self._tool_gateway,
-            work_budget=self._engine.budget,
+            work_budget=self._budget,
         )
-        store = self._engine.store
+        store = self.store
         store.create_task(
             objective=brief.objective,
             success_criteria=contract.success_criteria,
@@ -130,79 +137,24 @@ class WorkRuntime:
         if report.unarmed:
             record = self.get(work_id)
             return RuntimeResult(work_id, record.status, 0, 0, UNAVAILABLE)
-        for pin in contract.capabilities:
-            if not authority_allows(contract.authority_scope, pin.required_authority):
-                record = self.get(work_id)
-                return RuntimeResult(
-                    work_id,
-                    record.status,
-                    0,
-                    0,
-                    (
-                        f"authority_scope {contract.authority_scope!r} does not satisfy "
-                        f"{pin.required_authority!r}"
-                    ),
-                )
-        if report.mismatches:
-            self._fail_resolve_mismatches(work_id, report.mismatches)
-        self._bind_run_surfaces(work_id, report)
-        try:
-            return self._engine.run_until_blocked(work_id)
-        finally:
-            self._engine.work_surfaces.pop(work_id, None)
+        return self._engine.run(contract, report)
 
-    def _fail_resolve_mismatches(
-        self,
-        work_id: WorkId,
-        mismatches: tuple[ResolveMismatch, ...],
-    ) -> None:
-        store = self._engine.store
-        by_capability = {
-            step.capability: step
-            for step in store.list_steps(work_id)
-            if step.capability
-        }
-        for mismatch in mismatches:
-            step = by_capability.get(mismatch.capability_id)
-            if step is None or step.status not in {"pending", "rework", "blocked"}:
-                continue
-            execution = store.begin_execution(
-                work_id,
-                step_id=step.id,
-                capability=mismatch.capability_id,
-                capability_version=step.capability_version or "0.0.0",
-            )
-            store.finish_execution(
-                execution.id,
-                status="fail",
-                error=f"resolve mismatch: {mismatch.reason}",
-            )
+    def resume(self, work_id: WorkId) -> int:
+        contract = self.contract(work_id)
+        report = ImplementationResolver().resolve(
+            contract, self._profiles, self._tool_gateway
+        )
+        return self._engine.resume(contract, report)
 
-    def _bind_run_surfaces(self, work_id: WorkId, report: ResolveReport) -> None:
-        """Attach run-local surfaces for this work_id. Temporary until WorkEngine."""
-        store = self._engine.store
-        task = store.get_task(work_id)
-        by_capability = {
-            step.capability: step
-            for step in store.list_steps(work_id)
-            if step.capability
-        }
-        surfaces: dict[str, object] = {}
-        for capability_id, resolved in report.resolved.capabilities.items():
-            step = by_capability.get(capability_id)
-            if step is None:
-                continue
-            surfaces[capability_id] = project_surface(
-                resolved,
-                work_id=work_id,
-                step_id=step.id,
-                authority_scope=task.authority_scope,
-                kernel=self._tool_gateway,
-            )
-        self._engine.work_surfaces[work_id] = surfaces
+    def recover(self, work_id: WorkId) -> RecoveryResult:
+        contract = self.contract(work_id)
+        report = ImplementationResolver().resolve(
+            contract, self._profiles, self._tool_gateway
+        )
+        return self._engine.recover(contract, report)
 
     def get(self, work_id: WorkId) -> WorkRecord:
-        task = self._engine.store.get_task(work_id)
+        task = self.store.get_task(work_id)
         contract = self.contract(work_id)
         return WorkRecord(
             id=task.id,
@@ -214,7 +166,7 @@ class WorkRuntime:
 
     def contract(self, work_id: WorkId) -> WorkContract:
         try:
-            row = self._engine.store.load_work_contract_row(work_id)
+            row = self.store.load_work_contract_row(work_id)
         except UnknownRecordError as exc:
             raise WorkError(str(exc)) from exc
         except TaskStoreError as exc:
@@ -272,39 +224,23 @@ def build_work_runtime(
 ) -> WorkRuntime:
     """Only composition root for WorkRuntime."""
 
-    store = TaskStore(db_path)
+    store = WorkStore(db_path)
     store.initialize()
     store.initialize_work_schema()
     profile_index = profiles if profiles is not None else DeploymentInventory()
     gateway = tool_gateway if tool_gateway is not None else ToolGateway()
-    capabilities = CapabilityRegistry()
-    _register_executable_profiles(capabilities, profile_index)
-    engine = TaskRuntime(
+    verifiers = VerifierRegistry()
+    engine = WorkEngine(
         store=store,
-        capabilities=capabilities,
-        verifiers=VerifierRegistry(),
-        tool_gateway=gateway,
-        budget=budget,
+        tools=gateway,
+        verifiers=verifiers,
     )
     return WorkRuntime(
+        store=store,
+        inventory=profile_index,
+        tools=gateway,
         engine=engine,
+        budget=budget,
+        verifiers=verifiers,
         definitions=catalog(),
-        profiles=profile_index,
-        tool_gateway=gateway,
     )
-
-
-def _register_executable_profiles(
-    registry: CapabilityRegistry,
-    profiles: DeploymentInventory,
-) -> None:
-    for profile in profiles.all():
-        if not profile.available:
-            continue
-        definition = lookup(profile.capability_id)
-        if definition is None:
-            continue
-        handler = profiles.handler(profile.capability_id, profile.version)
-        if handler is None and profile.executor_kind in {"deterministic", "tool", "composite"}:
-            continue
-        registry.register(definition, profile, handler)

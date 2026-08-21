@@ -8,14 +8,16 @@ from unittest.mock import patch
 
 from atlas_core.advanced import TaskBrief
 from atlas_core.capabilities import CapabilityBinding, CapabilityOutcome
-from atlas_core.runtime import RuntimeResult, TaskRuntime
+from atlas_core.runtime_types import RuntimeResult
 from atlas_core.tasks import TaskStoreError
 from atlas_core.work import (
     UNAVAILABLE,
     CapabilityExecutionProfile,
     DeploymentInventory,
+    WorkEngine,
     WorkError,
     WorkRuntime,
+    WorkStore,
     build_work_runtime,
 )
 
@@ -91,13 +93,13 @@ class WorkRuntimeTests(unittest.TestCase):
         work_id = runtime.accept(_brief(), "execute_external")
         engine = runtime._engine
         calls: list[str] = []
-        original = engine.run_until_blocked
+        original = engine.run
 
-        def wrapped(task_id: str):
-            calls.append(task_id)
-            return original(task_id)
+        def wrapped(contract, report):
+            calls.append(contract.work_id)
+            return original(contract, report)
 
-        engine.run_until_blocked = wrapped  # type: ignore[method-assign]
+        engine.run = wrapped  # type: ignore[method-assign]
         result = runtime.run(work_id)
         self.assertEqual(calls, [])
         self.assertEqual(result.reason, UNAVAILABLE)
@@ -105,7 +107,7 @@ class WorkRuntimeTests(unittest.TestCase):
         self.assertEqual(engine.store.list_executions(work_id), ())
         self.assertEqual(runtime.get(work_id).status, "planned")
 
-    def test_run_with_profile_passes_through_task_runtime(self) -> None:
+    def test_run_with_profile_uses_work_engine(self) -> None:
         profiles = DeploymentInventory()
         profiles.register(
             CapabilityExecutionProfile(
@@ -125,15 +127,15 @@ class WorkRuntimeTests(unittest.TestCase):
         runtime = build_work_runtime(db_path=self.work_db, profiles=profiles)
         work_id = runtime.accept(_brief(), "execute_external")
         engine = runtime._engine
-        self.assertIsInstance(engine, TaskRuntime)
+        self.assertIsInstance(engine, WorkEngine)
         calls: list[str] = []
-        original = engine.run_until_blocked
+        original = engine.run
 
-        def wrapped(task_id: str):
-            calls.append(task_id)
-            return original(task_id)
+        def wrapped(contract, report):
+            calls.append(contract.work_id)
+            return original(contract, report)
 
-        engine.run_until_blocked = wrapped  # type: ignore[method-assign]
+        engine.run = wrapped  # type: ignore[method-assign]
         result = runtime.run(work_id)
         self.assertEqual(calls, [work_id])
         self.assertIsInstance(result, RuntimeResult)
@@ -158,7 +160,9 @@ class WorkRuntimeTests(unittest.TestCase):
     def test_build_work_runtime_is_the_constructor(self) -> None:
         runtime = build_work_runtime(db_path=self.work_db)
         self.assertIsInstance(runtime, WorkRuntime)
-        self.assertIsInstance(runtime._engine, TaskRuntime)
+        self.assertIsInstance(runtime._engine, WorkEngine)
+        self.assertIsInstance(runtime.store, WorkStore)
+        self.assertIs(runtime.store, runtime._engine.store)
 
     def test_insufficient_authority_is_rejected(self) -> None:
         runtime = self._runtime()

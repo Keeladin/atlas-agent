@@ -19,8 +19,8 @@ class WorkEngine(WorkLifecycleMixin, WorkExecutionMixin, WorkFinishMixin):
 
     Inputs are a persisted ``WorkContract`` and a ``ResolveReport`` already
     projected onto that contract. This class does not consult process-global
-    executable sets, does not re-resolve pins, and is not called by
-    ``WorkRuntime.run`` until the later cutover.
+    executable sets and does not re-resolve pins. ``WorkRuntime.run`` calls
+    ``run`` with those two objects.
     """
 
     def __init__(

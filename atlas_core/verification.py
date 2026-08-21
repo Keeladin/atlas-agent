@@ -14,7 +14,7 @@ from atlas_core.deliverable import (
     output_text,
 )
 from atlas_core.tasks.models import StepRecord, TaskRecord
-from atlas_core.tasks.store import TaskStore
+from atlas_core.context import WorkPersistence
 
 
 VerificationStatus = Literal["pass", "rework", "abstain", "fail", "blocked"]
@@ -300,7 +300,7 @@ def _parse_outcome_verdict(text: str) -> dict[str, Any] | None:
 class CompletionVerifier:
     """Task completion gate independent from any model's claim of completion."""
 
-    def __init__(self, store: TaskStore) -> None:
+    def __init__(self, store: WorkPersistence) -> None:
         self.store = store
 
     def evaluate(self, task_id: str) -> CompletionDecision:

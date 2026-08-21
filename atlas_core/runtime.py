@@ -39,7 +39,6 @@ class TaskRuntime(RuntimeLifecycleMixin, RuntimeExecutionMixin, RuntimeFinishMix
         self.outcome_gate = outcome_gate or OutcomeGate(
             semantic=SemanticOutcomeVerifier(model_router) if model_router is not None else None
         )
-        # WorkRuntime run-local surfaces, keyed by work_id then capability id.
-        # Not a CapabilityRegistry slot. Dies when WorkEngine invokes handlers
-        # directly (PR 5) and no longer uses TaskRuntime._execute_step.
+        # Leftover per-task surface map for CLI callers that still use this
+        # engine. WorkRuntime no longer writes it.
         self.work_surfaces: dict[str, dict[str, object]] = {}

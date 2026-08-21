@@ -14,7 +14,7 @@ class WorkError(RuntimeError):
 
 @dataclass(frozen=True)
 class WorkRecord:
-    """Durable work item. Backed by the TaskRuntime store, not Chat storage."""
+    """Durable work item. Backed by Work persistence, not Chat storage."""
 
     id: WorkId
     objective: str

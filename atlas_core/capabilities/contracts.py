@@ -130,8 +130,8 @@ class CapabilityRequest:
     idempotency_key: str | None = None
     work_id: str | None = None
     # WorkEngine sets a typed ExecutionSurface and requires it at invoke.
-    # TaskRuntime still uses the WorkRuntime.work_surfaces bridge until PR 5b.
-    # Type stays Any so atlas_core.capabilities does not import atlas_core.work.
+    # The leftover CLI engine may still pass None. Type stays Any so
+    # atlas_core.capabilities does not import atlas_core.work.
     surface: Any = None
 
 

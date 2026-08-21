@@ -27,11 +27,15 @@ WORK_FORBIDDEN = (
     "AdvancedRuntime",
     "N8NMCPProvider",
     "n8n",
+    "TaskRuntime",
+    "CapabilityRegistry",
+    "TaskPlanner",
+    "RuntimeFrame",
 )
 
 
 def _python_files(directory: Path) -> list[Path]:
-    return sorted(directory.glob("*.py"))
+    return sorted(directory.rglob("*.py"))
 
 
 class WorkDependencyTests(unittest.TestCase):

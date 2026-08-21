@@ -309,7 +309,6 @@ class RuntimeExecutionMixin:
                 dependency_artifact_ids=dependency_ids,
                 idempotency_key=f"{step.task_id}:{step.id}:{profile.capability_id}",
                 work_id=step.task_id,
-                # Temporary: WorkRuntime.work_surfaces bridge. Remove with WorkEngine.
                 surface=(
                     getattr(self, "work_surfaces", {}).get(step.task_id, {}).get(
                         step.capability

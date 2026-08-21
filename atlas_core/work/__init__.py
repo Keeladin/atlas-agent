@@ -9,6 +9,7 @@ from .resolve import (
     ResolvedCapability,
     ResolvedWork,
 )
+from .store import WorkStore
 from .surface import ExecutionSurface, SurfaceError, project_surface
 from .runtime import WorkRuntime, build_work_runtime
 from .work import UNAVAILABLE, WorkError, WorkId, WorkRecord
@@ -31,6 +32,7 @@ __all__ = [
     "WorkId",
     "WorkRecord",
     "WorkRuntime",
+    "WorkStore",
     "build_work_runtime",
     "compile_contract",
     "project_surface",

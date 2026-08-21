@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-"""Differential conformance: TaskRuntime (via WorkRuntime.run) vs WorkEngine.
+"""Differential conformance: WorkRuntime.run vs WorkEngine.
 
-This is the gate before switching WorkRuntime.run(). It does not wire that
-cutover. Cases listed as preserved must match. Architectural divergences are
-asserted explicitly so 5b is not a surprise.
+Preserved deterministic cases must match. The two pre-cutover divergences
+versus the leftover CLI engine (foreign extra steps, model executor) stay
+explicit: on the Work path both sides now follow WorkEngine.
 """
 
 from pathlib import Path
@@ -511,12 +511,11 @@ class WorkEngineConformanceTests(unittest.TestCase):
         self.assertEqual(left["result_executions"], 1)
 
     def test_foreign_step_is_an_expected_divergence(self) -> None:
-        """Expected divergence 1: extra step ids.
+        """Expected divergence 1 vs leftover CLI engine: extra step ids.
 
-        TaskRuntime (via WorkRuntime.run today) executes a store step whose
-        capability is not in the WorkContract. WorkEngine fails the work and
-        never successfully runs that extra id. This is not preserved
-        TaskRuntime behavior; it is the membership seal 5b relies on.
+        The leftover CLI engine executes a store-injected step whose
+        capability is not in the WorkContract. WorkRuntime.run matches
+        WorkEngine: the work fails and the extra id never runs.
         """
 
         inventory = DeploymentInventory()
@@ -543,18 +542,18 @@ class WorkEngineConformanceTests(unittest.TestCase):
             "execute_external",
             prepare=prepare,
         )
-        self.assertIn("knowledge.search", left["executed_capabilities"])
+        self.assertEqual(left, right)
+        self.assertEqual(left["result_status"], "failed")
+        self.assertIn("do not match the contract", left["result_reason"])
+        self.assertNotIn("knowledge.search", left["executed_capabilities"])
         self.assertNotIn("knowledge.search", right["executed_capabilities"])
-        self.assertEqual(right["result_status"], "failed")
-        self.assertIn("do not match the contract", right["result_reason"])
-        self.assertEqual(left["result_status"], "completed")
 
     def test_model_kind_is_an_expected_divergence(self) -> None:
-        """Expected divergence 2: model executor path.
+        """Expected divergence 2 vs leftover CLI engine: model executor.
 
-        TaskRuntime blocks a model pin when no router is configured.
-        WorkEngine fails the attempt with "executor not implemented" until
-        PR 7. This is not a preserved deterministic semantic.
+        The leftover CLI engine blocks a model pin when no router is
+        configured. WorkRuntime.run matches WorkEngine and fails with
+        "executor not implemented" until the model path exists.
         """
         inventory = DeploymentInventory()
         inventory.register(
@@ -574,8 +573,7 @@ class WorkEngineConformanceTests(unittest.TestCase):
             ),
             "interpret",
         )
-        self.assertNotEqual(left["executions"], right["executions"])
-        self.assertEqual(right["executions"][0][1], "fail")
+        self.assertEqual(left, right)
+        self.assertEqual(left["executions"][0][1], "fail")
+        self.assertEqual(left["executions"][0][3], "executor not implemented")
         self.assertEqual(right["executions"][0][3], "executor not implemented")
-        self.assertEqual(left["executions"][0][1], "blocked")
-        self.assertIn("model router", left["executions"][0][3] or "")

@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Protocol
 from uuid import uuid4
 
 from atlas_core.capabilities import CapabilityRegistration, ContextPolicy
 from atlas_core.deliverable import infer_deliverable, infer_presentation_profile
 from atlas_core.schema_validation import project_object_to_schema
-from atlas_core.tasks.store import TaskStore
 
 
 CONTEXT_PROFILES: dict[str, str] = {
@@ -150,15 +149,30 @@ class ContextPack:
         return json.dumps(self.payload, ensure_ascii=False, sort_keys=True)
 
 
+class WorkPersistence(Protocol):
+    """Durable Work/task store surface used by context assembly."""
+
+    def get_task(self, task_id: str) -> Any: ...
+    def get_step(self, step_id: str) -> Any: ...
+    def list_steps(self, task_id: str) -> Any: ...
+    def list_criteria(self, task_id: str) -> Any: ...
+    def get_artifact(self, artifact_id: str) -> Any: ...
+    def list_claims(self, task_id: str) -> Any: ...
+    def list_executions(self, task_id: str, *, step_id: str | None = None) -> Any: ...
+    def list_approvals(self, task_id: str, status: str | None = None) -> Any: ...
+
+
 class ContextBuilder:
     """The only component authorised to construct model/capability context.
 
     Durable state is projected into a bounded frame immediately before an
     invocation. The returned manifest is a complete bill of materials and must
     be persisted by the runtime before any model/tool/handler executes.
+    Work execution passes a registration whose ``profile.tools`` are the
+    contract pin's exact ``id@version`` refs.
     """
 
-    def __init__(self, store: TaskStore) -> None:
+    def __init__(self, store: WorkPersistence) -> None:
         self.store = store
 
     def build(

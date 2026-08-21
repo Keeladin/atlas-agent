@@ -117,10 +117,12 @@ class WorkEngineTests(unittest.TestCase):
             self.assertNotIn("tools.manifest(", source)
             self.assertNotIn("self.tools.manifest", source)
 
-    def test_work_runtime_run_is_not_wired_to_work_engine(self) -> None:
-        self.assertNotIn("from .engine import", RUNTIME_SOURCE)
-        self.assertNotIn("WorkEngine(", RUNTIME_SOURCE)
-        self.assertIn("self._engine.run_until_blocked", RUNTIME_SOURCE)
+    def test_work_runtime_run_uses_work_engine(self) -> None:
+        self.assertIn("from .engine import WorkEngine", RUNTIME_SOURCE)
+        self.assertIn("self._engine.run(", RUNTIME_SOURCE)
+        self.assertNotIn("TaskRuntime", RUNTIME_SOURCE)
+        self.assertNotIn("CapabilityRegistry", RUNTIME_SOURCE)
+        self.assertNotIn("work_surfaces", RUNTIME_SOURCE)
 
     def test_deterministic_handler_completes_with_receipt_and_evidence(self) -> None:
         inventory = DeploymentInventory()

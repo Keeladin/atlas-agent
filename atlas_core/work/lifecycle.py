@@ -146,6 +146,7 @@ class WorkLifecycleMixin:
             self._emit(work_id, "work.resumed")
 
         self._release_approval_blocks(work_id)
+        self._requeue_confirmation_waits(work_id)
         self._fail_mismatches(work_id, report)
         ready = list(self.store.ready_steps(work_id))
         if max_new_executions is not None:
@@ -205,9 +206,18 @@ class WorkLifecycleMixin:
             for approval in self.store.list_approvals(work_id, status="pending")
             if approval.step_id is not None
         }
+        pending_confirmation_steps = {
+            item.step_id
+            for item in self.store.list_confirmations(work_id, status="pending")
+            if item.step_id is not None
+        }
         resumed = 0
         for step in self.store.list_steps(work_id):
-            if step.status != "blocked" or step.id in pending_approval_steps:
+            if (
+                step.status != "blocked"
+                or step.id in pending_approval_steps
+                or step.id in pending_confirmation_steps
+            ):
                 continue
             try:
                 pin = contract.capability(step.capability or "")
@@ -408,6 +418,29 @@ class WorkLifecycleMixin:
             elif any(item.status == "approved" for item in decisions):
                 self.store.set_step_status(step.id, "pending")
                 self._emit(work_id, "approval.applied", step_id=step.id)
+
+    def _requeue_confirmation_waits(self, work_id: str) -> None:
+        pending_approval_steps = {
+            approval.step_id
+            for approval in self.store.list_approvals(work_id, status="pending")
+            if approval.step_id is not None
+        }
+        pending_confirmation_steps = {
+            item.step_id
+            for item in self.store.list_confirmations(work_id, status="pending")
+            if item.step_id is not None
+        }
+        for step in self.store.list_steps(work_id):
+            if step.status != "blocked":
+                continue
+            if step.id in pending_approval_steps or step.id in pending_confirmation_steps:
+                continue
+            records = self.store.list_confirmations(work_id, step_id=step.id)
+            if not records:
+                continue
+            self.store.set_step_status(step.id, "pending")
+            if any(item.status == "confirmed" for item in records):
+                self._emit(work_id, "confirmation.applied", step_id=step.id)
 
     def _approved_for_step(self, step: StepRecord, required_authority: str) -> Any | None:
         approved = [

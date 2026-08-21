@@ -83,6 +83,7 @@ class WorkStoreCoreMixin:
         "work_checkpoints",
         "work_claims",
         "work_approvals",
+        "work_confirmations",
         "work_events",
         "work_contracts",
         "work",

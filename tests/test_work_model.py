@@ -339,7 +339,9 @@ class WorkModelExecutionTests(unittest.TestCase):
             ),
             "execute_external",
         )
-        result = runtime.run(work_id)
+        from tests.work_helpers import run_with_confirmation
+
+        result = run_with_confirmation(runtime, work_id)
         self.assertEqual(result.status, "completed")
         self.assertEqual(primary.calls, [])
         self.assertIsNone(runtime.store.list_executions(work_id)[0].provider)

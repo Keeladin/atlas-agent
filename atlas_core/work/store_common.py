@@ -52,4 +52,4 @@ _STEP_TRANSITIONS = {
     "failed": set(),
     "skipped": set(),
 }
-WORK_SCHEMA_VERSION = 1
+WORK_SCHEMA_VERSION = 2

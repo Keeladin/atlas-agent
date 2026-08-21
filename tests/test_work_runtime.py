@@ -20,6 +20,7 @@ from atlas_core.work import (
     WorkStoreError,
     build_work_runtime,
 )
+from tests.work_helpers import run_with_confirmation
 
 
 def _brief(**overrides) -> TaskBrief:
@@ -76,6 +77,7 @@ class WorkRuntimeTests(unittest.TestCase):
         self.assertIn("work_artifacts", tables)
         self.assertIn("work_claims", tables)
         self.assertIn("work_approvals", tables)
+        self.assertIn("work_confirmations", tables)
         self.assertIn("work_events", tables)
         self.assertIn("work_checkpoints", tables)
         self.assertNotIn("conversations", tables)
@@ -136,8 +138,8 @@ class WorkRuntimeTests(unittest.TestCase):
             return original(contract, report)
 
         engine.run = wrapped  # type: ignore[method-assign]
-        result = runtime.run(work_id)
-        self.assertEqual(calls, [work_id])
+        result = run_with_confirmation(runtime, work_id)
+        self.assertEqual(calls, [work_id, work_id])
         self.assertIsInstance(result, RuntimeResult)
         self.assertEqual(result.work_id, work_id)
         self.assertGreaterEqual(result.executions, 1)

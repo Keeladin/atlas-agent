@@ -9,7 +9,13 @@ from .resolve import (
     ResolvedCapability,
     ResolvedWork,
 )
+from .confirmation import (
+    confirmation_digest,
+    confirmation_document,
+    confirmation_summary,
+)
 from .model import WorkModelConsumer, WorkModelError
+from .records import ConfirmationRecord
 from .store import InvalidTransitionError, UnknownRecordError, WorkStore, WorkStoreError
 from .surface import ExecutionSurface, SurfaceError, project_surface
 from .runtime import WorkRuntime, build_work_runtime
@@ -28,8 +34,12 @@ __all__ = [
     "ResolvedWork",
     "SurfaceError",
     "UNAVAILABLE",
+    "ConfirmationRecord",
     "WorkContract",
     "WorkEngine",
+    "confirmation_digest",
+    "confirmation_document",
+    "confirmation_summary",
     "WorkModelConsumer",
     "WorkModelError",
     "WorkError",

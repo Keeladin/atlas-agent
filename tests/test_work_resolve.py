@@ -22,6 +22,7 @@ from atlas_core.work import (
     build_work_runtime,
     compile_contract,
 )
+from tests.work_helpers import run_with_confirmation
 
 
 RESOLVE_SOURCE = (
@@ -422,7 +423,7 @@ class WorkRuntimeResolveTests(unittest.TestCase):
         after_build = inventory.all_calls
         self.assertEqual(runtime.contract(work_id).capability("automation.workflow.create").profile_version, "1.0.0")
         inventory.register(_profile("2.0.0"), _handler)
-        result = runtime.run(work_id)
+        result = run_with_confirmation(runtime, work_id)
         self.assertEqual(result.status, "completed")
         self.assertEqual(
             runtime.contract(work_id).capability("automation.workflow.create").profile_version,

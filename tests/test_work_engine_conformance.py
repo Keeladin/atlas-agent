@@ -134,6 +134,14 @@ class WorkEngineConformanceTests(unittest.TestCase):
             outcome_gate=runtime._engine.outcome_gate,
         )
         work_engine_result = engine.run(contract, report)
+        confirmed = False
+        for work_id in (left, right):
+            for item in runtime.list_pending_confirmations(work_id):
+                runtime.confirm_payload(item.id)
+                confirmed = True
+        if confirmed:
+            runtime_result = runtime.run(left)
+            work_engine_result = engine.run(contract, report)
         store = runtime._engine.store
         return (
             _semantic_snapshot(store, left, runtime_result),
@@ -331,13 +339,19 @@ class WorkEngineConformanceTests(unittest.TestCase):
         report = ImplementationResolver().resolve(
             contract, runtime._profiles, runtime._tool_gateway
         )
-        right_result = WorkEngine(
+        engine = WorkEngine(
             store=runtime._engine.store,
             tools=runtime._tool_gateway,
             verifiers=runtime._engine.verifiers,
             event_bus=runtime._engine.event_bus,
             outcome_gate=runtime._engine.outcome_gate,
-        ).run(contract, report)
+        )
+        right_result = engine.run(contract, report)
+        for work_id in (left_id, right_id):
+            for item in runtime.list_pending_confirmations(work_id):
+                runtime.confirm_payload(item.id)
+        left_result = runtime.run(left_id)
+        right_result = engine.run(contract, report)
         store = runtime._engine.store
         left = _semantic_snapshot(store, left_id, left_result)
         right = _semantic_snapshot(store, right_id, right_result)

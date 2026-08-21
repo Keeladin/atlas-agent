@@ -109,6 +109,123 @@ class WorkStoreRecordsMixin:
             db.execute("UPDATE work_approvals SET status=?,decision_note=?,decided_at=CURRENT_TIMESTAMP WHERE id=?", (status, note, approval_id))
         return self.get_approval(approval_id)
 
+    def request_confirmation(
+        self,
+        work_id: str,
+        *,
+        step_id: str,
+        capability_id: str,
+        payload: dict[str, Any],
+        summary: str,
+        confirmation_id: str | None = None,
+    ) -> ConfirmationRecord:
+        self.get_work(work_id)
+        step = self.get_step(step_id)
+        if step.work_id != work_id:
+            raise ValueError("Confirmation step must belong to the same work.")
+        capability_id = capability_id.strip()
+        if not capability_id:
+            raise ValueError("Confirmation capability_id must not be empty.")
+        summary = summary.strip()
+        if not summary:
+            raise ValueError("Confirmation summary must not be empty.")
+        if not isinstance(payload, dict):
+            raise ValueError("Confirmation payload must be an object.")
+        encoded, digest = _payload_hash(payload)
+        existing = self._active_confirmation(step_id, digest)
+        if existing is not None:
+            return existing
+        confirmation_id = confirmation_id or _new_id("confirmation")
+        with self._db() as db:
+            try:
+                db.execute(
+                    "INSERT INTO work_confirmations "
+                    "(id,work_id,step_id,capability_id,payload_sha256,payload_json,summary,status) "
+                    "VALUES (?,?,?,?,?,?,?,'pending')",
+                    (
+                        confirmation_id,
+                        work_id,
+                        step_id,
+                        capability_id,
+                        digest,
+                        encoded,
+                        summary,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                active = self._active_confirmation(step_id, digest)
+                if active is not None:
+                    return active
+                raise
+        return self.get_confirmation(confirmation_id)
+
+    def get_confirmation(self, confirmation_id: str) -> ConfirmationRecord:
+        with self._db() as db:
+            row = db.execute(
+                "SELECT * FROM work_confirmations WHERE id=?",
+                (confirmation_id,),
+            ).fetchone()
+        if row is None:
+            raise UnknownRecordError(f"Unknown confirmation: {confirmation_id}")
+        return self._confirmation_from_row(row)
+
+    def list_confirmations(
+        self,
+        work_id: str,
+        *,
+        status: str | None = None,
+        step_id: str | None = None,
+    ) -> tuple[ConfirmationRecord, ...]:
+        self.get_work(work_id)
+        if status is not None and status not in CONFIRMATION_STATUSES:
+            raise ValueError(f"Unsupported confirmation status: {status}")
+        with self._db() as db:
+            query = "SELECT * FROM work_confirmations WHERE work_id=?"
+            params: list[Any] = [work_id]
+            if status is not None:
+                query += " AND status=?"
+                params.append(status)
+            if step_id is not None:
+                query += " AND step_id=?"
+                params.append(step_id)
+            query += " ORDER BY created_at,id"
+            rows = db.execute(query, params).fetchall()
+        return tuple(self._confirmation_from_row(row) for row in rows)
+
+    def decide_confirmation(
+        self,
+        confirmation_id: str,
+        *,
+        status: str,
+    ) -> ConfirmationRecord:
+        if status not in {"confirmed", "denied", "cancelled"}:
+            raise ValueError(
+                "Confirmation decision must be confirmed, denied, or cancelled."
+            )
+        current = self.get_confirmation(confirmation_id)
+        if current.status != "pending":
+            raise InvalidTransitionError("Confirmation is already terminal.")
+        with self._db() as db:
+            db.execute(
+                "UPDATE work_confirmations SET status=?,decided_at=CURRENT_TIMESTAMP WHERE id=?",
+                (status, confirmation_id),
+            )
+        return self.get_confirmation(confirmation_id)
+
+    def _active_confirmation(
+        self,
+        step_id: str,
+        payload_sha256: str,
+    ) -> ConfirmationRecord | None:
+        with self._db() as db:
+            row = db.execute(
+                "SELECT * FROM work_confirmations "
+                "WHERE step_id=? AND payload_sha256=? AND status IN ('pending','confirmed') "
+                "ORDER BY created_at,id",
+                (step_id, payload_sha256),
+            ).fetchone()
+        return None if row is None else self._confirmation_from_row(row)
+
     def append_event(
         self,
         work_id: str,
@@ -266,6 +383,7 @@ class WorkStoreRecordsMixin:
             "artifacts": artifact_rows,
             "claims": [asdict(x) for x in self.list_claims(work_id)],
             "approvals": [asdict(x) for x in self.list_approvals(work_id)],
+            "confirmations": [asdict(x) for x in self.list_confirmations(work_id)],
             "context_manifests": [
                 {
                     "id": x.id,
@@ -326,6 +444,21 @@ class WorkStoreRecordsMixin:
     @staticmethod
     def _approval_from_row(row: sqlite3.Row) -> ApprovalRecord:
         return ApprovalRecord(row["id"], row["work_id"], row["step_id"], row["required_authority"], row["requested_action"], row["status"], row["decision_note"], row["created_at"], row["decided_at"])
+
+    @staticmethod
+    def _confirmation_from_row(row: sqlite3.Row) -> ConfirmationRecord:
+        return ConfirmationRecord(
+            row["id"],
+            row["work_id"],
+            row["step_id"],
+            row["capability_id"],
+            row["payload_sha256"],
+            _json_load(row["payload_json"], {}),
+            row["summary"],
+            row["status"],
+            row["created_at"],
+            row["decided_at"],
+        )
 
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> EventRecord:

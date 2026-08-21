@@ -39,6 +39,7 @@ CLAIM_KINDS = (
     "executed",
 )
 APPROVAL_STATUSES = ("pending", "approved", "denied", "cancelled")
+CONFIRMATION_STATUSES = ("pending", "confirmed", "denied", "cancelled")
 
 
 @dataclass(frozen=True)
@@ -163,6 +164,20 @@ class ApprovalRecord:
     requested_action: str
     status: str
     decision_note: str | None
+    created_at: str
+    decided_at: str | None
+
+
+@dataclass(frozen=True)
+class ConfirmationRecord:
+    id: str
+    work_id: str
+    step_id: str
+    capability_id: str
+    payload_sha256: str
+    payload: dict[str, Any]
+    summary: str
+    status: str
     created_at: str
     decided_at: str | None
 

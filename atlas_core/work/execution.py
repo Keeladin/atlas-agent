@@ -13,6 +13,12 @@ from atlas_core.capabilities.execution import CapabilityExecutionProfile
 from atlas_core.schema_validation import SchemaValidationError, validate_json
 from .records import StepRecord
 
+from .confirmation import (
+    confirmation_digest,
+    confirmation_document,
+    confirmation_summary,
+    direct_request_artifact_ids,
+)
 from .contract import ContractCapability, WorkContract
 from .resolve import ResolveReport, ResolvedCapability
 from .surface import ExecutionSurface, project_surface
@@ -96,6 +102,10 @@ class WorkExecutionMixin:
                     requested_action=step.description,
                 )
                 return True
+            if pin.confirmation == "required":
+                gated = self._gate_payload_confirmation(step, pin)
+                if gated != "proceed":
+                    return True
             return self._complete_human_step(step, pin, approved_override)
 
         if (
@@ -104,6 +114,11 @@ class WorkExecutionMixin:
         ):
             self._request_authority_approval(step, pin.required_authority)
             return True
+
+        if pin.confirmation == "required":
+            gated = self._gate_payload_confirmation(step, pin)
+            if gated != "proceed":
+                return True
 
         budget = pin.budget or ExecutionBudget()
         previous = self.store.list_executions(work_id, step_id=step.id)
@@ -185,7 +200,7 @@ class WorkExecutionMixin:
                 previous_manifest_id = prior_manifest.id if prior_manifest else None
                 if previous[-1].status in {"rework", "abstain", "fail", "blocked"}:
                     failure_reason = previous[-1].error or previous[-1].status
-            request_ids = _direct_request_artifact_ids(self.store, step)
+            request_ids = direct_request_artifact_ids(self.store, step)
             pack = self.context_builder.build(
                 work_id,
                 step.id,
@@ -409,6 +424,55 @@ class WorkExecutionMixin:
         self._finish_frame(step, pin, profile, execution.id, {}, outcome)
         return True
 
+    def _gate_payload_confirmation(self, step: StepRecord, pin: ContractCapability) -> str:
+        document = confirmation_document(self.store, step, pin)
+        _, digest = confirmation_digest(document)
+        matching = [
+            item
+            for item in self.store.list_confirmations(
+                step.work_id, step_id=step.id
+            )
+            if item.payload_sha256 == digest
+        ]
+        if any(item.status == "denied" for item in matching):
+            self.store.set_step_status(step.id, "failed")
+            self._emit(
+                step.work_id,
+                "step.failed",
+                step_id=step.id,
+                payload={
+                    "reason": "payload confirmation denied",
+                    "payload_sha256": digest,
+                },
+            )
+            return "denied"
+        if any(item.status == "confirmed" for item in matching):
+            return "proceed"
+        pending = [item for item in matching if item.status == "pending"]
+        if not pending:
+            record = self.store.request_confirmation(
+                step.work_id,
+                step_id=step.id,
+                capability_id=pin.capability_id,
+                payload=document,
+                summary=confirmation_summary(
+                    pin.capability_id, document.get("invocation_input")
+                ),
+            )
+            self._emit(
+                step.work_id,
+                "confirmation.requested",
+                step_id=step.id,
+                payload={
+                    "confirmation_id": record.id,
+                    "payload_sha256": digest,
+                    "summary": record.summary,
+                },
+            )
+        if self.store.get_step(step.id).status != "blocked":
+            self.store.set_step_status(step.id, "blocked")
+        return "wait"
+
 
 def execution_profile_from_pin(pin: ContractCapability) -> CapabilityExecutionProfile:
     """CapabilityRegistration-shaped view of a frozen pin. Not a live lookup."""
@@ -438,14 +502,3 @@ def execution_profile_from_pin(pin: ContractCapability) -> CapabilityExecutionPr
         privacy=pin.privacy or "cloud_allowed",
         data_classification=pin.data_classification or "internal",
     )
-
-
-def _direct_request_artifact_ids(store, step: StepRecord) -> tuple[str, ...]:
-    request_ids: list[str] = []
-    for artifact_id in step.input_artifact_ids:
-        artifact = store.get_artifact(artifact_id)
-        if artifact.kind != "task_brief":
-            request_ids.append(artifact_id)
-    if not request_ids:
-        return ()
-    return (request_ids[-1],)

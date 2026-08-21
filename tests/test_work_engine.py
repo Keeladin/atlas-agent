@@ -23,6 +23,7 @@ from atlas_core.work import (
     WorkError,
     build_work_runtime,
 )
+from tests.work_helpers import engine_run_with_confirmation
 
 
 WORK_ROOT = Path(__file__).resolve().parents[1] / "atlas_core" / "work"
@@ -32,6 +33,7 @@ ENGINE_FILES = (
     WORK_ROOT / "execution.py",
     WORK_ROOT / "finish.py",
     WORK_ROOT / "model.py",
+    WORK_ROOT / "confirmation.py",
 )
 RUNTIME_SOURCE = (WORK_ROOT / "runtime.py").read_text(encoding="utf-8")
 ENGINE_FORBIDDEN = (
@@ -143,7 +145,9 @@ class WorkEngineTests(unittest.TestCase):
             "execute_external",
         )
         contract, report = self._resolve(runtime, work_id)
-        result = self._engine(runtime).run(contract, report)
+        result = engine_run_with_confirmation(
+            runtime, self._engine(runtime), contract, report
+        )
         store = runtime._engine.store
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.reason, "work reached terminal state")
@@ -207,7 +211,9 @@ class WorkEngineTests(unittest.TestCase):
             lambda arguments: ToolResult(True, output=arguments, receipt={"ok": True}),
         )
         contract, report = self._resolve(runtime, work_id)
-        result = self._engine(runtime).run(contract, report)
+        result = engine_run_with_confirmation(
+            runtime, self._engine(runtime), contract, report
+        )
         self.assertEqual(result.status, "completed")
         self.assertEqual(seen["surface"].allowed_tools, frozenset({"mail.deliver@1.0.0"}))
 
@@ -325,7 +331,13 @@ class WorkEngineTests(unittest.TestCase):
         self.assertEqual(len(approvals), 1)
         store.decide_approval(approvals[0].id, status="approved", note="do it")
         second = engine.run(contract, report)
-        self.assertEqual(second.status, "completed")
+        self.assertEqual(second.status, "waiting")
+        self.assertEqual(store.list_executions(work_id), ())
+        pending = runtime.list_pending_confirmations(work_id)
+        self.assertEqual(len(pending), 1)
+        runtime.confirm_payload(pending[0].id)
+        third = engine.run(contract, report)
+        self.assertEqual(third.status, "completed")
         executions = store.list_executions(work_id)
         self.assertEqual(len(executions), 1)
         self.assertEqual(executions[0].provider, "human")
@@ -471,7 +483,9 @@ class WorkEngineTests(unittest.TestCase):
             "communicate",
         )
         contract, report = self._resolve(runtime, work_id)
-        result = self._engine(runtime, verifiers=verifiers).run(contract, report)
+        result = engine_run_with_confirmation(
+            runtime, self._engine(runtime, verifiers=verifiers), contract, report
+        )
         self.assertEqual(result.status, "failed")
         self.assertEqual(calls["n"], 1)
         self.assertEqual(len(runtime._engine.store.list_executions(work_id)), 1)
@@ -498,7 +512,9 @@ class WorkEngineTests(unittest.TestCase):
             "communicate",
         )
         contract, report = self._resolve(runtime, work_id)
-        result = self._engine(runtime).run(contract, report)
+        result = engine_run_with_confirmation(
+            runtime, self._engine(runtime), contract, report
+        )
         execution = runtime._engine.store.list_executions(work_id)[0]
         self.assertEqual(result.status, "failed")
         self.assertEqual(execution.status, "fail")
@@ -736,6 +752,8 @@ class WorkEngineTests(unittest.TestCase):
             "communicate",
         )
         contract, report = self._resolve(runtime, work_id)
-        self._engine(runtime).run(contract, report)
+        engine_run_with_confirmation(
+            runtime, self._engine(runtime), contract, report
+        )
         self.assertEqual(seen["allowed_tools"], ["mail.deliver@1.0.0"])
         self.assertNotIn("bait.tool", seen["allowed_tools"])

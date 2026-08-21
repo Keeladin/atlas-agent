@@ -21,6 +21,7 @@ from atlas_core.knowledge import KnowledgeStore, register_knowledge_capabilities
 from atlas_core.verification import VerifierRegistry
 from atlas_core.chat import explain_manifest
 from atlas_core.tools import MCPToolBridge, ToolDescriptor, ToolGateway, ToolResult
+from tests.work_helpers import run_with_confirmation
 from atlas_core.work import (
     UNAVAILABLE,
     CapabilityExecutionProfile,
@@ -191,7 +192,7 @@ class CapabilityArchitectureTests(unittest.TestCase):
         pin = contract.capability("communication.email.send")
         self.assertIsNotNone(pin.binding)
         self.assertEqual(pin.binding.provider, "smtp")
-        result = runtime.run(work_id)
+        result = run_with_confirmation(runtime, work_id)
         self.assertEqual(result.status, "completed")
         self.assertEqual(len(gateway.invocations), 1)
         self.assertEqual(gateway.invocations[0][0], "mail.deliver")

@@ -163,6 +163,18 @@ class WorkRuntime:
     def deny(self, approval_id: str, *, note: str | None = None):
         return self.store.decide_approval(approval_id, status="denied", note=note)
 
+    def list_pending_confirmations(self, work_id: WorkId):
+        return self.store.list_confirmations(work_id, status="pending")
+
+    def confirm_payload(self, confirmation_id: str):
+        return self.store.decide_confirmation(confirmation_id, status="confirmed")
+
+    def deny_confirmation(self, confirmation_id: str):
+        return self.store.decide_confirmation(confirmation_id, status="denied")
+
+    def cancel_confirmation(self, confirmation_id: str):
+        return self.store.decide_confirmation(confirmation_id, status="cancelled")
+
     def get(self, work_id: WorkId) -> WorkRecord:
         task = self.store.get_work(work_id)
         contract = self.contract(work_id)

@@ -196,6 +196,27 @@ class WorkStoreSchemaMixin:
                     FOREIGN KEY (step_id) REFERENCES work_steps(id) ON DELETE SET NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS work_confirmations (
+                    id TEXT PRIMARY KEY,
+                    work_id TEXT NOT NULL,
+                    step_id TEXT NOT NULL,
+                    capability_id TEXT NOT NULL,
+                    payload_sha256 TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN
+                        ('pending','confirmed','denied','cancelled')),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    decided_at TEXT,
+                    FOREIGN KEY (work_id) REFERENCES work(id) ON DELETE CASCADE,
+                    FOREIGN KEY (step_id) REFERENCES work_steps(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_work_confirmations_work
+                    ON work_confirmations(work_id, created_at, id);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_work_confirmations_active
+                    ON work_confirmations(step_id, payload_sha256)
+                    WHERE status IN ('pending', 'confirmed');
+
                 CREATE TABLE IF NOT EXISTS work_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     work_id TEXT NOT NULL,

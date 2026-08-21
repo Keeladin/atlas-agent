@@ -281,7 +281,9 @@ class WorkRuntimeSurfaceTests(unittest.TestCase):
             ToolDescriptor(id="late.tool", description="Registered after accept"),
             lambda arguments: ToolResult(True, output=arguments, receipt={"ok": True}),
         )
-        result = runtime.run(work_id)
+        from tests.work_helpers import run_with_confirmation
+
+        result = run_with_confirmation(runtime, work_id)
         self.assertEqual(result.status, "completed")
         self.assertEqual(seen, ["communication.email.send"])
         self.assertEqual(gateway.invocations, [("mail.deliver", "1.0.0")])
@@ -325,7 +327,9 @@ class WorkRuntimeSurfaceTests(unittest.TestCase):
             ),
             "execute_external",
         )
-        result = runtime.run(work_id)
+        from tests.work_helpers import run_with_confirmation
+
+        result = run_with_confirmation(runtime, work_id)
         self.assertEqual(result.status, "completed")
         self.assertEqual(gateway.invocations, [])
 
@@ -393,7 +397,9 @@ class WorkRuntimeSurfaceTests(unittest.TestCase):
             ),
             "communicate",
         )
-        result = runtime.run(work_id)
+        from tests.work_helpers import run_with_confirmation
+
+        result = run_with_confirmation(runtime, work_id)
         self.assertEqual(result.status, "completed")
         self.assertIn(frozenset({"mail.deliver@1.0.0"}), seen)
         self.assertEqual(gateway.invocations, [("mail.deliver", "1.0.0")])
@@ -441,8 +447,15 @@ class WorkRuntimeSurfaceTests(unittest.TestCase):
             ),
             "execute_external",
         )
+        from tests.work_helpers import run_with_confirmation
+
         with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(runtime.run, (first, second)))
+            results = list(
+                pool.map(
+                    lambda work_id: run_with_confirmation(runtime, work_id),
+                    (first, second),
+                )
+            )
         self.assertEqual({item.status for item in results}, {"completed"})
         self.assertEqual(len(seen), 2)
         self.assertTrue(all(start == end for start, end in seen))
@@ -453,10 +466,12 @@ class WorkRuntimeSurfaceTests(unittest.TestCase):
         after_inner: list[str] = []
 
         def handler(request):
+            from tests.work_helpers import run_with_confirmation
+
             runtime = holder["runtime"]
             work_ids = holder["ids"]
             if request.surface.work_id == work_ids[0]:
-                inner = runtime.run(work_ids[1])
+                inner = run_with_confirmation(runtime, work_ids[1])
                 self.assertEqual(inner.status, "completed")
                 after_inner.append(request.surface.work_id)
             return CapabilityOutcome("pass", output={"ok": True}, receipt={"ok": True})
@@ -494,7 +509,9 @@ class WorkRuntimeSurfaceTests(unittest.TestCase):
         )
         holder["runtime"] = runtime
         holder["ids"] = (outer, inner)
-        result = runtime.run(outer)
+        from tests.work_helpers import run_with_confirmation
+
+        result = run_with_confirmation(runtime, outer)
         self.assertEqual(result.status, "completed")
         self.assertEqual(after_inner, [outer])
 

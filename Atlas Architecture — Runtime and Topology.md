@@ -62,7 +62,7 @@ flowchart TB
 
     subgraph CORE[Atlas 2.0 Core]
         TP[Task Plane\nobjective • criteria • constraints • authority]
-        RT[TaskRuntime\ndependencies • budgets • retries • checkpoints]
+        RT[WorkRuntime / WorkEngine\ndependencies • budgets • retries • checkpoints]
         CB[ContextBuilder\nbounded projection]
         CR[CapabilityDefinition catalog\n+ Work registrations]
         TG[Tool Gateway\nToolDescriptor + MCP bridge]
@@ -120,7 +120,7 @@ flowchart TB
 
 - **ChatRuntime**, **AdvancedRuntime**, and **WorkRuntime** are independent composition roots.
 - Chat and Advanced know `CapabilityDefinition` meaning from `catalog()`. They do not execute.
-- **WorkRuntime owns execution.** It accepts a Task Brief, then uses `TaskRuntime` as the engine.
+- **WorkRuntime owns execution.** It accepts a Task Brief. `WorkEngine` executes the accepted contract. Leftover CLI `plan` / Companion still use `TaskRuntime`.
 - `CapabilityDefinition` is identity. `CapabilityExecutionProfile` is deployment availability. `CapabilityRegistration` is the Work-engine binding.
 - The **Model Router sits below capability semantics**.
 - The **ContextBuilder owns model/capability context assembly**.
@@ -241,10 +241,10 @@ CapabilityExecutionProfile
 
 CapabilityRegistration
         |
-        | executable Work implementation
+        | resolved Work implementation
         v
 
-TaskRuntime
+WorkRuntime / WorkEngine
 ```
 
 `CapabilityDefinition` (`catalog()` / `lookup()`) is identity:
@@ -279,7 +279,7 @@ binding
 deprecation / replacement
 ```
 
-`CapabilityRegistration` binds definition + profile + handler for Work. `TaskRuntime` executes that registration. Handler registration, MCP discovery, and ToolGateway do not create catalog identity.
+`CapabilityRegistration` binds definition + profile + handler for Work. `WorkEngine` executes that resolved pin. Handler registration, MCP discovery, and ToolGateway do not create catalog identity.
 
 Executor kinds include deterministic code, tools, model-backed work, composite responsibilities and human gates.
 
@@ -571,7 +571,7 @@ The frozen TMM Morning Workflow is exposed through:
 operations.morning_pack.generate
 ```
 
-Atlas TaskRuntime owns the task/execution/evidence shell while the domain specification owns conservative reporting meaning.
+Atlas `WorkRuntime` / `WorkEngine` own the task/execution/evidence shell for Work; the leftover CLI still runs Morning through `TaskRuntime` until that cutover. The domain specification owns conservative reporting meaning.
 
 ### Mobile Capture
 

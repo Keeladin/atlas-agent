@@ -130,7 +130,7 @@ All interfaces must enter the same durable Atlas runtime rather than create sepa
 
 Implemented on `main`:
 
-- durable TaskRuntime;
+- durable WorkRuntime / WorkEngine;
 - SQLite task / step / execution / artifact / claim / approval / checkpoint / event state;
 - CapabilityDefinition catalog, versioned execution profiles, and Work registrations;
 - bounded ContextBuilder and immutable ContextManifest;

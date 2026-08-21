@@ -16,7 +16,7 @@ Atlas 2.0 is under active development. The durable runtime and core governance c
 
 | Area | Current state |
 |---|---|
-| Durable TaskRuntime | **Implemented** |
+| Durable WorkRuntime / WorkEngine | **Implemented** |
 | SQLite task / step / execution state | **Implemented** |
 | CapabilityDefinition catalog + execution profiles | **Implemented** |
 | ContextBuilder + immutable ContextManifest | **Implemented** |
@@ -57,7 +57,7 @@ Atlas completes work when durable task state and required evidence satisfy expli
 2. **Tasks are durable.** Work survives model calls, context limits and process restarts.
 3. **Execution depth is not chat/tool-round depth.** Long work is many bounded execution frames.
 4. **Deterministic work stays deterministic.** Calculation, filtering, validation, state transitions and known business rules prefer ordinary software.
-5. **Capability meaning is independent of execution.** `CapabilityDefinition` is identity. `CapabilityExecutionProfile` is this deployment. `CapabilityRegistration` is the Work binding. `TaskRuntime` executes work.
+5. **Capability meaning is independent of execution.** `CapabilityDefinition` is identity. `CapabilityExecutionProfile` is this deployment. `CapabilityRegistration` is the resolved Work binding. `WorkRuntime` owns the work item; `WorkEngine` executes it.
 6. **Models are providers, not architecture.** Providers can change without changing task semantics.
 7. **Context is assembled, not accumulated.** Each execution receives a fresh bounded projection of durable state.
 8. **State lives outside the model context.**
@@ -94,7 +94,7 @@ flowchart TB
 
     subgraph CORE[Atlas 2.0 Core]
         TP[Task Plane\nobjective • criteria • constraints • authority]
-        RT[TaskRuntime\ndependencies • retries • checkpoints • budgets]
+        RT[WorkRuntime / WorkEngine\ndependencies • retries • checkpoints • budgets]
         CB[ContextBuilder\nbounded execution projection]
         CR[CapabilityDefinition catalog\n+ Work registrations]
         TG[Tool Gateway\nToolDescriptor + MCP bridge]
@@ -152,7 +152,7 @@ flowchart TB
 
 - **ChatRuntime, AdvancedRuntime, and WorkRuntime are independent composition roots.**
 - **Chat and Advanced know capabilities without executing them.** Identity is `catalog()`.
-- **WorkRuntime owns execution.** `TaskRuntime` is the Work engine, not the product identity constructor.
+- **WorkRuntime owns execution.** `WorkEngine` executes the accepted contract. Leftover CLI `plan` / Companion still use `TaskRuntime` and are not the Work composition.
 - **Capability meaning is independent of deployment.** A catalog capability may have no profile on this host.
 - **The model router sits below capabilities.** A capability may be satisfied by different providers without changing the definition.
 - **State is structural and durable.** The context window is a workspace, not a database.
@@ -215,7 +215,7 @@ Interrupted idempotent work can be explicitly recovered. Interrupted non-idempot
 
 # Execution depth and budgets
 
-Task depth belongs to TaskRuntime rather than a conversational Director or arbitrary `max_tool_rounds` limit.
+Task depth belongs to `WorkRuntime` / `WorkEngine` rather than a conversational Director or arbitrary `max_tool_rounds` limit.
 
 Current runtime budget ceilings include:
 
@@ -272,17 +272,17 @@ CapabilityExecutionProfile
 
 CapabilityRegistration
         |
-        | executable Work implementation
+        | resolved Work implementation
         v
 
-TaskRuntime
+WorkRuntime / WorkEngine
 ```
 
 `CapabilityDefinition` is identity (`catalog()` / `lookup()`): id, description, required authority, confirmation, side-effect class.
 
 `CapabilityExecutionProfile` is this deployment: version, executor kind, schemas, tools, verifier, budgets, binding, retry, privacy.
 
-`CapabilityRegistration` is the Work-engine record. `TaskRuntime` executes it. Handler registration, MCP discovery, and ToolGateway do not create catalog identity.
+`CapabilityRegistration` is the resolved Work record. `WorkEngine` executes it. Handler registration, MCP discovery, and ToolGateway do not create catalog identity.
 
 Durable planned steps can pin an exact profile version. Executions record the exact version used.
 
@@ -701,7 +701,7 @@ flowchart TB
 
     subgraph HOST[Always-on Atlas host]
         API[Companion HTTP adapter\nLAN-local, implemented]
-        CORE[Atlas TaskRuntime\nimplemented]
+        CORE[Atlas runtime\nWorkRuntime + leftover TaskRuntime]
         DATA[(Persistent SQLite + artifacts + knowledge)]
         MODEL[Local OpenAI-compatible model service]
         GPU[Optional GPU acceleration]

@@ -31,17 +31,17 @@ CapabilityExecutionProfile
 
 CapabilityRegistration
         |
-        | executable Work implementation
+        | resolved Work implementation
         v
 
-TaskRuntime
+WorkRuntime / WorkEngine
 ```
 
 `CapabilityDefinition` is capability identity (`catalog()` / `lookup()`): stable id, description, `required_authority`, confirmation (`none` or `required`; action property, not authority approval; not enforced yet), and side-effect class.
 
 `CapabilityExecutionProfile` is this deployment's availability: SemVer version, executor kind, input/output schemas, ToolDescriptor allow-list, idempotency, context policy, eligible providers, privacy/data classification, verifier, budgets, retry behaviour, parallel safety, deprecation/replacement, and optional `CapabilityBinding`.
 
-`CapabilityRegistration` is the Work-engine record (definition + profile + handler). `TaskRuntime` executes registrations. It does not mint catalog identity.
+`CapabilityRegistration` is the resolved Work record (definition + profile + handler). `WorkEngine` executes that pin. It does not mint catalog identity.
 
 Durable planned steps may pin an exact profile version. Every execution records the exact version used.
 
@@ -115,7 +115,7 @@ Long task depth is achieved through many bounded frames, not by growing context 
 
 ---
 
-## 5. TaskRuntime owns execution depth
+## 5. WorkRuntime owns execution depth
 
 Execution depth is a runtime governance concern, not a conversational Director/tool-round concern.
 
@@ -425,4 +425,4 @@ The implementation-level shorthand remains:
 Task → Capability → Artifact → Verification
 ```
 
-Work owns execution. `CapabilityDefinition` is meaning. `CapabilityExecutionProfile` is deployment availability. `CapabilityRegistration` is the Work binding. `TaskRuntime` owns objectives, durable state, authority, execution history and completion for accepted work. Artifacts/claims/receipts preserve evidence. Verification decides whether the work actually satisfies its contract.
+Work owns execution. `CapabilityDefinition` is meaning. `CapabilityExecutionProfile` is deployment availability. `CapabilityRegistration` is the resolved Work binding. `WorkRuntime` owns accept, run, pause, and completion for accepted work. `WorkEngine` owns step execution mechanics. Artifacts/claims/receipts preserve evidence. Verification decides whether the work actually satisfies its contract.

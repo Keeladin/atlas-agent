@@ -22,20 +22,26 @@ CapabilityExecutionProfile
 
 CapabilityRegistration
         |
-        | executable Work implementation
+        | resolved Work implementation
         v
 
-TaskRuntime
+WorkRuntime
+        |
+        | step execution
+        v
+
+WorkEngine
 ```
 
 | Type | Owns | Does not own |
 |---|---|---|
 | `CapabilityDefinition` | Capability identity (`id`, description, `required_authority`, `confirmation`, `side_effect_class`) | Tools, handlers, providers, MCP, n8n, availability |
 | `CapabilityExecutionProfile` | This deployment's way to perform one catalog id (binding, tools, verifier, version, budgets) | Product meaning |
-| `CapabilityRegistration` | Work-engine record: definition + profile + handler | Chat/Advanced identity |
-| `TaskRuntime` | Durable Work execution | Capability identity |
+| `CapabilityRegistration` | Resolved Work triple: definition + profile + handler | Chat/Advanced identity, process-wide executable set |
+| `WorkRuntime` | Work lifecycle: accept, run, pause, complete | Capability identity |
+| `WorkEngine` | Step execution mechanics | Accept, catalog, live re-resolution |
 
-`catalog()` / `lookup()` are the product identity surface. Chat and Advanced read meaning only. Work.accept reads `catalog()`. Work.run requires an available profile (and a handler for deterministic/tool/composite kinds) before `TaskRuntime` is reached.
+`catalog()` / `lookup()` are the product identity surface. Chat and Advanced read meaning only. Work.accept reads `catalog()`. Work.run requires an available profile (and a handler for deterministic/tool/composite kinds) before `WorkEngine` is reached. Leftover CLI `plan` / Companion still use `TaskRuntime` on a separate assembly.
 
 `CapabilityAwareness` is an alias of `CapabilityDefinition`. It is not a second ontology.
 
@@ -80,13 +86,13 @@ This deployment             (CapabilityBinding, CapabilityExecutionProfile)
 
 Registration
     ↓
-Work engine                 (CapabilityRegistration)
+Resolved Work implementation (CapabilityRegistration)
 
 ToolGateway
     ↓
 Invoke under authority      (unchanged fail-closed path)
 
-TaskRuntime
+WorkRuntime / WorkEngine
     ↓
 Verified Work execution
 ```

@@ -72,7 +72,7 @@ Canonical type today: `CapabilityDefinition`. It holds Atlas meaning: id, descri
 
 `CapabilityExecutionProfile` is deployment availability: binding, tools, verifier, version, budgets. `allowed_tools` on a Work runtime frame is a ToolDescriptor allow-list from that profile. It is not capability identity and must not become a vendor tool list (`mcp.n8n.execute_workflow`).
 
-`CapabilityRegistration` is the Work execution binding (definition + profile + handler). `TaskRuntime` executes registrations. It does not mint catalog identity.
+`CapabilityRegistration` is the Work execution binding (definition + profile + handler). `WorkEngine` executes resolved pins. It does not mint catalog identity.
 
 Discovery, policy, and invoke paths must not invent a second ontology beside `CapabilityDefinition`. `CapabilitySpec` is removed.
 
@@ -228,7 +228,7 @@ CapabilityExecutionProfile
 CapabilityRegistration
   |
   v
-TaskRuntime / ToolGateway
+WorkEngine / ToolGateway
   |
   v
 Provider
@@ -244,7 +244,7 @@ Evidence / Verification
 | Authority | May this work item do that *class* of action? |
 | Confirmation | May *this payload* run now? |
 | Profile | Can this deployment perform it? (`CapabilityExecutionProfile`) |
-| Registration | Work handler + profile for `TaskRuntime` |
+| Registration | Work handler + profile for `WorkEngine` |
 | ToolGateway | Invoke the bound implementation under constraints |
 | Provider | MCP / API / internal code |
 | Evidence / Verification | Did it actually happen? A model sentence is not completion |
@@ -319,5 +319,5 @@ Unmapped n8n tools stay off the control plane until someone writes a capability 
 
 - Not enterprise IAM (no users, roles, or ACLs in this model).
 - Not a change to current SQLite task state.
-- Not enforcement of confirmation or exposure in TaskRuntime.
+- Not enforcement of confirmation or exposure in WorkEngine.
 - Not a reason to hide capabilities from awareness; hide **unauthorized handles**, not **product meaning**.

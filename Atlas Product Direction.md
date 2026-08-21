@@ -57,7 +57,7 @@ authentication + schema validation + idempotency
   ↓
 mobile.report.ingest capability
   ↓
-TaskRuntime
+WorkRuntime
   ↓
 artifacts / evidence / operational state
 ```
@@ -140,8 +140,8 @@ Atlas Server
 ├── Supervisor Mobile PWA
 │   └── bounded reporting authority
 │
-└── Atlas API / TaskRuntime
-    └── durable shared system truth
+└── Atlas API / WorkRuntime
+    └── durable shared Work truth
 ```
 
 A supervisor reporting interface must not inherit owner/admin controls merely because both applications use the same backend.

@@ -1,1 +1,1 @@
-"""LAN-local Companion PWA adapter for the Atlas TaskRuntime."""
+"""LAN-local Companion PWA. Disconnected from Work execution until rebuilt."""

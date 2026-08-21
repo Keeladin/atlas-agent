@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 from atlas_companion.cloud_providers import ProviderStateStore
 from atlas_companion.intent import preview_intent
 from atlas_companion.local_models import LocalModelError, LocalModelManager
-from atlas_companion.server import CompanionApp, CompanionService
+from atlas_companion.server import CompanionApp, CompanionDisconnectedError, CompanionService
 from atlas_companion import telemetry
 
 
@@ -127,91 +127,26 @@ class CompanionKnowledgeServiceTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_path_ingest_and_search_use_runtime_not_title_filter(self):
+    def test_path_stat_works_while_ingest_is_disconnected(self):
         stat = self.service.stat_source(str(self.source))
         self.assertEqual(stat["title"], "note.md")
         self.assertGreater(stat["byte_size"], 0)
-        result = self.service.ingest({"source_path": str(self.source)})
-        self.assertEqual(result["presentation"]["status"], "completed")
-        docs = self.service.documents()
-        self.assertEqual(len(docs), 1)
-        self.assertEqual(docs[0]["title"], "note.md")
-        hits = self.service.search_knowledge("ContextBuilder")
-        self.assertTrue(hits["results"])
-        self.assertIn("ContextBuilder", hits["results"][0]["text"])
-        request = next(
-            artifact
-            for artifact in result["snapshot"]["artifacts"]
-            if artifact["kind"] == "knowledge_ingest_request"
-        )
-        self.assertNotIn("text", request["payload"])
-        self.assertEqual(request["payload"]["source_path"], stat["path"])
+        with self.assertRaises(CompanionDisconnectedError):
+            self.service.ingest({"source_path": str(self.source)})
 
-    def test_cancel_and_run_reject_terminal_tasks(self):
-        result = self.service.ingest({"source_path": str(self.source)})
-        task_id = result["presentation"]["task_id"]
-        with self.assertRaises(Exception) as cancel_error:
-            self.service.cancel(task_id)
-        self.assertIn("already completed", str(cancel_error.exception))
-        with self.assertRaises(Exception) as run_error:
-            self.service.run(task_id)
-        self.assertIn("already completed", str(run_error.exception))
+    def test_cancel_and_run_are_disconnected(self):
+        with self.assertRaises(CompanionDisconnectedError):
+            self.service.cancel("task_one")
+        with self.assertRaises(CompanionDisconnectedError):
+            self.service.run("task_one")
 
-    def test_failed_task_exposes_reason(self):
-        missing = Path(self.tmp.name) / "gone.md"
-        store = self.service.runtime.store
-        task = store.create_task(
-            objective="Index missing source",
-            success_criteria=("The source is durably indexed with chunk provenance.",),
-            authority_scope="modify_internal",
-        )
-        request = store.put_artifact(
-            task.id,
-            kind="knowledge_ingest_request",
-            payload={"title": "gone.md", "source_path": str(missing), "source_uri": str(missing)},
-        )
-        store.add_step(
-            task.id,
-            description="Chunk and index extracted text.",
-            capability="knowledge.ingest_text",
-            capability_version=self.service.runtime.capabilities.get("knowledge.ingest_text").profile.version,
-            input_artifact_ids=(request.id,),
-            metadata={"accept_all_criteria": True},
-        )
-        self.service.runtime.run_until_blocked(task.id)
-        listed = next(item for item in self.service.tasks() if item["id"] == task.id)
-        detail = self.service.detail(task.id)
-        self.assertEqual(listed["status"], "failed")
-        self.assertIn("missing", listed["failure_reason"])
-        self.assertEqual(detail["presentation"]["failure_reason"], listed["failure_reason"])
-        self.assertIn("**Failure:**", detail["markdown"])
-        self.assertLess(detail["markdown"].index("**Failure:**"), detail["markdown"].index("## Success criteria"))
-
-    def test_ask_search_bypasses_planner_and_includes_query(self):
-        self.service.ingest({"source_path": str(self.source)})
-        result = self.service.create_and_run(
-            {"objective": "Search Atlas knowledge for: ContextBuilder", "criteria": ["hits"]}
-        )
-        self.assertEqual(result["presentation"]["status"], "completed")
-        request = next(
-            artifact
-            for artifact in result["snapshot"]["artifacts"]
-            if artifact["kind"] == "knowledge_search_request"
-        )
-        self.assertEqual(request["payload"]["query"], "ContextBuilder")
-
-    def test_ask_ingest_bypasses_planner_and_includes_title(self):
-        result = self.service.create_and_run(
-            {"objective": f"Index local knowledge source {self.source}", "criteria": ["indexed"]}
-        )
-        self.assertEqual(result["presentation"]["status"], "completed")
-        request = next(
-            artifact
-            for artifact in result["snapshot"]["artifacts"]
-            if artifact["kind"] == "knowledge_ingest_request"
-        )
-        self.assertEqual(request["payload"]["title"], "note.md")
-        self.assertEqual(request["payload"]["source_path"], str(self.source.resolve()))
+    def test_work_execution_entry_points_are_disconnected(self):
+        with self.assertRaises(CompanionDisconnectedError):
+            self.service.create_and_run({"objective": "Search Atlas knowledge for: ContextBuilder"})
+        with self.assertRaises(CompanionDisconnectedError):
+            self.service.detail("task_one")
+        self.assertEqual(self.service.tasks(), [])
+        self.assertEqual(self.service.health()["execution"], "disconnected")
 
 
 def _write_provider_overlay(path: Path, *, key: str, model: str, enabled: bool = True, extra: dict | None = None) -> Path:
@@ -282,60 +217,13 @@ class CompanionTaskLifecycleTests(unittest.TestCase):
         preview = self.service.preview_task({"objective": "what is ohms law"})
         self.assertEqual(preview["authority"], "interpret")
         self.assertTrue(preview["criteria"])
-        result = self.service.ingest({"source_path": str(self.source)})
-        task_id = result["presentation"]["task_id"]
-        listed = next(item for item in self.service.tasks() if item["id"] == task_id)
-        self.assertEqual(listed["status"], "completed")
-        self.assertEqual(listed["workflow"], "knowledge_ingest")
-        self.assertEqual(listed["metadata"]["workflow"], "knowledge_ingest")
-        created = self.service.create_and_run({"objective": f"Index local knowledge source {self.source}"})
-        self.assertEqual(created["presentation"]["status"], "completed")
+        with self.assertRaises(CompanionDisconnectedError):
+            self.service.create_and_run({"objective": f"Index local knowledge source {self.source}"})
 
-    def test_delete_removes_task_owned_rows_and_keeps_knowledge(self):
-        result = self.service.ingest({"source_path": str(self.source)})
-        task_id = result["presentation"]["task_id"]
-        self.assertTrue(self.service.documents())
-        with self.assertRaises(ValueError):
-            self.service.delete_task(task_id, confirm_id="wrong")
-        deleted = self.service.delete_task(task_id, confirm_id=task_id)
-        self.assertEqual(deleted["deleted"], task_id)
-        self.assertFalse(any(item["id"] == task_id for item in self.service.tasks()))
-        self.assertTrue(self.service.documents())
-        store = self.service.runtime.store
-        with store._db() as db:
-            for table in store._TASK_OWNED_TABLES:
-                if table == "tasks":
-                    n = db.execute("SELECT COUNT(*) AS n FROM tasks WHERE id=?", (task_id,)).fetchone()["n"]
-                else:
-                    n = db.execute(f"SELECT COUNT(*) AS n FROM {table} WHERE task_id=?", (task_id,)).fetchone()["n"]
-                self.assertEqual(int(n), 0, table)
-
-    def test_recurring_workflows_are_exposed_on_task_list(self):
-        store = self.service.runtime.store
-        morning = store.create_task(
-            objective="Assemble the morning pack",
-            success_criteria=("The morning pack is assembled.",),
-            authority_scope="read",
-            metadata={"workflow": "morning_v1"},
-        )
-        ingest = self.service.ingest({"source_path": str(self.source)})
-        listed = {item["id"]: item for item in self.service.tasks()}
-        self.assertEqual(listed[morning.id]["workflow"], "morning_v1")
-        self.assertEqual(listed[ingest["presentation"]["task_id"]]["workflow"], "knowledge_ingest")
-
-    def test_cancel_recovers_running_execution(self):
-        store = self.service.runtime.store
-        task = store.create_task(
-            objective="Interrupt me",
-            success_criteria=("Done",),
-            authority_scope="read",
-        )
-        step = store.add_step(task.id, description="Work", capability="demo.work")
-        store.set_task_status(task.id, "active")
-        running = store.begin_execution(task.id, step_id=step.id, capability="demo.work")
-        self.service.cancel(task.id)
-        self.assertEqual(store.get_task(task.id).status, "cancelled")
-        self.assertNotEqual(store.get_execution(running.id).status, "running")
+    def test_delete_and_task_list_are_disconnected(self):
+        self.assertEqual(self.service.tasks(), [])
+        with self.assertRaises(CompanionDisconnectedError):
+            self.service.delete_task("task_one", confirm_id="task_one")
 
 
 class CompanionConversationTests(unittest.TestCase):
@@ -349,38 +237,20 @@ class CompanionConversationTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_current_conversation_round_trip_and_survives_task_delete(self):
+    def test_current_conversation_round_trip_without_work_execution(self):
         empty = self.service.conversation("current")
         self.assertEqual(empty["id"], "conversation_default")
         self.assertEqual(empty["turns"], [])
-        self.service.ingest({"source_path": str(self.source)})
-        first = self.service.ask({"message": "Search Atlas knowledge for: ContextBuilder"})
-        self.assertEqual(first["conversation_id"], "conversation_default")
-        self.assertEqual(len(first["conversation"]["turns"]), 2)
-        self.assertEqual(first["conversation"]["turns"][0]["role"], "user")
-        self.assertEqual(first["conversation"]["turns"][0]["content"], "Search Atlas knowledge for: ContextBuilder")
-        self.assertEqual(first["conversation"]["turns"][1]["role"], "atlas")
-        task_id = first["work"]["presentation"]["task_id"]
-        self.assertEqual(first["conversation"]["turns"][1]["task_id"], task_id)
-        listed_task = next(item for item in self.service.tasks() if item["id"] == task_id)
-        self.assertEqual(listed_task["metadata"]["conversation_id"], "conversation_default")
-        self.assertEqual(listed_task["metadata"]["origin"], "ask")
-        second = self.service.ask({"message": f"Index local knowledge source {self.source}", "conversation_id": first["conversation_id"]})
-        loaded = self.service.conversation(first["conversation_id"])
-        self.assertEqual(loaded["turn_count"], 4)
-        self.assertEqual([turn["role"] for turn in loaded["turns"]], ["user", "atlas", "user", "atlas"])
-        self.assertEqual(loaded["title"], "Search Atlas knowledge for: ContextBuilder")
+        with self.assertRaises(CompanionDisconnectedError):
+            self.service.ask({"message": "Search Atlas knowledge for: ContextBuilder"})
+        loaded = self.service.conversation("current")
+        self.assertEqual(loaded["turns"], [])
         self.assertEqual(self.service.list_conversations()[0]["id"], "conversation_default")
-        self.service.delete_task(task_id, confirm_id=task_id)
-        after_delete = self.service.conversation(first["conversation_id"])
-        self.assertEqual(after_delete["turns"][1]["task_id"], task_id)
-        self.assertEqual(after_delete["turns"][1]["task_status"], "deleted")
-        self.assertEqual(len(after_delete["turns"]), 4)
 
     def test_unknown_conversation_is_rejected(self):
         with self.assertRaises(ValueError):
             self.service.conversation("conversation_missing")
-        with self.assertRaises(ValueError):
+        with self.assertRaises(CompanionDisconnectedError):
             self.service.ask({"message": "hello", "conversation_id": "conversation_missing"})
 
 
@@ -502,8 +372,8 @@ class CompanionCloudModelTests(unittest.TestCase):
         self.assertEqual(live[0]["model"], "grok-4.20-0309-reasoning")
         self.assertIn("planning.general", live[0]["scores"])
         self.assertFalse(service.provider_state.get("local:resident").get("enabled"))
-        planning = service.runtime.capabilities.get("planning.general")
-        decision = service.runtime.model_router.select(planning.id, context_chars=100)
+        self.assertIsNotNone(service.model_router)
+        decision = service.model_router.select("planning.general", context_chars=100)
         self.assertEqual(decision.provider.spec.key, "xai:expert")
         self.assertEqual(decision.provider.spec.model, "grok-4.20-0309-reasoning")
         service.enable_cloud_provider("xai:expert", False)

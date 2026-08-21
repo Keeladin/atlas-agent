@@ -24,7 +24,7 @@ _THREAD_TIMEOUT_GRACE_SEC = 1.0
 class StreamableHTTPMCPClient(MCPClientProtocol):
     """Synchronous MCP client over Streamable HTTP.
 
-    Atlas ToolGateway and TaskRuntime stay synchronous. The official MCP SDK is
+    Atlas ToolGateway and WorkEngine stay synchronous. The official MCP SDK is
     async; this adapter owns that event loop and never leaks it across the
     existing tool contract. The transport is generic: a URL plus optional HTTP
     headers, with no knowledge of a particular MCP server implementation.

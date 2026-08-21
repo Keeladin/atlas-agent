@@ -1,12 +1,13 @@
 from __future__ import annotations
-from tests.capability_fixtures import make_registration, register_cap
+from tests.capability_fixtures import make_registration
 
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from atlas_core.bootstrap import build_runtime
+from atlas_core.__main__ import _work_runtime
+from atlas_core.advanced.brief import TaskBrief
 from atlas_core.context import ContextBuilder
 from atlas_core.knowledge import (
     MAX_SEARCH_RESULT_CHARS,
@@ -33,7 +34,7 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _runtime(self):
-        return build_runtime(db_path=self.db, include_morning=False)
+        return _work_runtime(self.db, morning=False, knowledge=True)
 
     def _ingest_via_path(
         self,
@@ -62,26 +63,37 @@ class KnowledgeRuntimeTests(unittest.TestCase):
                     source.read_text(encoding="utf-8")
                 )
                 payload["byte_size"] = source.stat().st_size
-        task = runtime.store.create_task(
-            objective=f"Index local knowledge source {payload['title']}",
-            success_criteria=("The source is durably indexed with chunk provenance.",),
-            authority_scope="modify_internal",
+        work_id = runtime.accept(
+            TaskBrief(
+                objective=f"Index local knowledge source {payload['title']}",
+                capabilities=("knowledge.ingest_text",),
+                required_authority="modify_internal",
+                expected_effect="The source is durably indexed with chunk provenance.",
+            ),
+            "modify_internal",
+            inputs={"knowledge.ingest_text": payload},
         )
-        request = runtime.store.put_artifact(
-            task.id,
-            kind="knowledge_ingest_request",
-            payload=payload,
+        result = runtime.run(work_id)
+        request = next(
+            artifact
+            for artifact in runtime.store.list_artifacts(work_id)
+            if artifact.kind != "task_brief" and artifact.kind.endswith("_request")
         )
-        runtime.store.add_step(
-            task.id,
-            description="Chunk and index extracted text.",
-            capability="knowledge.ingest_text",
-            capability_version=runtime.capabilities.get("knowledge.ingest_text").profile.version,
-            input_artifact_ids=(request.id,),
-            metadata={"accept_all_criteria": True},
+        return runtime.store.get_task(work_id), request, result
+
+    def _search(self, runtime, query: str, *, limit: int = 5):
+        work_id = runtime.accept(
+            TaskBrief(
+                objective=f"Search Atlas knowledge for: {query}",
+                capabilities=("knowledge.search",),
+                required_authority="read",
+                expected_effect="A source-grounded local knowledge search result is produced.",
+            ),
+            "read",
+            inputs={"knowledge.search": {"query": query, "limit": limit}},
         )
-        result = runtime.run_until_blocked(task.id)
-        return task, request, result
+        result = runtime.run(work_id)
+        return runtime.store.get_task(work_id), result
 
     def _assert_control_context(self, runtime, task_id: str, *, max_source_tokens: int) -> None:
         manifests = runtime.store.list_context_manifests(task_id)
@@ -101,7 +113,7 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         request = next(
             artifact
             for artifact in runtime.store.list_artifacts(task_id)
-            if artifact.kind == "knowledge_ingest_request"
+            if artifact.kind != "task_brief" and artifact.kind.endswith("_request")
         )
         self.assertNotIn("text", request.payload)
         self.assertIn("source_path", request.payload)
@@ -131,49 +143,37 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         self.assertEqual(len(listed), 1)
         self.assertEqual(listed[0].id, first.document.id)
 
-    def test_ingest_and_retrieve_execute_through_task_runtime(self):
-        runtime = build_runtime(db_path=self.db, include_morning=False)
-        task = runtime.store.create_task(
-            objective="Index and retrieve a technical note",
-            success_criteria=("Relevant technical evidence is retrievable",),
-            authority_scope="modify_internal",
-        )
-        ingest_input = runtime.store.put_artifact(
-            task.id,
-            kind="knowledge_ingest_request",
-            payload={
-                "title": "Pump note",
-                "source_uri": "note://pump",
-                "text": "A cavitating hydraulic pump may show noise and unstable pressure. Inspect suction restrictions.",
-                "chunk_chars": 512,
-                "overlap_chars": 64,
+    def test_ingest_and_retrieve_execute_through_work_runtime(self):
+        runtime = self._runtime()
+        ingest_id = runtime.accept(
+            TaskBrief(
+                objective="Index a technical note",
+                capabilities=("knowledge.ingest_text",),
+                required_authority="modify_internal",
+                expected_effect="Relevant technical evidence is retrievable",
+            ),
+            "modify_internal",
+            inputs={
+                "knowledge.ingest_text": {
+                    "title": "Pump note",
+                    "source_uri": "note://pump",
+                    "text": "A cavitating hydraulic pump may show noise and unstable pressure. Inspect suction restrictions.",
+                    "chunk_chars": 512,
+                    "overlap_chars": 64,
+                }
             },
         )
-        ingest = runtime.store.add_step(
-            task.id,
-            description="Index note",
-            capability="knowledge.ingest_text",
-            input_artifact_ids=(ingest_input.id,),
-        )
-        search_input = runtime.store.put_artifact(
-            task.id,
-            kind="knowledge_search_request",
-            payload={"query": "cavitating hydraulic pump", "limit": 5},
-        )
-        runtime.store.add_step(
-            task.id,
-            description="Retrieve evidence",
-            capability="knowledge.search",
-            dependencies=(ingest.id,),
-            input_artifact_ids=(search_input.id,),
-            metadata={"accept_all_criteria": True},
-        )
-        result = runtime.run_until_blocked(task.id)
+        self.assertEqual(runtime.run(ingest_id).status, "completed")
+        search_task, result = self._search(runtime, "cavitating hydraulic pump")
         self.assertEqual(result.status, "completed")
-        outputs = [a for a in runtime.store.list_artifacts(task.id) if a.kind == "knowledge_search_results"]
+        outputs = [
+            a
+            for a in runtime.store.list_artifacts(search_task.id)
+            if a.kind == "knowledge_search_results"
+        ]
         self.assertEqual(len(outputs), 1)
         self.assertTrue(outputs[0].payload["results"])
-        claims = runtime.store.list_claims(task.id)
+        claims = runtime.store.list_claims(search_task.id)
         self.assertTrue(any(c.kind == "retrieved" for c in claims))
 
     def test_path_ingest_indexes_readme_without_exceeding_context_budget(self):
@@ -193,24 +193,7 @@ class KnowledgeRuntimeTests(unittest.TestCase):
             outputs[0].payload["content_sha256"],
             source_content_sha256(README_PATH.read_text(encoding="utf-8")),
         )
-        search_task = runtime.store.create_task(
-            objective="Search README evidence",
-            success_criteria=("A source-grounded local knowledge search result is produced.",),
-            authority_scope="read",
-        )
-        search_input = runtime.store.put_artifact(
-            search_task.id,
-            kind="knowledge_search_request",
-            payload={"query": "ContextBuilder", "limit": 5},
-        )
-        runtime.store.add_step(
-            search_task.id,
-            description="Retrieve evidence",
-            capability="knowledge.search",
-            input_artifact_ids=(search_input.id,),
-            metadata={"accept_all_criteria": True},
-        )
-        search_result = runtime.run_until_blocked(search_task.id)
+        search_task, search_result = self._search(runtime, "ContextBuilder")
         self.assertEqual(search_result.status, "completed")
         hits = [
             artifact
@@ -240,37 +223,25 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         )
         self.assertIn("purpose is to remove recurring friction", answer)
         self.assertLess(answer.index("purpose is to remove recurring friction"), answer.find("behavioural regressions") % 10**9)
-        answer_task = runtime.store.create_task(
-            objective="Search Atlas knowledge for: What is ContextBuilder?",
-            success_criteria=(
-                "A source-grounded local knowledge search result is produced.",
-                "An evidence-grounded answer cites retrieved sources.",
+        answer_id = runtime.accept(
+            TaskBrief(
+                objective="Search Atlas knowledge for: What is ContextBuilder?",
+                capabilities=("knowledge.search", "knowledge.answer"),
+                required_authority="read",
+                expected_effect="An evidence-grounded answer cites retrieved sources.",
             ),
-            authority_scope="read",
+            "read",
+            inputs={"knowledge.search": {"query": "What is ContextBuilder?", "limit": 5}},
         )
-        search_request = runtime.store.put_artifact(
-            answer_task.id,
-            kind="knowledge_search_request",
-            payload={"query": "What is ContextBuilder?", "limit": 5},
-        )
-        search_step = runtime.store.add_step(
-            answer_task.id,
-            description="Retrieve matching knowledge chunks.",
-            capability="knowledge.search",
-            input_artifact_ids=(search_request.id,),
-            metadata={"satisfies_criteria": [1]},
-        )
-        runtime.store.add_step(
-            answer_task.id,
-            description="Compose a source-grounded answer from retrieved chunks.",
-            capability="knowledge.answer",
-            dependencies=(search_step.id,),
-            metadata={"satisfies_criteria": [2]},
-        )
-        self.assertEqual(runtime.run_until_blocked(answer_task.id).status, "completed")
-        answer_md = TaskPresenter(runtime.store).build(answer_task.id).render_markdown()
-        self.assertIn("## Grounded answer", answer_md)
-        self.assertIn("From retrieved sources", answer_md)
+        self.assertEqual(runtime.run(answer_id).status, "completed")
+        answers = [
+            artifact
+            for artifact in runtime.store.list_artifacts(answer_id)
+            if artifact.kind == "grounded_answer"
+        ]
+        self.assertTrue(answers)
+        self.assertIn("From retrieved sources", answers[0].payload)
+        answer_md = TaskPresenter(runtime.store).build(answer_id).render_markdown()
         self.assertNotIn('"results":', answer_md)
 
     def test_path_ingest_indexes_large_synthetic_file_within_context_budget(self):
@@ -291,24 +262,8 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         ]
         self.assertEqual(len(outputs), 1)
         self.assertGreater(outputs[0].payload["chunk_count"], 10)
-        search_task = runtime.store.create_task(
-            objective="Search large source",
-            success_criteria=("A source-grounded local knowledge search result is produced.",),
-            authority_scope="read",
-        )
-        search_input = runtime.store.put_artifact(
-            search_task.id,
-            kind="knowledge_search_request",
-            payload={"query": planted, "limit": 5},
-        )
-        runtime.store.add_step(
-            search_task.id,
-            description="Retrieve evidence",
-            capability="knowledge.search",
-            input_artifact_ids=(search_input.id,),
-            metadata={"accept_all_criteria": True},
-        )
-        self.assertEqual(runtime.run_until_blocked(search_task.id).status, "completed")
+        search_task, search_result = self._search(runtime, planted)
+        self.assertEqual(search_result.status, "completed")
         hits = [
             artifact
             for artifact in runtime.store.list_artifacts(search_task.id)
@@ -382,61 +337,33 @@ class KnowledgeRuntimeTests(unittest.TestCase):
     def test_extra_invocation_fields_do_not_fail_search_schema(self):
         runtime = self._runtime()
         self._ingest_via_path(runtime, README_PATH)
-        task = runtime.store.create_task(
-            objective="Search Atlas knowledge for: ContextBuilder",
-            success_criteria=("A source-grounded local knowledge search result is produced.",),
-            authority_scope="read",
+        work_id = runtime.accept(
+            TaskBrief(
+                objective="Search Atlas knowledge for: ContextBuilder",
+                capabilities=("knowledge.search",),
+                required_authority="read",
+                expected_effect="A source-grounded local knowledge search result is produced.",
+            ),
+            "read",
+            inputs={
+                "knowledge.search": {
+                    "query": "ContextBuilder",
+                    "limit": 5,
+                    "authority_scope": "read",
+                }
+            },
         )
-        request = runtime.store.put_artifact(
-            task.id,
-            kind="knowledge_search_request",
-            payload={"query": "ContextBuilder", "limit": 5, "authority_scope": "read"},
-        )
-        runtime.store.add_step(
-            task.id,
-            description="Retrieve matching knowledge chunks.",
-            capability="knowledge.search",
-            input_artifact_ids=(request.id,),
-            metadata={"accept_all_criteria": True},
-        )
-        self.assertEqual(runtime.run_until_blocked(task.id).status, "completed")
+        self.assertEqual(runtime.run(work_id).status, "completed")
 
-    def test_planned_search_step_synthesizes_query_instead_of_failing_schema(self):
+    def test_search_objective_parser_extracts_query(self):
         from atlas_core.knowledge import parse_search_objective
 
         self.assertEqual(
             parse_search_objective("Search Atlas knowledge for: ContextBuilder"),
             "ContextBuilder",
         )
-        runtime = self._runtime()
-        self._ingest_via_path(runtime, README_PATH)
-        task = runtime.store.create_task(
-            objective="Search Atlas knowledge for: ContextBuilder",
-            success_criteria=("A source-grounded local knowledge search result is produced.",),
-            authority_scope="read",
-        )
-        runtime.store.add_step(
-            task.id,
-            description="Retrieve matching knowledge chunks.",
-            capability="knowledge.search",
-            metadata={"accept_all_criteria": True},
-        )
-        result = runtime.run_until_blocked(task.id)
-        self.assertEqual(result.status, "completed")
-        request = next(
-            artifact
-            for artifact in runtime.store.list_artifacts(task.id)
-            if artifact.kind == "knowledge_search_request"
-        )
-        self.assertEqual(request.payload["query"], "ContextBuilder")
-        hits = [
-            artifact
-            for artifact in runtime.store.list_artifacts(task.id)
-            if artifact.kind == "knowledge_search_results"
-        ]
-        self.assertTrue(hits[0].payload["results"])
 
-    def test_planned_ingest_step_synthesizes_title_and_path(self):
+    def test_ingest_objective_parser_extracts_title_and_path(self):
         from atlas_core.knowledge import parse_ingest_objective, resolve_knowledge_source
 
         self.assertEqual(
@@ -444,28 +371,6 @@ class KnowledgeRuntimeTests(unittest.TestCase):
             "README.md",
         )
         self.assertEqual(resolve_knowledge_source("README.md", roots=(REPO_ROOT,)), README_PATH.resolve())
-        runtime = self._runtime()
-        task = runtime.store.create_task(
-            objective="Index local knowledge source README.md",
-            success_criteria=("The source is durably indexed with chunk provenance.",),
-            authority_scope="modify_internal",
-        )
-        runtime.store.add_step(
-            task.id,
-            description="Chunk and index extracted text.",
-            capability="knowledge.ingest_text",
-            metadata={"accept_all_criteria": True},
-        )
-        result = runtime.run_until_blocked(task.id)
-        self.assertEqual(result.status, "completed")
-        request = next(
-            artifact
-            for artifact in runtime.store.list_artifacts(task.id)
-            if artifact.kind == "knowledge_ingest_request"
-        )
-        self.assertEqual(request.payload["title"], "README.md")
-        self.assertEqual(request.payload["source_path"], str(README_PATH.resolve()))
-        self.assertNotIn("text", request.payload)
 
     def test_off_topic_riddle_is_an_honest_search_miss(self):
         store = KnowledgeStore(self.db)
@@ -485,26 +390,7 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         self.assertEqual(hits, ())
 
         runtime = self._runtime()
-        store_rt = KnowledgeStore(self.db)
-        store_rt.initialize()
-        task = runtime.store.create_task(
-            objective="Search Atlas knowledge for: " + riddle,
-            success_criteria=("A source-grounded local knowledge search result is produced.",),
-            authority_scope="read",
-        )
-        request = runtime.store.put_artifact(
-            task.id,
-            kind="knowledge_search_request",
-            payload={"query": riddle, "limit": 8},
-        )
-        runtime.store.add_step(
-            task.id,
-            description="Retrieve evidence",
-            capability="knowledge.search",
-            input_artifact_ids=(request.id,),
-            metadata={"accept_all_criteria": True},
-        )
-        result = runtime.run_until_blocked(task.id)
+        task, result = self._search(runtime, riddle, limit=8)
         self.assertEqual(result.status, "completed")
         payload = next(
             artifact.payload
@@ -531,24 +417,8 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         self.assertGreaterEqual(hits[0].score, 0.25)
 
         runtime = self._runtime()
-        task = runtime.store.create_task(
-            objective="Search Atlas knowledge for: verification precedes completion",
-            success_criteria=("A source-grounded local knowledge search result is produced.",),
-            authority_scope="read",
-        )
-        request = runtime.store.put_artifact(
-            task.id,
-            kind="knowledge_search_request",
-            payload={"query": "verification precedes completion", "limit": 8},
-        )
-        runtime.store.add_step(
-            task.id,
-            description="Retrieve evidence",
-            capability="knowledge.search",
-            input_artifact_ids=(request.id,),
-            metadata={"accept_all_criteria": True},
-        )
-        self.assertEqual(runtime.run_until_blocked(task.id).status, "completed")
+        task, result = self._search(runtime, "verification precedes completion", limit=8)
+        self.assertEqual(result.status, "completed")
         payload = next(
             artifact.payload
             for artifact in runtime.store.list_artifacts(task.id)

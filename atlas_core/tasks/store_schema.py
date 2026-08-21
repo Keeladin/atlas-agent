@@ -237,7 +237,7 @@ class TaskStoreSchemaMixin:
                 )
 
     def initialize_work_schema(self) -> None:
-        """Additive Work contract table. Not part of the TaskRuntime/Companion schema."""
+        """Additive Work contract table on the Work DB."""
 
         with self._db() as db:
             work_row = db.execute(

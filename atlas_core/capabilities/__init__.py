@@ -10,6 +10,7 @@ from .contracts import (
     ExecutionBudget,
     HybridWeights,
     RetryPolicy,
+    ToolSurface,
 )
 from .definition import CapabilityDefinition, lookup, require
 from .execution import CapabilityExecutionProfile
@@ -22,8 +23,6 @@ from .exposure import (
 from .registry import (
     CapabilityHandler,
     CapabilityRegistration,
-    CapabilityRegistry,
-    CapabilityRegistryError,
 )
 
 __all__ = [
@@ -36,8 +35,6 @@ __all__ = [
     "CapabilityHandler",
     "CapabilityOutcome",
     "CapabilityRegistration",
-    "CapabilityRegistry",
-    "CapabilityRegistryError",
     "CapabilityRequest",
     "CapabilitySideEffectClass",
     "ConfirmationRequirement",
@@ -48,6 +45,7 @@ __all__ = [
     "HybridWeights",
     "InteractionMode",
     "RetryPolicy",
+    "ToolSurface",
     "brief_catalog",
     "catalog",
     "lookup",

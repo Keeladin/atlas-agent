@@ -1,5 +1,5 @@
-"""Atlas 2.0 durable task and capability runtime."""
+"""Atlas 2.0 durable Work and capability runtime."""
 
-from .runtime import RuntimeBudget, RuntimeResult, TaskRuntime
+from .runtime_types import RecoveryResult, RuntimeBudget, RuntimeResult
 
-__all__ = ["RuntimeBudget", "RuntimeResult", "TaskRuntime"]
+__all__ = ["RecoveryResult", "RuntimeBudget", "RuntimeResult"]

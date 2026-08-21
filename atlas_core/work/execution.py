@@ -15,7 +15,7 @@ from atlas_core.tasks import StepRecord
 
 from .contract import ContractCapability, WorkContract
 from .resolve import ResolveReport, ResolvedCapability
-from .surface import project_surface
+from .surface import ExecutionSurface, project_surface
 
 _DETERMINISTIC_KINDS = frozenset({"deterministic", "tool", "composite"})
 _SUPPORTED_KINDS = frozenset({"deterministic", "tool", "composite", "human"})
@@ -283,7 +283,7 @@ class WorkExecutionMixin:
         step: StepRecord,
         pin: ContractCapability,
         resolved: ResolvedCapability,
-        surface,
+        surface: ExecutionSurface,
         pack,
         execution,
         input_ids: tuple[str, ...],

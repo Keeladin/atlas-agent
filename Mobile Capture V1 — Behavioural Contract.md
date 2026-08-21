@@ -327,7 +327,7 @@ Authenticated HTTPS sync
   ↓
 mobile.report.ingest
   ↓
-TaskRuntime
+WorkRuntime
   ↓
 artifact / evidence / operational state
 ```

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 ExecutorKind = Literal["deterministic", "tool", "model", "composite", "human"]
 PrivacyRoute = Literal["local_only", "cloud_allowed", "cloud_preferred"]
@@ -116,6 +116,21 @@ class RetryPolicy:
             raise ValueError("retry_on and stop_on must not overlap")
 
 
+class ToolSurface(Protocol):
+    """Handler-facing invoke contract for a pinned per-step tool surface.
+
+    Defined here so capabilities does not import Work modules.
+    """
+
+    def invoke(
+        self,
+        tool_id: str,
+        arguments: dict[str, Any],
+        *,
+        version: str | None = None,
+    ) -> Any: ...
+
+
 @dataclass(frozen=True)
 class CapabilityRequest:
     task_id: str
@@ -129,10 +144,7 @@ class CapabilityRequest:
     dependency_artifact_ids: tuple[str, ...] = ()
     idempotency_key: str | None = None
     work_id: str | None = None
-    # WorkEngine sets a typed ExecutionSurface and requires it at invoke.
-    # The leftover CLI engine may still pass None. Type stays Any so
-    # atlas_core.capabilities does not import atlas_core.work.
-    surface: Any = None
+    surface: ToolSurface | None = None
 
 
 @dataclass(frozen=True)

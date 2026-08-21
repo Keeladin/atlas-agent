@@ -683,7 +683,7 @@ async function inspectPath() {
   try {
     const data = await api(`/api/knowledge/stat?path=${encodeURIComponent(path)}`);
     meta.textContent = `${data.title} · ${data.byte_size} bytes · sha256 ${data.content_sha256} · ${data.path}`;
-    status.textContent = "Path is readable. Create ingest to index it through TaskRuntime.";
+    status.textContent = "Path is readable. Work execution is disconnected from Companion.";
     return data;
   } catch (error) {
     meta.textContent = error.message;

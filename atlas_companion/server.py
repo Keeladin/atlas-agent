@@ -27,18 +27,11 @@ from atlas_companion.local_models import LocalModelError, LocalModelManager
 from atlas_companion.credentials import CredentialStore
 from atlas_companion.intent import preview_intent
 from atlas_companion.telemetry import TelemetryCollector
-from atlas_core.bootstrap import build_runtime
 from atlas_core.context import ASSEMBLER_VERSION
 from atlas_core.knowledge import (
     KnowledgeStore,
-    is_knowledge_question,
-    parse_ingest_objective,
-    parse_search_objective,
-    resolve_knowledge_source,
     source_content_sha256,
 )
-from atlas_core.planner import TaskPlanner
-from atlas_core.presentation import TaskPresenter, task_failure_reason
 from atlas_core.tasks import InvalidTransitionError, TaskStoreError, UnknownRecordError
 
 
@@ -46,8 +39,12 @@ class ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
     daemon_threads = True
 
 
+class CompanionDisconnectedError(RuntimeError):
+    """Companion is not wired to Work execution."""
+
+
 class CompanionService:
-    """HTTP adapter; task state and execution stay in TaskRuntime."""
+    """HTTP adapter. Work execution is disconnected until a Work client exists."""
 
     def __init__(self, *, db_path: str | Path, provider_config: str | Path | None = None, companion_bind: str | None = None):
         self.db_path = Path(db_path)
@@ -57,7 +54,7 @@ class CompanionService:
         self._router_lock = threading.Lock()
         self.credentials = CredentialStore(self.db_path.parent)
         self.provider_state = ProviderStateStore(self.db_path.parent)
-        self.runtime = build_runtime(db_path=db_path, provider_config=provider_config)
+        self.model_router = None
         if self.provider_config is not None:
             self._reconcile_active_provider()
             self._reload_router()
@@ -76,31 +73,23 @@ class CompanionService:
             companion_bind=companion_bind,
         )
 
+    def _require_work(self) -> None:
+        raise CompanionDisconnectedError(
+            "Companion is disconnected from Work execution"
+        )
+
     def tasks(self):
-        rows = []
-        for task in reversed(self.runtime.store.list_tasks()):
-            row = asdict(task)
-            row["workflow"] = (task.metadata or {}).get("workflow")
-            if task.status == "failed":
-                row["failure_reason"] = task_failure_reason(self.runtime.store, task.id)
-            rows.append(row)
-        return rows
+        return []
 
     def health(self):
-        tasks = self.runtime.store.list_tasks()
-        active = sum(task.status in {"planned", "active", "waiting"} for task in tasks)
-        running = sum(
-            execution.status == "running"
-            for task in tasks
-            for execution in self.runtime.store.list_executions(task.id)
-        )
         payload = self.telemetry.collect(
-            active_tasks=active,
-            running_executions=running,
-            provider_configured=self.runtime.model_router is not None,
+            active_tasks=0,
+            running_executions=0,
+            provider_configured=self.model_router is not None,
         )
         payload["atlas"]["knowledge_documents"] = len(self.knowledge.list_documents())
-        payload["atlas"]["pending_approvals"] = len(self.approvals())
+        payload["atlas"]["pending_approvals"] = 0
+        payload["execution"] = "disconnected"
         payload["runtime"] = self._runtime_identity()
         return payload
 
@@ -108,7 +97,7 @@ class CompanionService:
         """Process and provider identity for the live companion. No secrets."""
         enabled: list[dict[str, Any]] = []
         disabled_keys: list[str] = []
-        router = self.runtime.model_router
+        router = self.model_router
         if router is not None:
             for provider in router.registry.providers():
                 spec = provider.spec
@@ -162,12 +151,7 @@ class CompanionService:
             return None
 
     def detail(self, task_id):
-        presentation = TaskPresenter(self.runtime.store).build(task_id)
-        return {
-            "snapshot": self.runtime.store.snapshot(task_id, include_artifact_payloads=True),
-            "presentation": presentation.as_dict(),
-            "markdown": presentation.render_markdown(),
-        }
+        self._require_work()
 
     def preview_task(self, body):
         intent = preview_intent(
@@ -178,87 +162,10 @@ class CompanionService:
         return intent.as_dict()
 
     def create_and_run(self, body):
-        objective = str(body.get("objective") or body.get("message") or "")
-        intent = preview_intent(
-            objective,
-            criteria=body.get("criteria"),
-            authority=body.get("authority"),
-        )
-        origin = str(body.get("origin") or "ask")
-        conversation_id = str(body.get("conversation_id") or "").strip() or None
-        query = parse_search_objective(intent.objective)
-        if query:
-            return self.search_task(
-                {"query": query, "limit": 8, "origin": origin, "conversation_id": conversation_id}
-            )
-        ingest_label = parse_ingest_objective(intent.objective)
-        if ingest_label:
-            source = resolve_knowledge_source(ingest_label)
-            if source is None:
-                raise ValueError(f"Could not resolve knowledge source: {ingest_label}")
-            return self.ingest(
-                {
-                    "source_path": str(source),
-                    "title": source.name,
-                    "origin": origin,
-                    "conversation_id": conversation_id,
-                }
-            )
-        if self.runtime.model_router is None:
-            raise ValueError("Task creation requires a configured server-side provider registry.")
-        planning = self.runtime.capabilities.get("planning.general")
-        manifest = [item for item in self.runtime.capabilities.manifest() if item["id"] != planning.id]
-        task, _ = TaskPlanner(
-            store=self.runtime.store,
-            model_router=self.runtime.model_router,
-            planning_capability=planning,
-            capability_manifest=manifest,
-        ).plan_and_create(
-            objective=intent.objective,
-            success_criteria=intent.criteria,
-            constraints=tuple(body.get("constraints", [])),
-            authority_scope=intent.authority,
-            metadata=self._task_metadata(
-                body,
-                origin=origin,
-                inferred_criteria=intent.inferred_criteria,
-                inferred_authority=intent.inferred_authority,
-            ),
-        )
-        self.runtime.run_until_blocked(task.id)
-        return self.detail(task.id)
+        self._require_work()
 
     def ask(self, body):
-        message = str(body.get("message") or body.get("objective") or "").strip()
-        if not message:
-            raise ValueError("message is required")
-        conversation = self.conversations.get_or_create(body.get("conversation_id"))
-        self.conversations.add_turn(conversation.id, role="user", content=message)
-        try:
-            detail = self.create_and_run(
-                {**body, "objective": message, "origin": "ask", "conversation_id": conversation.id}
-            )
-        except Exception as exc:
-            self.conversations.add_turn(
-                conversation.id,
-                role="atlas",
-                content=str(exc),
-                metadata={"error": True},
-            )
-            raise
-        reply = _ask_reply(detail)
-        task_id = (detail.get("presentation") or {}).get("task_id")
-        self.conversations.add_turn(conversation.id, role="atlas", content=reply, task_id=task_id)
-        return {
-            "message": message,
-            "reply": reply,
-            "intent": self.preview_task(
-                {"objective": message, "criteria": body.get("criteria"), "authority": body.get("authority")}
-            ),
-            "work": detail,
-            "conversation_id": conversation.id,
-            "conversation": self.conversation(conversation.id),
-        }
+        self._require_work()
 
     def list_conversations(self):
         return [self._conversation_public(item) for item in self.conversations.list()]
@@ -282,62 +189,26 @@ class CompanionService:
 
     def _turn_public(self, turn):
         row = turn.as_dict()
-        if turn.task_id:
-            try:
-                row["task_status"] = self.runtime.store.get_task(turn.task_id).status
-            except UnknownRecordError:
-                row["task_status"] = "deleted"
-        else:
-            row["task_status"] = None
+        row["task_status"] = None
         return row
 
-    def _task_metadata(self, body: dict[str, Any], **extra: Any) -> dict[str, Any]:
-        metadata = {"interface": "companion_pwa", **extra}
-        origin = str(body.get("origin") or extra.get("origin") or "").strip()
-        if origin:
-            metadata["origin"] = origin
-        conversation_id = str(body.get("conversation_id") or extra.get("conversation_id") or "").strip()
-        if conversation_id:
-            metadata["conversation_id"] = conversation_id
-        return metadata
-
     def run(self, task_id):
-        task = self.runtime.store.get_task(task_id)
-        if task.status in {"completed", "failed", "cancelled"}:
-            raise InvalidTransitionError(f"Task is already {task.status} and cannot be resumed.")
-        self.runtime.resume_blocked(task_id)
-        self.runtime.run_until_blocked(task_id)
-        return self.detail(task_id)
+        self._require_work()
 
     def decide(self, approval_id, decision, note=None):
-        return self.detail(self.runtime.store.decide_approval(approval_id, status=decision, note=note).task_id)
+        self._require_work()
 
     def cancel(self, task_id):
-        task = self.runtime.store.get_task(task_id)
-        if task.status in {"completed", "failed", "cancelled"}:
-            raise InvalidTransitionError(f"Task is already {task.status} and cannot be cancelled.")
-        self.runtime.recover_interrupted(task_id)
-        task = self.runtime.store.set_task_status(task_id, "cancelled", force=True)
-        self.runtime.store.create_checkpoint(task.id, reason="task cancelled from Companion PWA")
-        return self.detail(task.id)
+        self._require_work()
 
     def delete_task(self, task_id, *, confirm_id: str | None = None):
-        task = self.runtime.store.get_task(task_id)
-        if (confirm_id or "").strip() != task_id:
-            raise ValueError("Deletion requires confirm_id to match the task id.")
-        if task.status not in {"completed", "failed", "cancelled"}:
-            self.runtime.recover_interrupted(task_id)
-            current = self.runtime.store.get_task(task_id)
-            if current.status not in {"completed", "failed", "cancelled"}:
-                self.runtime.store.set_task_status(task_id, "cancelled", force=True)
-        self.runtime.store.delete_task(task_id)
-        return {"deleted": task_id}
+        self._require_work()
 
     def _reload_router(self) -> None:
         if self.provider_config is None:
             return
         with self._router_lock:
-            self.runtime.model_router = rebuild_router(
+            self.model_router = rebuild_router(
                 self.provider_config,
                 db_path=self.db_path,
                 credentials=self.credentials,
@@ -502,20 +373,7 @@ class CompanionService:
             self._set_exclusive_provider(enabled_cloud[0])
 
     def approvals(self):
-        rows = []
-        for task in self.runtime.store.list_tasks():
-            for approval in self.runtime.store.list_approvals(task.id, status="pending"):
-                rows.append(
-                    {
-                        "id": approval.id,
-                        "task_id": task.id,
-                        "objective": task.objective,
-                        "task_status": task.status,
-                        "required_authority": approval.required_authority,
-                        "requested_action": approval.requested_action,
-                    }
-                )
-        return rows
+        return []
 
     def documents(self):
         return [asdict(document) for document in self.knowledge.list_documents()]
@@ -556,99 +414,10 @@ class CompanionService:
         }
 
     def ingest(self, body: dict[str, Any]):
-        meta = self.stat_source(str(body.get("source_path") or ""))
-        title = str(body.get("title") or meta["title"]).strip() or meta["title"]
-        store = self.runtime.store
-        task = store.create_task(
-            objective=f"Index local knowledge source {title}",
-            success_criteria=("The source is durably indexed with chunk provenance.",),
-            authority_scope="modify_internal",
-            metadata=self._task_metadata(body, workflow="knowledge_ingest"),
-        )
-        request = store.put_artifact(
-            task.id,
-            kind="knowledge_ingest_request",
-            payload={
-                "title": title,
-                "source_path": meta["path"],
-                "source_uri": meta["path"],
-                "content_sha256": meta["content_sha256"],
-                "byte_size": meta["byte_size"],
-                "chunk_chars": int(body.get("chunk_chars") or 4000),
-                "overlap_chars": int(body.get("overlap_chars") or 400),
-            },
-        )
-        store.add_step(
-            task.id,
-            description="Chunk and index extracted text.",
-            capability="knowledge.ingest_text",
-            capability_version=self.runtime.capabilities.get("knowledge.ingest_text").profile.version,
-            input_artifact_ids=(request.id,),
-            metadata={"accept_all_criteria": True},
-        )
-        self.runtime.run_until_blocked(task.id)
-        return self.detail(task.id)
+        self._require_work()
 
     def search_task(self, body: dict[str, Any]):
-        query = str(body.get("query") or "").strip()
-        if not query:
-            raise ValueError("query is required")
-        question = is_knowledge_question(query)
-        criteria = ["A source-grounded local knowledge search result is produced."]
-        if question:
-            criteria.append("An evidence-grounded answer cites retrieved sources.")
-        store = self.runtime.store
-        task = store.create_task(
-            objective=f"Search Atlas knowledge for: {query}",
-            success_criteria=tuple(criteria),
-            authority_scope="interpret" if question else "read",
-            metadata=self._task_metadata(body, workflow="knowledge_search"),
-        )
-        request = store.put_artifact(
-            task.id,
-            kind="knowledge_search_request",
-            payload={"query": query, "limit": int(body.get("limit") or 8)},
-        )
-        search = store.add_step(
-            task.id,
-            description="Retrieve matching knowledge chunks.",
-            capability="knowledge.search",
-            capability_version=self.runtime.capabilities.get("knowledge.search").profile.version,
-            input_artifact_ids=(request.id,),
-            metadata={"satisfies_criteria": [1]} if question else {"accept_all_criteria": True},
-        )
-        if question:
-            store.add_step(
-                task.id,
-                description="Compose a source-grounded answer from retrieved chunks.",
-                capability="knowledge.answer",
-                capability_version=self.runtime.capabilities.get("knowledge.answer").profile.version,
-                dependencies=(search.id,),
-                metadata={"satisfies_criteria": [2]},
-            )
-        self.runtime.run_until_blocked(task.id)
-        return self.detail(task.id)
-
-
-def _ask_reply(detail: dict[str, Any]) -> str:
-    presentation = detail.get("presentation") or {}
-    status = presentation.get("status") or "unknown"
-    if presentation.get("pending_approvals"):
-        action = presentation["pending_approvals"][0].get("requested_action") or "approval"
-        return f"Atlas paused for approval: {action}"
-    if status == "failed":
-        return presentation.get("failure_reason") or "The work failed."
-    if status == "waiting":
-        return "Atlas is waiting. Open Work for the current step or any approval."
-    outputs = presentation.get("outputs") or []
-    for kind in ("grounded_answer", "capability_result"):
-        hit = next((item for item in outputs if item.get("kind") == kind and item.get("preview")), None)
-        if hit:
-            return str(hit["preview"])
-    markdown = str(detail.get("markdown") or "").strip()
-    if markdown:
-        return markdown
-    return f"Work is {status}."
+        self._require_work()
 
 
 class CompanionApp:
@@ -723,7 +492,7 @@ class CompanionApp:
             if method == "GET":
                 return self._static(start_response, path)
             return self._json(start_response, HTTPStatus.NOT_FOUND, {"error": "not found"})
-        except (ValueError, TaskStoreError, UnknownRecordError, InvalidTransitionError, CloudProviderError, LocalModelError) as exc:
+        except (ValueError, TaskStoreError, UnknownRecordError, InvalidTransitionError, CloudProviderError, LocalModelError, CompanionDisconnectedError) as exc:
             return self._json(start_response, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
     def _cloud_action(self, method: str, path: str, environ) -> dict[str, Any]:
@@ -778,7 +547,7 @@ class CompanionApp:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Atlas Companion PWA (LAN-local TaskRuntime interface)")
+    parser = argparse.ArgumentParser(description="Atlas Companion PWA (disconnected from Work execution)")
     parser.add_argument("--db", default="instance/atlas.db")
     parser.add_argument("--providers")
     parser.add_argument("--host", default="127.0.0.1", help="Use a LAN address only on a trusted network.")

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from tests.capability_fixtures import make_registration, register_cap
+from tests.capability_fixtures import make_registration
 
 import unittest
 
@@ -7,9 +7,8 @@ from atlas_core.capabilities import (
     CapabilityBinding,
     CapabilityBindingIndex,
     CapabilityOutcome,
-    CapabilityRegistry,
-    
 )
+from atlas_core.work import DeploymentInventory
 from atlas_core.integrations.n8n_mcp import N8NMCPConfig, N8NMCPProvider
 from atlas_core.tools import ToolGateway
 
@@ -54,9 +53,9 @@ class CapabilityFoundationTests(unittest.TestCase):
         self.assertTrue(status.available)
         self.assertEqual(len(provider.tool_ids), 3)
 
-        capabilities = CapabilityRegistry()
+        inventory = DeploymentInventory()
         bindings = CapabilityBindingIndex()
-        self.assertEqual(capabilities.registrations(), ())
+        self.assertEqual(inventory.all(), ())
         self.assertEqual(bindings.mapped_implementations(), frozenset())
         for tool_id in provider.tool_ids:
             origin = gateway.get(tool_id)[0].origin.tool_name
@@ -78,9 +77,9 @@ class CapabilityFoundationTests(unittest.TestCase):
         self.assertEqual(spec.definition.side_effect_class, "external_effect")
         self.assertFalse(hasattr(spec, "bindings"))
 
-        registry = CapabilityRegistry()
-        registry.register(spec, lambda request: CapabilityOutcome("fail", error="unbound"))
-        self.assertEqual(registry.get("communication.email.send").id, spec.id)
+        inventory = DeploymentInventory()
+        inventory.register(spec.profile, lambda request: CapabilityOutcome("fail", error="unbound"))
+        self.assertEqual(inventory.get("communication.email.send").capability_id, spec.id)
         self.assertEqual(CapabilityBindingIndex().for_capability(spec.id), ())
 
     def test_provider_tool_names_are_not_required_for_capability_identity(self):
@@ -144,8 +143,8 @@ class CapabilityFoundationTests(unittest.TestCase):
         gateway.get("mcp.n8n.list_credentials")
         gateway.get("mcp.n8n.update_workflow")
 
-        registry = CapabilityRegistry()
-        registry.register(_execute_spec(), lambda request: CapabilityOutcome("fail", error="unbound"))
+        inventory = DeploymentInventory()
+        inventory.register(_execute_spec().profile, lambda request: CapabilityOutcome("fail", error="unbound"))
         bindings = CapabilityBindingIndex()
         bindings.register(CapabilityBinding("automation.workflow.execute", "n8n", "execute_workflow"))
 

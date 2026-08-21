@@ -3,10 +3,9 @@ from __future__ import annotations
 from .definition import require
 from .execution import CapabilityExecutionProfile
 from .contracts import ExecutionBudget
-from .registry import CapabilityRegistry
 
 
-def register_intelligence_capabilities(registry: CapabilityRegistry) -> None:
+def register_intelligence_capabilities(inventory) -> None:
     profiles = (
         CapabilityExecutionProfile(
             capability_id="planning.general",
@@ -64,4 +63,5 @@ def register_intelligence_capabilities(registry: CapabilityRegistry) -> None:
         ),
     )
     for profile in profiles:
-        registry.register(require(profile.capability_id), profile)
+        require(profile.capability_id)
+        inventory.register(profile)

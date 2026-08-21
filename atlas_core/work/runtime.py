@@ -153,6 +153,12 @@ class WorkRuntime:
         )
         return self._engine.recover(contract, report)
 
+    def approve(self, approval_id: str, *, note: str | None = None):
+        return self.store.decide_approval(approval_id, status="approved", note=note)
+
+    def deny(self, approval_id: str, *, note: str | None = None):
+        return self.store.decide_approval(approval_id, status="denied", note=note)
+
     def get(self, work_id: WorkId) -> WorkRecord:
         task = self.store.get_task(work_id)
         contract = self.contract(work_id)

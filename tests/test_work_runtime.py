@@ -381,6 +381,29 @@ class WorkRuntimeTests(unittest.TestCase):
         self.assertEqual(answer.dependencies, (search.id,))
         self.assertEqual(runtime._engine.store.ready_steps(work_id)[0].id, search.id)
 
+    def test_approve_and_deny_are_store_decisions(self) -> None:
+        profiles = DeploymentInventory()
+        profiles.register(
+            CapabilityExecutionProfile(
+                capability_id="automation.workflow.create",
+                executor_kind="human",
+                verification_required=False,
+            )
+        )
+        runtime = build_work_runtime(db_path=self.work_db, profiles=profiles)
+        approved_id = runtime.accept(_brief(), "execute_external")
+        self.assertEqual(runtime.run(approved_id).status, "waiting")
+        pending = runtime.store.list_approvals(approved_id, status="pending")[0]
+        decided = runtime.approve(pending.id, note="go")
+        self.assertEqual(decided.status, "approved")
+        self.assertEqual(decided.decision_note, "go")
+        denied_id = runtime.accept(_brief(objective="Deny this"), "execute_external")
+        self.assertEqual(runtime.run(denied_id).status, "waiting")
+        denied_pending = runtime.store.list_approvals(denied_id, status="pending")[0]
+        denied = runtime.deny(denied_pending.id, note="no")
+        self.assertEqual(denied.status, "denied")
+        self.assertEqual(denied.decision_note, "no")
+
 
 def _table_names(path: Path) -> set[str]:
     with sqlite3.connect(path) as db:

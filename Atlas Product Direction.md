@@ -95,14 +95,13 @@ The offline app must remain useful when the server cannot be reached.
 
 The personal **Atlas Companion PWA** is implemented as a LAN-local owner/admin interface in `atlas_companion/`.
 
-It uses the same Atlas backend and durable task truth while exposing a different authority surface from supervisor reporting. There is still one Atlas.
+It remains a LAN-local owner/admin client. Work execution is disconnected/dark until Companion is rebuilt against WorkRuntime. There is still one Atlas.
 
 Implemented:
 
-- conversational Ask front door (criteria/authority inferred; work still created);
-- persisted Ask transcript in the same SQLite database;
-- Work overview, one-off, recurring view, history, approvals, hard delete;
-- Knowledge library / search / indexing;
+- conversational Ask intent preview and persisted transcript storage;
+- Work UI shell (create/run/approve/cancel disconnected);
+- Knowledge library / search (indexing-as-work disconnected);
 - Models: sequential local GPU load/unload/activate; xAI credential file, model select, exclusive enable;
 - Settings/health identity without secrets;
 - Personal stub (connectors not connected).
@@ -112,9 +111,8 @@ Phone / browser
    ↓ trusted LAN HTTP
 Atlas Companion PWA
    ↓
-TaskRuntime
-   ↓
-capabilities / tools / model router
+knowledge / models / settings (live)
+Work execution (disconnected / dark until rebuilt)
 ```
 
 The browser must not communicate directly with model-provider endpoints. Companion is unauthenticated; do not bind it to a public address.

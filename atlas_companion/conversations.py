@@ -78,7 +78,7 @@ def title_from_message(message: str) -> str:
 
 
 class ConversationStore:
-    """Ask transcript in the same SQLite DB as TaskRuntime. Not a second agent."""
+    """Ask transcript in Companion's SQLite DB. Not a second agent."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)

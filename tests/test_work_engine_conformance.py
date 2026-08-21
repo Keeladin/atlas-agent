@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-"""Differential conformance: WorkRuntime.run vs WorkEngine.
+"""WorkRuntime.run vs WorkEngine: the composition root matches the engine.
 
-Preserved deterministic cases must match. The two pre-cutover divergences
-versus the leftover CLI engine (foreign extra steps, model executor) stay
-explicit: on the Work path both sides now follow WorkEngine.
+There is one execution engine. These cases prove WorkRuntime.run and a
+direct WorkEngine.run produce the same durable snapshot.
 """
 
 from pathlib import Path
@@ -122,7 +121,7 @@ class WorkEngineConformanceTests(unittest.TestCase):
         right = runtime.accept(brief, authority, inputs=inputs)
         if prepare is not None:
             prepare(runtime, left, right)
-        task_runtime_result = runtime.run(left)
+        runtime_result = runtime.run(left)
         contract = runtime.contract(right)
         report = ImplementationResolver().resolve(
             contract, runtime._profiles, runtime._tool_gateway
@@ -137,14 +136,14 @@ class WorkEngineConformanceTests(unittest.TestCase):
         work_engine_result = engine.run(contract, report)
         store = runtime._engine.store
         return (
-            _semantic_snapshot(store, left, task_runtime_result),
+            _semantic_snapshot(store, left, runtime_result),
             _semantic_snapshot(store, right, work_engine_result),
             runtime,
             left,
             right,
         )
 
-    def test_unarmed_is_unavailable_on_both_engines(self) -> None:
+    def test_unarmed_is_unavailable_on_runtime_and_engine(self) -> None:
         left, right, _runtime, _left_id, _right_id = self._pair(
             DeploymentInventory(),
             TaskBrief(
@@ -289,7 +288,7 @@ class WorkEngineConformanceTests(unittest.TestCase):
         self.assertEqual(left["result_status"], "failed")
         self.assertEqual(left["executions"][0][1], "fail")
 
-    def test_non_idempotent_side_effect_is_not_retried_on_either_engine(self) -> None:
+    def test_non_idempotent_side_effect_is_not_retried_on_runtime_or_engine(self) -> None:
         calls: dict[str, int] = {}
 
         def handler(request):
@@ -411,7 +410,7 @@ class WorkEngineConformanceTests(unittest.TestCase):
         self.assertEqual(seen[left_id], {"query": "atlas", "limit": 4})
         self.assertEqual(seen[right_id], {"query": "atlas", "limit": 4})
 
-    def test_mismatch_fails_the_drifted_step_on_both_engines(self) -> None:
+    def test_mismatch_fails_the_drifted_step_on_runtime_and_engine(self) -> None:
         accept_inventory = DeploymentInventory()
         accept_inventory.register(_profile("knowledge.search"), _pass)
         accept_inventory.register(
@@ -510,12 +509,10 @@ class WorkEngineConformanceTests(unittest.TestCase):
         self.assertEqual(left["result_reason"], "task execution budget exhausted")
         self.assertEqual(left["result_executions"], 1)
 
-    def test_foreign_step_is_an_expected_divergence(self) -> None:
-        """Expected divergence 1 vs leftover CLI engine: extra step ids.
+    def test_foreign_step_fails_on_runtime_and_engine(self) -> None:
+        """A store-injected step that is not in the WorkContract fails closed.
 
-        The leftover CLI engine executes a store-injected step whose
-        capability is not in the WorkContract. WorkRuntime.run matches
-        WorkEngine: the work fails and the extra id never runs.
+        The extra id never runs. WorkRuntime.run matches WorkEngine.
         """
 
         inventory = DeploymentInventory()
@@ -548,12 +545,10 @@ class WorkEngineConformanceTests(unittest.TestCase):
         self.assertNotIn("knowledge.search", left["executed_capabilities"])
         self.assertNotIn("knowledge.search", right["executed_capabilities"])
 
-    def test_model_kind_is_an_expected_divergence(self) -> None:
-        """Expected divergence 2 vs leftover CLI engine: model executor.
+    def test_model_kind_fails_closed_on_runtime_and_engine(self) -> None:
+        """Model pins fail closed until the Work model path exists.
 
-        The leftover CLI engine blocks a model pin when no router is
-        configured. WorkRuntime.run matches WorkEngine and fails with
-        "executor not implemented" until the model path exists.
+        WorkRuntime.run matches WorkEngine: executor not implemented.
         """
         inventory = DeploymentInventory()
         inventory.register(

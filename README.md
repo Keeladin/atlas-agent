@@ -28,7 +28,7 @@ Atlas 2.0 is under active development. The durable runtime and core governance c
 | SQLite / FTS knowledge plane | **Implemented** |
 | Morning Workflow runtime integration | **Implemented** |
 | Offline-first Mobile Capture PWA | **Implemented and phone-offline tested** |
-| Atlas Companion PWA | **Implemented (LAN-local TaskRuntime interface)** |
+| Atlas Companion PWA | **Implemented (LAN-local; Work execution disconnected)** |
 | Companion authentication / public bind | **Not yet implemented** |
 | Mobile report server sync + authentication | **Not yet implemented** |
 | Production always-on server packaging | **Not yet canonicalized** |
@@ -81,7 +81,7 @@ flowchart TB
     U[User / Event / Schedule / File / API]
     CLI[CLI\nimplemented]
     MPWA[Supervisor Mobile Capture PWA\noffline-first, implemented]
-    WEB[Atlas Companion PWA\nLAN-local, implemented]
+    WEB[Atlas Companion PWA\nLAN-local, disconnected]
     SYNC[Authenticated Mobile Sync API\nplanned]
 
     U --> CLI
@@ -89,7 +89,7 @@ flowchart TB
     MPWA -. sync when coverage returns .-> SYNC
 
     CLI --> TP
-    WEB --> TP
+    WEB -. disconnected until rebuilt .-> TP
     SYNC -.-> TP
 
     subgraph CORE[Atlas 2.0 Core]
@@ -152,11 +152,11 @@ flowchart TB
 
 - **ChatRuntime, AdvancedRuntime, and WorkRuntime are independent composition roots.**
 - **Chat and Advanced know capabilities without executing them.** Identity is `catalog()`.
-- **WorkRuntime owns execution.** `WorkEngine` executes the accepted contract. Leftover CLI `plan` / Companion still use `TaskRuntime` and are not the Work composition.
+- **WorkRuntime owns execution.** `WorkEngine` executes the accepted contract. There is no second engine.
 - **Capability meaning is independent of deployment.** A catalog capability may have no profile on this host.
 - **The model router sits below capabilities.** A capability may be satisfied by different providers without changing the definition.
 - **State is structural and durable.** The context window is a workspace, not a database.
-- **Mobile and Companion are interfaces, not other agents.** Companion remains a LAN-local TaskRuntime surface and is not reconnected to the three roots here. Mobile Capture is bounded supervisor reporting.
+- **Mobile and Companion are interfaces, not other agents.** Companion remains a LAN-local client, disconnected from Work until rebuilt. Mobile Capture is bounded supervisor reporting.
 - **MCP is an edge protocol, not Atlas's internal ontology.** Discovery does not create catalog identity.
 
 ---
@@ -425,18 +425,18 @@ See [Mobile Capture V1 — Behavioural Contract](./Mobile%20Capture%20V1%20%E2%8
 
 ## Companion PWA
 
-`atlas_companion/` is the LAN-local owner/admin interface into the same TaskRuntime. It is one persistent agent with spaces of responsibility, not extra personalities.
+`atlas_companion/` is the LAN-local owner/admin interface. It is one persistent agent with spaces of responsibility, not extra personalities. Work execution is disconnected/dark until Companion is rebuilt against WorkRuntime.
 
 | Space | What it is |
 |---|---|
-| **Ask** | Conversational front door. Infers criteria and authority. Always creates durable work when something must happen. Transcript persists across refresh. |
-| **Work** | Overview, one-off, recurring (`metadata.workflow`), history, approvals, hard delete |
+| **Ask** | Conversational front door and transcript storage. Intent preview remains. Work execution is disconnected. |
+| **Work** | Overview UI remains. Run / create / approve / cancel are disconnected. |
 | **Personal** | Stub command center (email/calendar/reminders not connected) |
-| **Knowledge** | Library, search, indexing. Indexing jobs are Work. |
+| **Knowledge** | Library and search remain. Indexing-as-work is disconnected. |
 | **Models** | Local sequential load/unload/activate; xAI credentials, model select, exclusive enable |
 | **Settings** | Host health and runtime identity (assembler, pid, enabled providers; no secrets) |
 
-The browser talks only to Companion. Companion talks to TaskRuntime. The browser does not call model-provider endpoints.
+The browser talks only to Companion. Companion does not construct WorkRuntime. The browser does not call model-provider endpoints.
 
 This surface is **not authenticated**. Bind it to localhost or a trusted LAN only. It is not a public internet service.
 
@@ -470,22 +470,16 @@ atlas-agent/
 │   ├── authority.py
 │   ├── context.py
 │   ├── deliverable.py        deliverable contract + presentation profile
-│   ├── runtime.py            TaskRuntime public facade
 │   ├── runtime_types.py
-│   ├── runtime_lifecycle.py
-│   ├── runtime_execution.py
-│   ├── runtime_finish.py
 │   ├── verification.py
-│   ├── planner.py
 │   ├── presentation.py
 │   ├── tools.py
 │   ├── evals.py
 │   ├── events.py
 │   ├── schema_validation.py
-│   ├── bootstrap.py
 │   └── __main__.py
 │
-├── atlas_companion/          LAN-local Companion PWA
+├── atlas_companion/          LAN-local Companion PWA (disconnected from Work)
 ├── atlas_morning/            frozen Morning Workflow implementation
 ├── atlas_mobile/             offline-first Mobile Capture PWA
 ├── config/                   runtime/provider configuration examples
@@ -544,27 +538,26 @@ uv run python -m atlas_core --db instance/atlas.db tasks
 
 # CLI
 
-The CLI remains the canonical engineering and recovery interface. Companion is the general LAN-local browser interface. Both enter the same TaskRuntime.
+The CLI is the canonical engineering and recovery interface into WorkRuntime. Companion is the general LAN-local browser interface and is disconnected from Work execution.
 
 ```text
-uv run python -m atlas_core [--db PATH] [--providers CONFIG] COMMAND
+uv run python -m atlas_core [--db PATH] COMMAND
 ```
 
 Commands:
 
 ```text
-morning      Run the Morning Workflow through TaskRuntime
-plan         Create a durable task and bounded capability plan
-run          Run or resume a durable task
+morning      Run the Morning Workflow through WorkRuntime
+run          Run or resume accepted work
 recover      Resolve executions left running by an interrupted process
 approve      Approve one pending authority gate
 deny         Deny one pending authority gate
-result       Render durable task truth as a report
+result       Render durable work truth as a report
 index-text   Index a UTF-8 text file into local knowledge
 search       Search local full-text knowledge
-cancel       Cancel a non-terminal task
-status       Show a task snapshot
-tasks        List durable tasks
+cancel       Cancel a non-terminal work item
+status       Show a work snapshot
+tasks        List durable work items
 ```
 
 ### Index local knowledge
@@ -607,27 +600,14 @@ Verify the endpoint independently, for example:
 curl http://127.0.0.1:1234/v1/models
 ```
 
-### Create a planned task
+### Inspect accepted work
 
 ```bash
-uv run python -m atlas_core \
-  --db instance/atlas.db \
-  --providers config/runtime-providers.local.json \
-  plan "Explain the purpose of Atlas's durable task runtime" \
-  --criterion "Produce a clear evidence-grounded explanation"
-```
+uv run python -m atlas_core --db instance/atlas.db status <WORK_ID>
 
-Then inspect/run/present:
+uv run python -m atlas_core --db instance/atlas.db run <WORK_ID>
 
-```bash
-uv run python -m atlas_core --db instance/atlas.db status <TASK_ID>
-
-uv run python -m atlas_core \
-  --db instance/atlas.db \
-  --providers config/runtime-providers.local.json \
-  run <TASK_ID>
-
-uv run python -m atlas_core --db instance/atlas.db result <TASK_ID>
+uv run python -m atlas_core --db instance/atlas.db result <WORK_ID>
 ```
 
 ---
@@ -687,9 +667,9 @@ The project prefers the smallest system that reliably owns a real responsibility
 
 # Near-term deployment direction
 
-The runtime is interface-agnostic. Companion already binds the same TaskRuntime on a trusted LAN. Always-on packaging, authentication, and public HTTPS remain deployment work.
+The runtime is interface-agnostic. Companion remains a LAN-local shell, disconnected from Work until rebuilt. Always-on packaging, authentication, and public HTTPS remain deployment work.
 
-**Companion is implemented. Authenticated remote access and production supervision are not.**
+**Companion is present and dark for Work execution. Authenticated remote access and production supervision are not implemented.**
 
 ```mermaid
 flowchart TB
@@ -700,8 +680,8 @@ flowchart TB
     EDGE[Authenticated HTTPS edge\nplanned]
 
     subgraph HOST[Always-on Atlas host]
-        API[Companion HTTP adapter\nLAN-local, implemented]
-        CORE[Atlas runtime\nWorkRuntime + leftover TaskRuntime]
+        API[Companion HTTP adapter\nLAN-local, Work disconnected]
+        CORE[Atlas runtime\nWorkRuntime / WorkEngine]
         DATA[(Persistent SQLite + artifacts + knowledge)]
         MODEL[Local OpenAI-compatible model service]
         GPU[Optional GPU acceleration]
@@ -710,7 +690,7 @@ flowchart TB
     PHONE -->|trusted LAN HTTP| API
     REPORT -. HTTPS sync .-> EDGE
     EDGE -.-> API
-    API --> CORE
+    API -. disconnected from Work .-> CORE
     DEV -->|Git / SSH| HOST
     CORE <--> DATA
     CORE --> MODEL

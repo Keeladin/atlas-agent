@@ -351,23 +351,16 @@ atlas_core/
 ├── context.py
 ├── deliverable.py
 │   └── deliverable contract + presentation profile
-├── runtime.py
-│   └── TaskRuntime public facade
 ├── runtime_types.py
-├── runtime_lifecycle.py
-├── runtime_execution.py
-├── runtime_finish.py
 ├── verification.py
-├── planner.py
 ├── presentation.py
 ├── tools.py
 ├── evals.py
 ├── events.py
 ├── schema_validation.py
-├── bootstrap.py
 └── __main__.py
 
-atlas_companion/ LAN-local Companion PWA adapter
+atlas_companion/ LAN-local Companion PWA (disconnected from Work)
 atlas_morning/   frozen Morning Workflow implementation
 atlas_mobile/    offline-first Mobile Capture surface
 ```

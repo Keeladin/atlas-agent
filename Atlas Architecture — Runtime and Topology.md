@@ -5,7 +5,7 @@
 
 This document defines the current Atlas 2.0 runtime architecture.
 
-It is governed by the Atlas Constitution and implemented by the `atlas_core/` runtime. Domain responsibilities such as Morning Workflow and Mobile Capture retain their own behavioural contracts but integrate through Atlas capability/interface boundaries. Companion is a LAN-local interface into the same runtime, not a second agent.
+It is governed by the Atlas Constitution and implemented by the `atlas_core/` runtime. Domain responsibilities such as Morning Workflow and Mobile Capture retain their own behavioural contracts but integrate through Atlas capability/interface boundaries. Companion remains a LAN-local client package, disconnected from Work execution until rebuilt against the current roots.
 
 ---
 
@@ -49,7 +49,7 @@ flowchart TB
     I[User / Event / Schedule / File / API]
     CLI[CLI\nimplemented]
     MOBILE[Supervisor Mobile Capture\nimplemented offline]
-    WEB[Atlas Companion PWA\nLAN-local, implemented]
+    WEB[Atlas Companion PWA\nLAN-local, disconnected]
     SYNC[Authenticated Mobile Sync API\nplanned]
 
     I --> CLI
@@ -57,7 +57,7 @@ flowchart TB
     MOBILE -. future sync .-> SYNC
 
     CLI --> TP
-    WEB --> TP
+    WEB -. disconnected until rebuilt .-> TP
     SYNC -.-> TP
 
     subgraph CORE[Atlas 2.0 Core]
@@ -120,13 +120,13 @@ flowchart TB
 
 - **ChatRuntime**, **AdvancedRuntime**, and **WorkRuntime** are independent composition roots.
 - Chat and Advanced know `CapabilityDefinition` meaning from `catalog()`. They do not execute.
-- **WorkRuntime owns execution.** It accepts a Task Brief. `WorkEngine` executes the accepted contract. Leftover CLI `plan` / Companion still use `TaskRuntime`.
-- `CapabilityDefinition` is identity. `CapabilityExecutionProfile` is deployment availability. `CapabilityRegistration` is the Work-engine binding.
+- **WorkRuntime owns execution.** It accepts a Task Brief. `WorkEngine` executes the accepted contract. There is no second engine.
+- `CapabilityDefinition` is identity. `CapabilityExecutionProfile` is deployment availability. `CapabilityRegistration` is the resolved Work binding.
 - The **Model Router sits below capability semantics**.
 - The **ContextBuilder owns model/capability context assembly**.
 - Durable Work state is not stored in a conversation or model context.
 - Mobile Capture is an offline interface/domain surface, not a second Atlas agent.
-- Companion remains a LAN-local interface into a legacy `TaskRuntime` assembly. It is not reconnected to the three roots here.
+- Companion remains a LAN-local client package. It is disconnected/dark until rebuilt against Chat, Advanced, or Work. It is not reconnected here.
 - MCP is an adapter protocol at the tool edge, not Atlas's internal ontology.
 
 ---
@@ -539,22 +539,16 @@ atlas_core/
 ├── authority.py           authority ladder and decisions
 ├── context.py             ContextBuilder + ContextManifest
 ├── deliverable.py         deliverable contract + presentation profile
-├── runtime.py             TaskRuntime public facade
 ├── runtime_types.py       RuntimeBudget / result types
-├── runtime_lifecycle.py   task lifecycle / recovery coordination
-├── runtime_execution.py   bounded execution mechanics
-├── runtime_finish.py      verification / completion transitions
 ├── verification.py        capability and completion verification
-├── planner.py             durable planning → task graph
 ├── presentation.py        evidence-backed result presentation
 ├── tools.py               Tool Gateway + MCP bridge
 ├── evals.py               capability reliability harness
 ├── events.py              event fan-out
 ├── schema_validation.py   contract schema enforcement
-├── bootstrap.py           runtime assembly
-└── __main__.py            CLI
+└── __main__.py            Work CLI
 
-atlas_companion/           LAN-local Companion PWA
+atlas_companion/           LAN-local Companion PWA (disconnected from Work)
 atlas_morning/             deterministic Morning Workflow
 atlas_mobile/              offline-first Mobile Capture PWA
 ```
@@ -571,7 +565,7 @@ The frozen TMM Morning Workflow is exposed through:
 operations.morning_pack.generate
 ```
 
-Atlas `WorkRuntime` / `WorkEngine` own the task/execution/evidence shell for Work; the leftover CLI still runs Morning through `TaskRuntime` until that cutover. The domain specification owns conservative reporting meaning.
+Atlas `WorkRuntime` / `WorkEngine` own the task/execution/evidence shell for Work, including Morning. The domain specification owns conservative reporting meaning.
 
 ### Mobile Capture
 
@@ -589,7 +583,7 @@ Authenticated server sync is not yet implemented.
 
 ### Companion PWA
 
-`atlas_companion/` is the implemented LAN-local owner/admin interface. Ask, Work, Knowledge, Models and Settings enter TaskRuntime. Personal and notifications remain stubs. The adapter is unauthenticated and must stay on localhost or a trusted LAN.
+`atlas_companion/` is the implemented LAN-local owner/admin interface. Models, Settings, knowledge library/search, and Ask conversation storage remain. Work execution, ingest-as-work, and approvals are disconnected/dark until Companion is rebuilt against WorkRuntime. The adapter is unauthenticated and must stay on localhost or a trusted LAN.
 
 ---
 

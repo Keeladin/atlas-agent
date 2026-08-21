@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from atlas_core.bootstrap import build_runtime
+from atlas_core.work import build_work_runtime
 from atlas_core.integrations.n8n_mcp import (
     DEFAULT_SECRET_REF,
     DEFAULT_URL,
@@ -227,14 +227,13 @@ class N8NMCPProviderTests(unittest.TestCase):
         self.assertFalse(status.available)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        runtime = build_runtime(db_path=Path(tmp.name) / "atlas.db", include_morning=False)
+        runtime = build_work_runtime(db_path=Path(tmp.name) / "atlas.db")
         task = runtime.store.create_task(
             objective="Prove Atlas still starts",
             success_criteria=("The task exists",),
             authority_scope="read",
         )
         self.assertEqual(task.status, "planned")
-        self.assertIsNone(runtime.tool_gateway)
 
     def test_from_example_config_file(self) -> None:
         root = Path(__file__).resolve().parents[1]

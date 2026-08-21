@@ -41,7 +41,7 @@ WorkEngine
 | `WorkRuntime` | Work lifecycle: accept, run, pause, complete | Capability identity |
 | `WorkEngine` | Step execution mechanics | Accept, catalog, live re-resolution |
 
-`catalog()` / `lookup()` are the product identity surface. Chat and Advanced read meaning only. Work.accept reads `catalog()`. Work.run requires an available profile (and a handler for deterministic/tool/composite kinds) before `WorkEngine` is reached. Leftover CLI `plan` / Companion still use `TaskRuntime` on a separate assembly.
+`catalog()` / `lookup()` are the product identity surface. Chat and Advanced read meaning only. Work.accept reads `catalog()`. Work.run requires an available profile (and a handler for deterministic/tool/composite kinds) before `WorkEngine` is reached. Companion is disconnected from this topology until rebuilt.
 
 `CapabilityAwareness` is an alias of `CapabilityDefinition`. It is not a second ontology.
 
@@ -106,10 +106,10 @@ Replacing `n8n.execute_workflow` with `temporal.run_workflow` changes the profil
 | Type | Role |
 |---|---|
 | `CapabilityDefinition` | Stable Atlas meaning |
-| `CapabilityExecutionProfile.tools` | Runtime-frame ToolDescriptor allow-list. Not vendor identity. |
+| `CapabilityExecutionProfile.tools` | Pinned WorkContract ToolDescriptor allow-list. Not vendor identity. |
 | `CapabilityDefinition.required_authority` | Class of action this work item must be granted |
 | `CapabilityExecutionProfile.side_effects` | Named side-effect labels used by current Work runtime |
-| `CapabilityRegistry` / `CapabilityRegistration` | Executable Work set. Not the meaning catalog. |
+| `CapabilityRegistration` | Resolved Work triple. Not the meaning catalog. `CapabilityRegistry` is removed. |
 | `ToolGateway` | Invoke boundary. Has no `capability()` identity map. |
 | `N8NMCPProvider` | External MCP inventory |
 
@@ -145,8 +145,7 @@ Binding does not grant authority. A capability may have zero bindings. Several p
 | Path | Classification |
 |---|---|
 | `catalog()` / `lookup()` / `require()` | Product identity. Only `catalog()` constructs `CapabilityDefinition`. |
-| `DeploymentInventory.register` | Deployment only. `WorkRuntime` skips unknown catalog ids. |
-| `CapabilityRegistry.register` | Work execution record. Does not add catalog rows. Production bootstrap passes `require(id)`. |
+| `DeploymentInventory.register` | Deployment only. `WorkRuntime` skips unknown catalog ids. `CapabilityRegistry` is removed. |
 | Builtin / knowledge / morning registration | Execution profiles + handlers against `require(id)`. They do not construct definitions. |
 | `ToolGateway.register` | Tool inventory |
 | MCP `register_discovered` | Tool inventory (`mcp.*` ids). Not definitions. |
@@ -164,4 +163,4 @@ Binding does not grant authority. A capability may have zero bindings. Several p
 - add SQLite tables
 - change ToolGateway.invoke
 - reconnect Companion to Chat/Advanced/Work
-- restore `build_runtime()` as product identity
+- restore `build_runtime()` as product identity; that constructor is removed

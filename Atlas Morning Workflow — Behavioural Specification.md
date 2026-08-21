@@ -2,7 +2,7 @@
 
 **Status:** Implemented and frozen for V1 behaviour  
 **Runtime capability:** `operations.morning_pack.generate`  
-**Role:** Deterministic domain responsibility executed through Atlas 2.0 TaskRuntime
+**Role:** Deterministic domain responsibility executed through Atlas 2.0 WorkRuntime
 
 This document defines the current behavioural contract for the TMM Morning Workflow.
 
@@ -300,7 +300,9 @@ The implemented path is:
 ```text
 CLI / future API
   ↓
-TaskRuntime
+WorkRuntime
+  ↓
+WorkEngine
   ↓
 operations.morning_pack.generate
   ↓

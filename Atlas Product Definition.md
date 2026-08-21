@@ -141,7 +141,7 @@ Implemented on `main`:
 - SQLite/FTS knowledge plane;
 - Morning Workflow integration;
 - offline-first Mobile Capture surface with phone-offline acceptance;
-- LAN-local Companion PWA over the same TaskRuntime;
+- LAN-local Companion PWA, disconnected from Work execution until rebuilt;
 - inferred Ask criteria/authority, persisted Ask conversations, and exclusive cloud/local model activation;
 - intent-based presentation profiles separate from capability defaults.
 

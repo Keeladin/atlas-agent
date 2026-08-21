@@ -6,20 +6,19 @@ import unittest
 from dataclasses import fields
 from pathlib import Path
 
-from tests.capability_fixtures import register_cap
-
 from atlas_core.advanced import TaskBrief
-from atlas_core.bootstrap import build_runtime
 from atlas_core.capabilities import (
     CapabilityBinding,
     CapabilityDefinition,
     CapabilityOutcome,
-    CapabilityRegistry,
     brief_catalog,
     catalog,
     lookup,
     register_intelligence_capabilities,
 )
+from atlas_core.integrations import register_morning_workflow
+from atlas_core.knowledge import KnowledgeStore, register_knowledge_capabilities
+from atlas_core.verification import VerifierRegistry
 from atlas_core.chat import explain_manifest
 from atlas_core.tools import MCPToolBridge, ToolDescriptor, ToolGateway, ToolResult
 from atlas_core.work import (
@@ -210,17 +209,21 @@ class CapabilityArchitectureTests(unittest.TestCase):
             ToolDescriptor(id="mcp.n8n.execute_workflow", description="Run a workflow"),
             lambda arguments: ToolResult(True, output=arguments, receipt={"ok": True}),
         )
-        registry = CapabilityRegistry()
-        register_cap(
-            registry,
-            "synthetic.engine.only",
-            executor_kind="model",
-            verifier_id="core.nonempty",
+        inventory = DeploymentInventory()
+        inventory.register(
+            CapabilityExecutionProfile(
+                capability_id="synthetic.engine.only",
+                executor_kind="model",
+                verifier_id="core.nonempty",
+            )
         )
         self.assertEqual(tuple(item.as_dict() for item in catalog()), before)
         self.assertIsNone(lookup("synthetic.engine.only"))
         self.assertIsNone(lookup("mcp.n8n.execute_workflow"))
-        self.assertEqual(registry.get("synthetic.engine.only").id, "synthetic.engine.only")
+        self.assertEqual(
+            inventory.get("synthetic.engine.only").capability_id,
+            "synthetic.engine.only",
+        )
 
     def test_work_accept_uses_catalog_not_engine_registration(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -251,10 +254,10 @@ class CapabilityArchitectureTests(unittest.TestCase):
     def test_catalog_meaning_wins_when_engine_registers_the_same_id(self) -> None:
         meaning = lookup("reasoning.general")
         self.assertIsNotNone(meaning)
-        registry = CapabilityRegistry()
-        register_intelligence_capabilities(registry)
+        inventory = DeploymentInventory()
+        register_intelligence_capabilities(inventory)
         self.assertEqual(lookup("reasoning.general"), meaning)
-        self.assertEqual(registry.get("reasoning.general").definition, meaning)
+        self.assertEqual(inventory.get("reasoning.general").capability_id, meaning.id)
 
     def test_production_modules_do_not_construct_capability_definitions(self) -> None:
         root = Path(__file__).resolve().parents[1] / "atlas_core"
@@ -268,14 +271,23 @@ class CapabilityArchitectureTests(unittest.TestCase):
                 offenders.append(str(path.relative_to(root.parent)))
         self.assertEqual(offenders, [])
 
-    def test_bootstrap_registers_only_catalog_definitions(self) -> None:
+    def test_work_inventory_registers_only_catalog_definitions(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        runtime = build_runtime(db_path=Path(tmp.name) / "atlas.db")
-        for item in runtime.capabilities.registrations():
-            meaning = lookup(item.id)
-            self.assertIsNotNone(meaning, item.id)
-            self.assertEqual(item.definition, meaning)
+        db = Path(tmp.name) / "atlas.db"
+        inventory = DeploymentInventory()
+        verifiers = VerifierRegistry()
+        register_intelligence_capabilities(inventory)
+        register_morning_workflow(inventory, verifiers, store=None)
+        knowledge = KnowledgeStore(db)
+        knowledge.initialize()
+        register_knowledge_capabilities(
+            inventory, verifiers, store=None, knowledge_store=knowledge
+        )
+        for profile in inventory.all():
+            meaning = lookup(profile.capability_id)
+            self.assertIsNotNone(meaning, profile.capability_id)
+            self.assertEqual(meaning.id, profile.capability_id)
 
     def test_chat_and_advanced_projections_do_not_expand_with_engine_ids(self) -> None:
         self.assertEqual(

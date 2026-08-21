@@ -6,7 +6,7 @@ import unittest
 from atlas_core.advanced import TaskBrief
 from atlas_core.capabilities import CapabilityBinding, CapabilityOutcome
 from atlas_core.runtime_types import RuntimeBudget
-from atlas_core.tasks.store_common import _payload_hash
+from atlas_core.work.store_common import _payload_hash
 from atlas_core.tools import ToolDescriptor, ToolGateway, ToolResult
 from atlas_core.work import (
     CapabilityExecutionProfile,

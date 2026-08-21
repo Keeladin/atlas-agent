@@ -100,7 +100,7 @@ class ManifestItem:
 @dataclass(frozen=True)
 class ContextManifest:
     manifest_id: str
-    task_id: str
+    work_id: str
     step_id: str
     execution_id: str
     capability_id: str
@@ -119,7 +119,7 @@ class ContextManifest:
     def as_dict(self) -> dict[str, Any]:
         return {
             "manifest_id": self.manifest_id,
-            "task_id": self.task_id,
+            "work_id": self.work_id,
             "step_id": self.step_id,
             "execution_id": self.execution_id,
             "capability_id": self.capability_id,
@@ -150,16 +150,16 @@ class ContextPack:
 
 
 class WorkPersistence(Protocol):
-    """Durable Work/task store surface used by context assembly."""
+    """Durable Work store surface used by context assembly."""
 
-    def get_task(self, task_id: str) -> Any: ...
+    def get_work(self, work_id: str) -> Any: ...
     def get_step(self, step_id: str) -> Any: ...
-    def list_steps(self, task_id: str) -> Any: ...
-    def list_criteria(self, task_id: str) -> Any: ...
+    def list_steps(self, work_id: str) -> Any: ...
+    def list_criteria(self, work_id: str) -> Any: ...
     def get_artifact(self, artifact_id: str) -> Any: ...
-    def list_claims(self, task_id: str) -> Any: ...
-    def list_executions(self, task_id: str, *, step_id: str | None = None) -> Any: ...
-    def list_approvals(self, task_id: str, status: str | None = None) -> Any: ...
+    def list_claims(self, work_id: str) -> Any: ...
+    def list_executions(self, work_id: str, *, step_id: str | None = None) -> Any: ...
+    def list_approvals(self, work_id: str, status: str | None = None) -> Any: ...
 
 
 class ContextBuilder:
@@ -177,7 +177,7 @@ class ContextBuilder:
 
     def build(
         self,
-        task_id: str,
+        work_id: str,
         step_id: str,
         *,
         artifact_ids: tuple[str, ...],
@@ -227,10 +227,10 @@ class ContextBuilder:
             exec_budget_chars = exec_profile.budget.max_context_chars
         if profile not in CONTEXT_PROFILES:
             raise ValueError(f"Unknown context profile: {profile}")
-        task = self.store.get_task(task_id)
+        task = self.store.get_work(work_id)
         step = self.store.get_step(step_id)
-        if step.task_id != task_id:
-            raise ValueError("Step does not belong to task.")
+        if step.work_id != work_id:
+            raise ValueError("Step does not belong to work.")
         deliverable = infer_deliverable(task.objective, task.success_criteria)
         capability_profile = profile
         if profile not in _PROTECTED_PROFILES and not step.metadata.get("internal_planning"):
@@ -258,7 +258,7 @@ class ContextBuilder:
         token_accounting = {key: 0 for key in bucket_ids}
         payload: dict[str, Any] = {
             "system": {},
-            "task": {},
+            "work": {},
             "step": {},
             "capability_contract": capability_contract,
             "invocation_input": {},
@@ -293,7 +293,7 @@ class ContextBuilder:
         payload["system"] = system_value
         include("system", "system:profile", "system", "bounded capability system layer", system_value)
 
-        criteria = [asdict(item) for item in self.store.list_criteria(task_id)]
+        criteria = [asdict(item) for item in self.store.list_criteria(work_id)]
         task_anchor = {
             "id": task.id,
             "objective": task.objective,
@@ -302,8 +302,8 @@ class ContextBuilder:
             "authority_scope": task.authority_scope,
             "status": task.status,
         }
-        payload["task"] = task_anchor
-        include("anchors", "task:objective", "anchor", "mandatory task objective and success criteria", task_anchor)
+        payload["work"] = task_anchor
+        include("anchors", "work:objective", "anchor", "mandatory work objective and success criteria", task_anchor)
         payload["deliverable_contract"] = deliverable.as_dict()
         include(
             "anchors",
@@ -334,10 +334,10 @@ class ContextBuilder:
             include("anchors", "rework:failure", "failure_context", "previous verification/execution failure for bounded rework", failure_value)
 
         recent: list[dict[str, Any]] = []
-        for candidate_step in reversed(self.store.list_steps(task_id)):
+        for candidate_step in reversed(self.store.list_steps(work_id)):
             if candidate_step.id == step_id or candidate_step.status != "pass":
                 continue
-            executions = self.store.list_executions(task_id, step_id=candidate_step.id)
+            executions = self.store.list_executions(work_id, step_id=candidate_step.id)
             passed = [item for item in executions if item.status == "pass"]
             if not passed:
                 continue
@@ -362,7 +362,7 @@ class ContextBuilder:
         direct_payloads = []
         for artifact_id in required_artifact_ids:
             artifact = self.store.get_artifact(artifact_id)
-            if artifact.task_id != task_id:
+            if artifact.work_id != work_id:
                 raise ValueError("Required context artifact belongs to another task.")
             direct_payloads.append(artifact.payload)
         schema = registration.profile.input_schema if registration is not None else None
@@ -373,7 +373,7 @@ class ContextBuilder:
         else:
             payload["invocation_input"] = {}
         claims = []
-        for claim in self.store.list_claims(task_id):
+        for claim in self.store.list_claims(work_id):
             if selected_artifact_set.intersection(claim.evidence_artifact_ids):
                 claims.append(asdict(claim))
         claims = claims[-max(1, policy.max_recent_steps * 2):]
@@ -384,7 +384,7 @@ class ContextBuilder:
         artifact_count = 0
         for ordinal, artifact_id in enumerate(dict.fromkeys(artifact_ids)):
             artifact = self.store.get_artifact(artifact_id)
-            if artifact.task_id != task_id:
+            if artifact.work_id != work_id:
                 raise ValueError("Context artifact belongs to another task.")
             metadata_view = {
                 "id": artifact.id,
@@ -467,8 +467,8 @@ class ContextBuilder:
             )
 
         supported_must_include = {
-            "task.objective",
-            "task.success_criteria",
+            "work.objective",
+            "work.success_criteria",
             "step.description",
             "capability.contract",
         }
@@ -482,7 +482,7 @@ class ContextBuilder:
         chars = len(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         manifest = ContextManifest(
             manifest_id=f"context_{uuid4().hex}",
-            task_id=task_id,
+            work_id=work_id,
             step_id=step_id,
             execution_id=execution_id,
             capability_id=capability_id,

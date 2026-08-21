@@ -48,8 +48,8 @@ class ContextPolicy:
     per_item_token_cap: int = 1_200
     allow_full_artifact: bool = True
     must_include: tuple[str, ...] = (
-        "task.objective",
-        "task.success_criteria",
+        "work.objective",
+        "work.success_criteria",
         "step.description",
     )
     must_exclude: tuple[str, ...] = ("full_history", "unrelated_tasks")
@@ -133,7 +133,7 @@ class ToolSurface(Protocol):
 
 @dataclass(frozen=True)
 class CapabilityRequest:
-    task_id: str
+    work_id: str
     step_id: str
     capability_id: str
     context: dict[str, Any]
@@ -143,7 +143,6 @@ class CapabilityRequest:
     direct_input_artifact_ids: tuple[str, ...] = ()
     dependency_artifact_ids: tuple[str, ...] = ()
     idempotency_key: str | None = None
-    work_id: str | None = None
     surface: ToolSurface | None = None
 
 

@@ -9,7 +9,7 @@ from typing import Any
 @dataclass(frozen=True)
 class RuntimeEvent:
     name: str
-    task_id: str
+    work_id: str
     step_id: str | None = None
     execution_id: str | None = None
     payload: dict[str, Any] | None = None
@@ -28,7 +28,7 @@ EventHandler = Callable[[RuntimeEvent], None]
 class EventBus:
     """Small in-process fan-out bus for non-authoritative observers.
 
-    Durable event truth is written by TaskStore before fan-out. Observer bugs
+    Durable event truth is written by WorkStore before fan-out. Observer bugs
     must never become orchestration failures, so handler exceptions are isolated
     and retained for diagnostics.
     """

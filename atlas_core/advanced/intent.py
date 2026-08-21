@@ -10,6 +10,7 @@ _FENCED_JSON_RE = re.compile(r"```(?:json|JSON)?\s*\r?\n?(.*?)```", re.DOTALL)
 _FORBIDDEN_BRIEF_KEYS = frozenset(
     {
         "task_id",
+        "work_id",
         "step_id",
         "execution_id",
         "tool_name",

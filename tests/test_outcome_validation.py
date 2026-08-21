@@ -12,7 +12,7 @@ from atlas_core.deliverable import (
     infer_deliverable,
     infer_presentation_profile,
 )
-from atlas_core.tasks import TaskStore
+from atlas_core.work import WorkStore
 from atlas_core.verification import CompletionVerifier, VerifierRegistry
 
 
@@ -40,7 +40,7 @@ through his fingers. He climbed out muddy and thirsty and went home to make soup
 class OutcomeValidationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.store = TaskStore(Path(self.tmp.name) / "atlas.db")
+        self.store = WorkStore(Path(self.tmp.name) / "atlas.db")
         self.store.initialize()
 
     def tearDown(self):
@@ -67,12 +67,12 @@ class OutcomeValidationTests(unittest.TestCase):
         self.assertEqual(classify_output(STORY_ARTIFACT), "narrative")
 
     def test_context_for_a_story_does_not_use_the_research_profile(self):
-        task = self.store.create_task(
+        work = self.store.create_work(
             objective="Write a short story about a magic pond",
             success_criteria=("make it believable",),
         )
         step = self.store.add_step(
-            task.id,
+            work.id,
             description="Write the story",
             capability="reasoning.general",
         )
@@ -84,7 +84,7 @@ class OutcomeValidationTests(unittest.TestCase):
             verifier_id="core.nonempty",
         )
         pack = ContextBuilder(self.store).build(
-            task.id,
+            work.id,
             step.id,
             artifact_ids=(),
             registration=spec,
@@ -98,12 +98,12 @@ class OutcomeValidationTests(unittest.TestCase):
         self.assertEqual(pack.payload["presentation_profile"], "compose")
 
     def test_factual_question_does_not_use_the_research_profile(self):
-        task = self.store.create_task(
+        work = self.store.create_work(
             objective="what is the golden ratio",
             success_criteria=("Produce a truthful answer.",),
         )
         step = self.store.add_step(
-            task.id,
+            work.id,
             description="Answer the question",
             capability="reasoning.general",
         )
@@ -115,13 +115,13 @@ class OutcomeValidationTests(unittest.TestCase):
             verifier_id="core.nonempty",
         )
         pack = ContextBuilder(self.store).build(
-            task.id,
+            work.id,
             step.id,
             artifact_ids=(),
             registration=spec,
         )
-        self.assertEqual(infer_deliverable(task.objective, task.success_criteria).kind, "answer")
-        self.assertEqual(infer_presentation_profile(task.objective, task.success_criteria), "answer")
+        self.assertEqual(infer_deliverable(work.objective, work.success_criteria).kind, "answer")
+        self.assertEqual(infer_presentation_profile(work.objective, work.success_criteria), "answer")
         self.assertEqual(pack.payload["deliverable_contract"]["kind"], "answer")
         self.assertEqual(pack.payload["capability_profile"], "research")
         self.assertEqual(pack.payload["presentation_profile"], "answer")
@@ -130,12 +130,12 @@ class OutcomeValidationTests(unittest.TestCase):
         self.assertNotIn("Investigate before concluding", pack.payload["context_profile"]["instruction"])
         self.assertNotIn("Separate evidence, uncertainty and inference", pack.payload["context_profile"]["instruction"])
         ok, _, produced = check_deliverable(
-            infer_deliverable(task.objective, task.success_criteria),
+            infer_deliverable(work.objective, work.success_criteria),
             "The golden ratio is (1 + sqrt(5)) / 2, about 1.618.",
         )
         self.assertTrue(ok)
         self.assertEqual(produced, "prose")
-        self.assertFalse(check_deliverable(infer_deliverable(task.objective), ANALYSIS_ARTIFACT)[0])
+        self.assertFalse(check_deliverable(infer_deliverable(work.objective), ANALYSIS_ARTIFACT)[0])
 
     def test_presentation_profile_follows_intent_not_capability(self):
         self.assertEqual(infer_presentation_profile("hello"), "conversational")
@@ -161,17 +161,17 @@ class OutcomeValidationTests(unittest.TestCase):
         self.assertEqual(infer_deliverable("Implement a function to parse JSON").kind, "code")
 
     def test_completion_rejects_accepted_analysis_evidence_for_a_story(self):
-        task = self.store.create_task(
+        work = self.store.create_work(
             objective="Tell me a short story about a magic pond",
             success_criteria=("make it believable",),
         )
         step = self.store.add_step(
-            task.id,
+            work.id,
             description="Write the story",
             capability="reasoning.general",
         )
         artifact = self.store.put_artifact(
-            task.id,
+            work.id,
             step_id=step.id,
             kind="capability_result",
             payload=ANALYSIS_ARTIFACT,
@@ -179,11 +179,11 @@ class OutcomeValidationTests(unittest.TestCase):
         self.store.set_step_status(step.id, "running")
         self.store.set_step_status(step.id, "pass")
         self.store.set_criterion_status(
-            self.store.list_criteria(task.id)[0].id,
+            self.store.list_criteria(work.id)[0].id,
             "accepted",
             evidence_artifact_ids=(artifact.id,),
         )
-        decision = CompletionVerifier(self.store).evaluate(task.id)
+        decision = CompletionVerifier(self.store).evaluate(work.id)
         self.assertFalse(decision.complete)
         self.assertEqual(decision.status, "failed")
         self.assertTrue(any("deliverable" in reason for reason in decision.reasons))

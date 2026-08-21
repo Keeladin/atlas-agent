@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from atlas_core.work.records import StepRecord, WorkState
 
 from atlas_core.capabilities.execution import CapabilityExecutionProfile
 from atlas_core.deliverable import (
@@ -13,7 +16,6 @@ from atlas_core.deliverable import (
     infer_deliverable,
     output_text,
 )
-from atlas_core.tasks.models import StepRecord, TaskRecord
 from atlas_core.context import WorkPersistence
 
 
@@ -144,12 +146,12 @@ class OutcomeGate:
         profile: CapabilityExecutionProfile,
         output: Any,
         context: dict[str, Any],
-        step: StepRecord,
-        task: TaskRecord,
+        step: "StepRecord",
+        work: "WorkState",
     ) -> VerificationResult:
         if not step_claims_user_criteria(step, profile):
-            return VerificationResult("pass", "step does not claim task success criteria")
-        contract = infer_deliverable(task.objective, task.success_criteria)
+            return VerificationResult("pass", "step does not claim work success criteria")
+        contract = infer_deliverable(work.objective, work.success_criteria)
         ok, summary, produced = check_deliverable(contract, output)
         details = {
             "contract": contract.as_dict(),
@@ -163,10 +165,10 @@ class OutcomeGate:
             and profile.executor_kind == "model"
             and (
                 contract.requires_semantic_check
-                or has_quality_criteria(task.success_criteria)
+                or has_quality_criteria(work.success_criteria)
             )
         ):
-            semantic = self.semantic.verify(profile, output, context, contract=contract, task=task)
+            semantic = self.semantic.verify(profile, output, context, contract=contract, work=work)
             details["semantic"] = {
                 "status": semantic.status,
                 "summary": semantic.summary,
@@ -175,7 +177,7 @@ class OutcomeGate:
             if semantic.status in {"rework", "fail"}:
                 details["layer"] = "semantic"
                 return VerificationResult(semantic.status, semantic.summary, details)
-            if semantic.status == "abstain" and has_quality_criteria(task.success_criteria):
+            if semantic.status == "abstain" and has_quality_criteria(work.success_criteria):
                 details["layer"] = "semantic"
                 return VerificationResult("abstain", semantic.summary, details)
             if semantic.status == "pass":
@@ -207,13 +209,13 @@ class SemanticOutcomeVerifier:
         context: dict[str, Any],
         *,
         contract: Any,
-        task: TaskRecord,
+        work: "WorkState",
     ) -> VerificationResult:
         from atlas_core.providers import ModelRequest, ModelRoutingError
 
         payload = {
-            "objective": task.objective,
-            "success_criteria": list(task.success_criteria),
+            "objective": work.objective,
+            "success_criteria": list(work.success_criteria),
             "deliverable_contract": contract.as_dict(),
             "artifact": output_text(output)[:8_000],
         }
@@ -233,7 +235,7 @@ class SemanticOutcomeVerifier:
                     max_output_chars=min(2_000, spec.budget.max_output_chars or 2_000),
                     metadata={
                         "purpose": "outcome_verification",
-                        "task_id": task.id,
+                        "work_id": work.id,
                     },
                 )
             )
@@ -298,19 +300,19 @@ def _parse_outcome_verdict(text: str) -> dict[str, Any] | None:
 
 
 class CompletionVerifier:
-    """Task completion gate independent from any model's claim of completion."""
+    """Work completion gate independent from any model's claim of completion."""
 
     def __init__(self, store: WorkPersistence) -> None:
         self.store = store
 
-    def evaluate(self, task_id: str) -> CompletionDecision:
+    def evaluate(self, work_id: str) -> CompletionDecision:
         reasons: list[str] = []
-        task = self.store.get_task(task_id)
-        steps = self.store.list_steps(task_id)
-        criteria = self.store.list_criteria(task_id)
-        pending_approvals = self.store.list_approvals(task_id, status="pending")
+        work = self.store.get_work(work_id)
+        steps = self.store.list_steps(work_id)
+        criteria = self.store.list_criteria(work_id)
+        pending_approvals = self.store.list_approvals(work_id, status="pending")
         if not steps:
-            reasons.append("task has no executable steps")
+            reasons.append("work has no executable steps")
         nonterminal_steps = [step.id for step in steps if step.status not in {"pass", "skipped"}]
         if nonterminal_steps:
             reasons.append(f"steps not accepted: {nonterminal_steps}")
@@ -324,17 +326,17 @@ class CompletionVerifier:
             reasons.append(f"pending approvals: {[item.id for item in pending_approvals]}")
         if reasons:
             return CompletionDecision(False, "incomplete", tuple(reasons))
-        mismatch = self._deliverable_mismatch(task)
+        mismatch = self._deliverable_mismatch(work)
         if mismatch:
             return CompletionDecision(False, "failed", (mismatch,))
         return CompletionDecision(True, "complete", ())
 
-    def _deliverable_mismatch(self, task: TaskRecord) -> str | None:
-        contract = infer_deliverable(task.objective, task.success_criteria)
+    def _deliverable_mismatch(self, work: "WorkState") -> str | None:
+        contract = infer_deliverable(work.objective, work.success_criteria)
         if not contract.is_user_facing:
             return None
         evidence_ids: list[str] = []
-        for criterion in self.store.list_criteria(task.id):
+        for criterion in self.store.list_criteria(work.id):
             if criterion.status == "accepted":
                 evidence_ids.extend(criterion.evidence_artifact_ids)
         payloads: list[Any] = []

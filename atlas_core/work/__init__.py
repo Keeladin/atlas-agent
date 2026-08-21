@@ -9,7 +9,7 @@ from .resolve import (
     ResolvedCapability,
     ResolvedWork,
 )
-from .store import WorkStore
+from .store import InvalidTransitionError, UnknownRecordError, WorkStore, WorkStoreError
 from .surface import ExecutionSurface, SurfaceError, project_surface
 from .runtime import WorkRuntime, build_work_runtime
 from .work import UNAVAILABLE, WorkError, WorkId, WorkRecord
@@ -33,6 +33,9 @@ __all__ = [
     "WorkRecord",
     "WorkRuntime",
     "WorkStore",
+    "WorkStoreError",
+    "InvalidTransitionError",
+    "UnknownRecordError",
     "build_work_runtime",
     "compile_contract",
     "project_surface",

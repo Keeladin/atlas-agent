@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-TASK_STATUSES = (
+WORK_STATUSES = (
     "planned",
     "active",
     "waiting",
@@ -42,7 +42,9 @@ APPROVAL_STATUSES = ("pending", "approved", "denied", "cancelled")
 
 
 @dataclass(frozen=True)
-class TaskRecord:
+class WorkState:
+    """Durable Work row. Distinct from the composition-boundary WorkRecord."""
+
     id: str
     objective: str
     success_criteria: tuple[str, ...]
@@ -57,7 +59,7 @@ class TaskRecord:
 @dataclass(frozen=True)
 class CriterionRecord:
     id: str
-    task_id: str
+    work_id: str
     ordinal: int
     text: str
     status: str
@@ -69,7 +71,7 @@ class CriterionRecord:
 @dataclass(frozen=True)
 class StepRecord:
     id: str
-    task_id: str
+    work_id: str
     ordinal: int
     description: str
     capability: str | None
@@ -85,7 +87,7 @@ class StepRecord:
 @dataclass(frozen=True)
 class ArtifactRecord:
     id: str
-    task_id: str
+    work_id: str
     step_id: str | None
     kind: str
     payload: Any
@@ -97,7 +99,7 @@ class ArtifactRecord:
 @dataclass(frozen=True)
 class ExecutionRecord:
     id: str
-    task_id: str
+    work_id: str
     step_id: str
     capability: str
     capability_version: str
@@ -117,7 +119,7 @@ class ExecutionRecord:
 @dataclass(frozen=True)
 class ContextManifestRecord:
     id: str
-    task_id: str
+    work_id: str
     step_id: str
     execution_id: str
     capability: str
@@ -133,7 +135,7 @@ class ContextManifestRecord:
 @dataclass(frozen=True)
 class CheckpointRecord:
     id: str
-    task_id: str
+    work_id: str
     reason: str
     snapshot: dict[str, Any]
     created_at: str
@@ -142,7 +144,7 @@ class CheckpointRecord:
 @dataclass(frozen=True)
 class ClaimRecord:
     id: str
-    task_id: str
+    work_id: str
     step_id: str | None
     kind: str
     subject: str
@@ -155,7 +157,7 @@ class ClaimRecord:
 @dataclass(frozen=True)
 class ApprovalRecord:
     id: str
-    task_id: str
+    work_id: str
     step_id: str | None
     required_authority: str
     requested_action: str
@@ -168,7 +170,7 @@ class ApprovalRecord:
 @dataclass(frozen=True)
 class EventRecord:
     id: int
-    task_id: str
+    work_id: str
     step_id: str | None
     execution_id: str | None
     name: str

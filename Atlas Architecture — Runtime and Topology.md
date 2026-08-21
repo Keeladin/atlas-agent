@@ -85,7 +85,7 @@ flowchart TB
     end
 
     subgraph STATE[Durable State]
-        TS[(SQLite Task Store\ntasks • steps • executions\nartifacts • claims • approvals\ncheckpoints • events)]
+        TS[(SQLite Work Store\nwork • steps • executions\nartifacts • claims • approvals\ncheckpoints • events)]
         KM[(Knowledge Store\nSQLite / FTS5)]
         PS[(Provider Eval Scores)]
         CM[(Context Manifests)]
@@ -133,7 +133,7 @@ flowchart TB
 
 ## 4. Durable object model
 
-### Task
+### Work
 
 The durable owner of meaningful work:
 

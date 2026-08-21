@@ -228,7 +228,7 @@ class N8NMCPProviderTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         runtime = build_work_runtime(db_path=Path(tmp.name) / "atlas.db")
-        task = runtime.store.create_task(
+        task = runtime.store.create_work(
             objective="Prove Atlas still starts",
             success_criteria=("The task exists",),
             authority_scope="read",

@@ -7,7 +7,7 @@ from pathlib import Path
 from atlas_core.advanced.brief import TaskBrief
 from atlas_core.integrations import register_morning_workflow
 from atlas_core.knowledge import KnowledgeStore, register_knowledge_capabilities, source_content_sha256
-from atlas_core.presentation import TaskPresenter
+from atlas_core.presentation import WorkPresenter
 from atlas_core.verification import VerifierRegistry
 from atlas_core.work import DeploymentInventory, build_work_runtime
 
@@ -50,8 +50,8 @@ def _parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="Show one work snapshot")
     status.add_argument("work_id")
     status.add_argument("--payloads", action="store_true")
-    tasks = sub.add_parser("tasks", help="List durable work items")
-    tasks.add_argument("--status")
+    work = sub.add_parser("work", help="List durable work items")
+    work.add_argument("--status")
     return parser
 
 
@@ -59,7 +59,7 @@ def _print_result(result) -> None:
     print(
         json.dumps(
             {
-                "task_id": result.task_id,
+                "work_id": result.work_id,
                 "status": result.status,
                 "cycles": result.cycles,
                 "executions": result.executions,
@@ -137,7 +137,7 @@ def main() -> None:
             inputs={"knowledge.search": {"query": args.query, "limit": args.limit}},
         )
         _print_result(runtime.run(work_id))
-        print(TaskPresenter(runtime.store).build(work_id).render_markdown())
+        print(WorkPresenter(runtime.store).build(work_id).render_markdown())
         return
     if args.command == "morning":
         runtime = _work_runtime(args.db)
@@ -176,16 +176,16 @@ def main() -> None:
     runtime = _work_runtime(args.db)
     store = runtime.store
     if args.command == "result":
-        print(TaskPresenter(store).build(args.work_id).render_markdown())
+        print(WorkPresenter(store).build(args.work_id).render_markdown())
         return
     if args.command == "cancel":
-        task = store.set_task_status(args.work_id, "cancelled")
-        store.create_checkpoint(task.id, reason="work cancelled from CLI")
-        print(f"{task.id}\t{task.status}")
+        item = store.set_work_status(args.work_id, "cancelled")
+        store.create_checkpoint(item.id, reason="work cancelled from CLI")
+        print(f"{item.id}\t{item.status}")
         return
-    if args.command == "tasks":
-        for task in store.list_tasks(status=args.status):
-            print(f"{task.id}\t{task.status}\t{task.objective}")
+    if args.command == "work":
+        for item in store.list_work(status=args.status):
+            print(f"{item.id}\t{item.status}\t{item.objective}")
         return
     if args.command == "status":
         print(
@@ -203,7 +203,7 @@ def main() -> None:
             json.dumps(
                 {
                     "approval_id": approval.id,
-                    "task_id": approval.task_id,
+                    "work_id": approval.work_id,
                     "step_id": approval.step_id,
                     "status": approval.status,
                 },
@@ -218,7 +218,7 @@ def main() -> None:
             json.dumps(
                 {
                     "approval_id": approval.id,
-                    "task_id": approval.task_id,
+                    "work_id": approval.work_id,
                     "step_id": approval.step_id,
                     "status": approval.status,
                 },
@@ -232,7 +232,7 @@ def main() -> None:
         print(
             json.dumps(
                 {
-                    "task_id": result.task_id,
+                    "work_id": result.work_id,
                     "status": result.status,
                     "recovered": result.recovered,
                     "failed_closed": result.failed_closed,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from atlas_core.context import ContextBuilder
 from atlas_core.events import EventBus
 from atlas_core.runtime_types import RecoveryResult, RuntimeResult
-from atlas_core.tasks import TaskStore
+from .store import WorkStore
 from atlas_core.tools import ToolGateway
 from atlas_core.verification import CompletionVerifier, OutcomeGate, VerifierRegistry
 
@@ -26,7 +26,7 @@ class WorkEngine(WorkLifecycleMixin, WorkExecutionMixin, WorkFinishMixin):
     def __init__(
         self,
         *,
-        store: TaskStore,
+        store: WorkStore,
         tools: ToolGateway,
         verifiers: VerifierRegistry | None = None,
         event_bus: EventBus | None = None,

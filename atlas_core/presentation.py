@@ -4,34 +4,34 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from atlas_core.tasks import TaskStore
+from atlas_core.work.store import WorkStore
 
 
-def task_failure_reason(store: TaskStore, task_id: str) -> str | None:
-    """Human-facing reason for a failed task, or None if the task is not failed."""
-    task = store.get_task(task_id)
-    if task.status != "failed":
+def work_failure_reason(store: WorkStore, work_id: str) -> str | None:
+    """Human-facing reason for failed work, or None if the work is not failed."""
+    work = store.get_work(work_id)
+    if work.status != "failed":
         return None
-    for item in reversed(store.list_executions(task_id)):
+    for item in reversed(store.list_executions(work_id)):
         if item.status in {"fail", "blocked", "abstain", "rework"}:
             if item.error:
                 return item.error
             return f"{item.capability} ended in {item.status}"
-    for event in reversed(store.list_events(task_id)):
-        if event.name == "task.failed":
+    for event in reversed(store.list_events(work_id)):
+        if event.name == "work.failed":
             reason = (event.payload or {}).get("reason")
             if reason:
                 return str(reason)
-    failed_steps = [step for step in store.list_steps(task_id) if step.status == "failed"]
+    failed_steps = [step for step in store.list_steps(work_id) if step.status == "failed"]
     if failed_steps:
         step = failed_steps[-1]
         return f"Step {step.ordinal} ({step.capability}) failed."
-    return "Task failed without a recorded execution error."
+    return "Work failed without a recorded execution error."
 
 
 @dataclass(frozen=True)
-class TaskPresentation:
-    task_id: str
+class WorkPresentation:
+    work_id: str
     status: str
     objective: str
     criteria: tuple[dict[str, Any], ...]
@@ -43,7 +43,7 @@ class TaskPresentation:
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "task_id": self.task_id,
+            "work_id": self.work_id,
             "status": self.status,
             "objective": self.objective,
             "criteria": list(self.criteria),
@@ -56,7 +56,7 @@ class TaskPresentation:
 
     def render_markdown(self) -> str:
         lines = [
-            f"# Atlas task {self.task_id}",
+            f"# Atlas work {self.work_id}",
             "",
             f"**Status:** {self.status}",
         ]
@@ -154,7 +154,7 @@ def _format_claim_value(kind: str, value: Any) -> str:
     return _preview(value)
 
 
-class TaskPresenter:
+class WorkPresenter:
     """Deterministic user-facing projection of durable runtime truth."""
 
     _INTERNAL_KINDS = {
@@ -167,11 +167,11 @@ class TaskPresenter:
         "knowledge_search_request",
     }
 
-    def __init__(self, store: TaskStore) -> None:
+    def __init__(self, store: WorkStore) -> None:
         self.store = store
 
-    def build(self, task_id: str) -> TaskPresentation:
-        task = self.store.get_task(task_id)
+    def build(self, work_id: str) -> WorkPresentation:
+        work = self.store.get_work(work_id)
         criteria = tuple(
             {
                 "ordinal": item.ordinal,
@@ -180,22 +180,22 @@ class TaskPresenter:
                 "evidence_artifact_ids": list(item.evidence_artifact_ids),
                 "note": item.note,
             }
-            for item in self.store.list_criteria(task_id)
+            for item in self.store.list_criteria(work_id)
         )
         accepted_evidence = {
             artifact_id
-            for criterion in self.store.list_criteria(task_id)
+            for criterion in self.store.list_criteria(work_id)
             if criterion.status == "accepted"
             for artifact_id in criterion.evidence_artifact_ids
         }
         outputs = []
-        for artifact in self.store.list_artifacts(task_id):
+        for artifact in self.store.list_artifacts(work_id):
             if artifact.kind in self._INTERNAL_KINDS:
                 continue
-            if task.status == "completed" and accepted_evidence and artifact.id not in accepted_evidence:
+            if work.status == "completed" and accepted_evidence and artifact.id not in accepted_evidence:
                 # Completed presentations privilege criterion-backed outputs.
                 continue
-            if artifact.kind == "capability_result" and task.status != "completed":
+            if artifact.kind == "capability_result" and work.status != "completed":
                 continue
             if artifact.kind == "knowledge_search_results":
                 preview = _format_search_results(artifact.payload)
@@ -224,7 +224,7 @@ class TaskPresenter:
                 "evidence_artifact_ids": list(item.evidence_artifact_ids),
                 "confidence": item.confidence,
             }
-            for item in self.store.list_claims(task_id)
+            for item in self.store.list_claims(work_id)
         )
         approvals = tuple(
             {
@@ -233,7 +233,7 @@ class TaskPresenter:
                 "required_authority": item.required_authority,
                 "requested_action": item.requested_action,
             }
-            for item in self.store.list_approvals(task_id, status="pending")
+            for item in self.store.list_approvals(work_id, status="pending")
         )
         failures = tuple(
             {
@@ -244,17 +244,17 @@ class TaskPresenter:
                 "status": item.status,
                 "error": item.error,
             }
-            for item in self.store.list_executions(task_id)
+            for item in self.store.list_executions(work_id)
             if item.status in {"fail", "blocked", "abstain", "rework"}
         )
-        return TaskPresentation(
-            task_id=task.id,
-            status=task.status,
-            objective=task.objective,
+        return WorkPresentation(
+            work_id=work.id,
+            status=work.status,
+            objective=work.objective,
             criteria=criteria,
             outputs=tuple(outputs),
             claims=claims,
             pending_approvals=approvals,
             failures=failures,
-            failure_reason=task_failure_reason(self.store, task_id),
+            failure_reason=work_failure_reason(self.store, work_id),
         )

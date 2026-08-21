@@ -20,7 +20,7 @@ from atlas_core.capabilities.contracts import (
 )
 from atlas_core.capabilities.definition import CapabilityDefinition, lookup, require
 from atlas_core.runtime_types import RuntimeBudget
-from atlas_core.tasks.store_common import _new_id, _payload_hash
+from .store_common import _new_id, _payload_hash
 from atlas_core.tools import ToolGateway
 
 from .inventory import DeploymentInventory

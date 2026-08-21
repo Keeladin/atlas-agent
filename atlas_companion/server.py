@@ -32,7 +32,7 @@ from atlas_core.knowledge import (
     KnowledgeStore,
     source_content_sha256,
 )
-from atlas_core.tasks import InvalidTransitionError, TaskStoreError, UnknownRecordError
+
 
 
 class ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
@@ -492,7 +492,7 @@ class CompanionApp:
             if method == "GET":
                 return self._static(start_response, path)
             return self._json(start_response, HTTPStatus.NOT_FOUND, {"error": "not found"})
-        except (ValueError, TaskStoreError, UnknownRecordError, InvalidTransitionError, CloudProviderError, LocalModelError, CompanionDisconnectedError) as exc:
+        except (ValueError, CloudProviderError, LocalModelError, CompanionDisconnectedError) as exc:
             return self._json(start_response, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
     def _cloud_action(self, method: str, path: str, environ) -> dict[str, Any]:

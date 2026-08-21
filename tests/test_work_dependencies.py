@@ -28,6 +28,7 @@ WORK_FORBIDDEN = (
     "N8NMCPProvider",
     "n8n",
     "TaskRuntime",
+    "TaskStore",
     "CapabilityRegistry",
     "TaskPlanner",
     "RuntimeFrame",

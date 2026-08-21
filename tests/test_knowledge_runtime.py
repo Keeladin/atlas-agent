@@ -18,7 +18,7 @@ from atlas_core.knowledge import (
     source_content_sha256,
 )
 from atlas_core.knowledge.capabilities import _search_verifier
-from atlas_core.presentation import TaskPresenter
+from atlas_core.presentation import WorkPresenter
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -79,7 +79,7 @@ class KnowledgeRuntimeTests(unittest.TestCase):
             for artifact in runtime.store.list_artifacts(work_id)
             if artifact.kind != "task_brief" and artifact.kind.endswith("_request")
         )
-        return runtime.store.get_task(work_id), request, result
+        return runtime.store.get_work(work_id), request, result
 
     def _search(self, runtime, query: str, *, limit: int = 5):
         work_id = runtime.accept(
@@ -93,7 +93,7 @@ class KnowledgeRuntimeTests(unittest.TestCase):
             inputs={"knowledge.search": {"query": query, "limit": limit}},
         )
         result = runtime.run(work_id)
-        return runtime.store.get_task(work_id), result
+        return runtime.store.get_work(work_id), result
 
     def _assert_control_context(self, runtime, task_id: str, *, max_source_tokens: int) -> None:
         manifests = runtime.store.list_context_manifests(task_id)
@@ -203,7 +203,7 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         self.assertTrue(hits[0].payload["results"])
         self.assertIn("ContextBuilder", hits[0].payload["results"][0]["text"])
         self.assertEqual(request.payload["source_path"], str(README_PATH.resolve()))
-        presentation = TaskPresenter(runtime.store).build(search_task.id)
+        presentation = WorkPresenter(runtime.store).build(search_task.id)
         markdown = presentation.render_markdown()
         self.assertIn("## Retrieved sources", markdown)
         self.assertNotIn('"results":', markdown)
@@ -241,7 +241,7 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         ]
         self.assertTrue(answers)
         self.assertIn("From retrieved sources", answers[0].payload)
-        answer_md = TaskPresenter(runtime.store).build(answer_id).render_markdown()
+        answer_md = WorkPresenter(runtime.store).build(answer_id).render_markdown()
         self.assertNotIn('"results":', answer_md)
 
     def test_path_ingest_indexes_large_synthetic_file_within_context_budget(self):

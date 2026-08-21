@@ -6,7 +6,7 @@ from typing import Any
 from atlas_core.capabilities import CapabilityOutcome
 from atlas_core.capabilities.execution import CapabilityExecutionProfile
 from atlas_core.schema_validation import SchemaValidationError, validate_json
-from atlas_core.tasks import StepRecord
+from .records import StepRecord
 from atlas_core.verification import VerificationResult
 
 from .contract import ContractCapability
@@ -36,7 +36,7 @@ class WorkFinishMixin:
                     claims=outcome.claims,
                 )
                 self._emit(
-                    step.task_id,
+                    step.work_id,
                     "capability.output_schema_failed",
                     step_id=step.id,
                     execution_id=execution_id,
@@ -65,7 +65,7 @@ class WorkFinishMixin:
                 claims=outcome.claims,
             )
             self._emit(
-                step.task_id,
+                step.work_id,
                 "side_effect.unverified",
                 step_id=step.id,
                 execution_id=execution_id,
@@ -99,7 +99,7 @@ class WorkFinishMixin:
                 )
             else:
                 artifact = self.store.put_artifact(
-                    step.task_id,
+                    step.work_id,
                     step_id=step.id,
                     kind=outcome.output_kind or pin.output_kind,
                     payload=outcome.output,
@@ -114,7 +114,7 @@ class WorkFinishMixin:
         receipt_artifact_id: str | None = None
         if outcome.receipt:
             receipt_artifact = self.store.put_artifact(
-                step.task_id,
+                step.work_id,
                 step_id=step.id,
                 kind="execution_receipt",
                 payload=outcome.receipt,
@@ -150,13 +150,13 @@ class WorkFinishMixin:
             if verification.status != "pass":
                 final_status = verification.status
         if final_status == "pass":
-            task = self.store.get_task(step.task_id)
+            work = self.store.get_work(step.work_id)
             gate = self.outcome_gate.evaluate(
                 profile=profile,
                 output=outcome.output,
                 context=verification_context,
                 step=step,
-                task=task,
+                work=work,
             )
             details["outcome_gate"] = {
                 "status": gate.status,
@@ -187,7 +187,7 @@ class WorkFinishMixin:
                 "details": details or (verification.details if verification is not None else {}),
             }
             verifier = self.store.put_artifact(
-                step.task_id,
+                step.work_id,
                 step_id=step.id,
                 kind="verification_result",
                 payload=verifier_payload,
@@ -199,7 +199,7 @@ class WorkFinishMixin:
             )
             verifier_artifact_id = verifier.id
             self._emit(
-                step.task_id,
+                step.work_id,
                 "verification.completed",
                 step_id=step.id,
                 execution_id=execution_id,
@@ -228,7 +228,7 @@ class WorkFinishMixin:
                 if current_step.status not in {"failed", "pass", "skipped"}:
                     self.store.set_step_status(step.id, "failed")
                 self._emit(
-                    step.task_id,
+                    step.work_id,
                     "retry.exhausted",
                     step_id=step.id,
                     execution_id=execution_id,
@@ -243,7 +243,7 @@ class WorkFinishMixin:
                 if current_step.status not in {"failed", "pass", "skipped"}:
                     self.store.set_step_status(step.id, "failed")
                 self._emit(
-                    step.task_id,
+                    step.work_id,
                     "retry.blocked",
                     step_id=step.id,
                     execution_id=execution_id,
@@ -273,7 +273,7 @@ class WorkFinishMixin:
                 claim.get("evidence_artifact_ids") or evidence_ids
             )
             self.store.add_claim(
-                step.task_id,
+                step.work_id,
                 step_id=step.id,
                 kind=claim_kind,
                 subject=str(claim.get("subject") or pin.capability_id),
@@ -295,13 +295,13 @@ class WorkFinishMixin:
             )
 
         self.store.create_checkpoint(
-            step.task_id,
+            step.work_id,
             reason=(
                 f"step {step.id} execution {execution.attempt} -> {final_status}"
             ),
         )
         self._emit(
-            step.task_id,
+            step.work_id,
             "capability.completed",
             step_id=step.id,
             execution_id=execution_id,
@@ -318,7 +318,7 @@ class WorkFinishMixin:
         evidence_artifact_ids: list[str],
         metadata: dict[str, Any],
     ) -> None:
-        criteria = self.store.list_criteria(step.task_id)
+        criteria = self.store.list_criteria(step.work_id)
         ordinals = set(step.metadata.get("satisfies_criteria", ())) | set(
             metadata.get("satisfies_criteria", ())
         )

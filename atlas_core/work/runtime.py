@@ -7,8 +7,7 @@ from typing import Any
 from atlas_core.advanced.brief import TaskBrief
 from atlas_core.capabilities.definition import CapabilityDefinition, catalog
 from atlas_core.runtime_types import RecoveryResult, RuntimeBudget, RuntimeResult
-from atlas_core.tasks import TaskStoreError, UnknownRecordError
-from atlas_core.tasks.store_common import _new_id
+from .store_common import _new_id
 from atlas_core.tools import ToolGateway
 from atlas_core.verification import VerifierRegistry
 
@@ -21,7 +20,7 @@ from .contract import (
 from .engine import WorkEngine
 from .inventory import DeploymentInventory
 from .resolve import ImplementationResolver
-from .store import WorkStore
+from .store import UnknownRecordError, WorkStore, WorkStoreError
 from .work import UNAVAILABLE, WorkError, WorkId, WorkRecord
 
 
@@ -60,7 +59,7 @@ class WorkRuntime:
         inputs: Mapping[str, dict[str, Any]] | None = None,
     ) -> WorkId:
         requested = _validated_inputs(brief, inputs)
-        work_id = _new_id("task")
+        work_id = _new_id("work")
         contract = compile_contract(
             work_id=work_id,
             brief=brief,
@@ -70,7 +69,7 @@ class WorkRuntime:
             work_budget=self._budget,
         )
         store = self.store
-        store.create_task(
+        store.create_work(
             objective=brief.objective,
             success_criteria=contract.success_criteria,
             constraints=brief.constraints,
@@ -80,7 +79,7 @@ class WorkRuntime:
                 "brief": brief.as_dict(),
                 "contract_id": contract.contract_id,
             },
-            task_id=work_id,
+            work_id=work_id,
         )
         try:
             store.insert_work_contract(
@@ -90,7 +89,7 @@ class WorkRuntime:
                 payload=contract.as_payload(),
                 compiled_at=contract.compiled_at,
             )
-        except TaskStoreError as exc:
+        except WorkStoreError as exc:
             raise WorkError(str(exc)) from exc
         store.put_artifact(
             work_id,
@@ -160,7 +159,7 @@ class WorkRuntime:
         return self.store.decide_approval(approval_id, status="denied", note=note)
 
     def get(self, work_id: WorkId) -> WorkRecord:
-        task = self.store.get_task(work_id)
+        task = self.store.get_work(work_id)
         contract = self.contract(work_id)
         return WorkRecord(
             id=task.id,
@@ -175,7 +174,7 @@ class WorkRuntime:
             row = self.store.load_work_contract_row(work_id)
         except UnknownRecordError as exc:
             raise WorkError(str(exc)) from exc
-        except TaskStoreError as exc:
+        except WorkStoreError as exc:
             raise WorkError(str(exc)) from exc
         return work_contract_from_stored(
             work_id=row["work_id"],
@@ -233,7 +232,6 @@ def build_work_runtime(
 
     store = WorkStore(db_path)
     store.initialize()
-    store.initialize_work_schema()
     profile_index = profiles if profiles is not None else DeploymentInventory()
     gateway = tool_gateway if tool_gateway is not None else ToolGateway()
     verifier_registry = verifiers if verifiers is not None else VerifierRegistry()

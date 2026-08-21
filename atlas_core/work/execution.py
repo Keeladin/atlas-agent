@@ -11,7 +11,7 @@ from atlas_core.capabilities import (
 )
 from atlas_core.capabilities.execution import CapabilityExecutionProfile
 from atlas_core.schema_validation import SchemaValidationError, validate_json
-from atlas_core.tasks import StepRecord
+from .records import StepRecord
 
 from .contract import ContractCapability, WorkContract
 from .resolve import ResolveReport, ResolvedCapability
@@ -300,7 +300,7 @@ class WorkExecutionMixin:
             if artifact_id not in direct_set
         )
         request = CapabilityRequest(
-            step.task_id,
+            step.work_id,
             step.id,
             pin.capability_id,
             pack.payload,
@@ -309,8 +309,7 @@ class WorkExecutionMixin:
             capability_version=pin.profile_version or "0.0.0",
             direct_input_artifact_ids=direct_ids,
             dependency_artifact_ids=dependency_ids,
-            idempotency_key=f"{step.task_id}:{step.id}:{pin.capability_id}",
-            work_id=step.task_id,
+            idempotency_key=f"{step.work_id}:{step.id}:{pin.capability_id}",
             surface=surface,
         )
         try:
@@ -325,13 +324,13 @@ class WorkExecutionMixin:
         approval: object,
     ) -> bool:
         budget = pin.budget or ExecutionBudget()
-        previous = self.store.list_executions(step.task_id, step_id=step.id)
+        previous = self.store.list_executions(step.work_id, step_id=step.id)
         if len(previous) >= budget.max_attempts:
             self.store.set_step_status(step.id, "failed")
             return True
         input_ids = self.store.dependency_output_artifact_ids(step.id)
         execution = self.store.begin_execution(
-            step.task_id,
+            step.work_id,
             step_id=step.id,
             capability=pin.capability_id,
             capability_version=pin.profile_version or "0.0.0",
@@ -339,7 +338,7 @@ class WorkExecutionMixin:
             input_artifact_ids=input_ids,
         )
         self._emit(
-            step.task_id,
+            step.work_id,
             "capability.started",
             step_id=step.id,
             execution_id=execution.id,

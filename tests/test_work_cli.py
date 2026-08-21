@@ -77,13 +77,13 @@ class WorkCliTests(unittest.TestCase):
         self.assertIsInstance(runtime._engine, WorkEngine)
         hits = [
             artifact
-            for artifact in runtime.store.list_artifacts(search["task_id"])
+            for artifact in runtime.store.list_artifacts(search["work_id"])
             if artifact.kind == "knowledge_search_results"
         ]
         self.assertTrue(hits)
         self.assertTrue(hits[0].payload["results"])
         self.assertIn("ContextBuilder", hits[0].payload["results"][0]["text"])
-        contract = runtime.contract(search["task_id"])
+        contract = runtime.contract(search["work_id"])
         self.assertTrue(contract.capability("knowledge.search").armed)
 
     def test_morning_runs_through_work_runtime(self) -> None:
@@ -101,12 +101,12 @@ class WorkCliTests(unittest.TestCase):
         runtime = _work_runtime(self.db, morning=True)
         packs = [
             artifact
-            for artifact in runtime.store.list_artifacts(result["task_id"])
+            for artifact in runtime.store.list_artifacts(result["work_id"])
             if artifact.kind == "morning_pack"
         ]
         self.assertEqual(len(packs), 1)
         self.assertTrue(packs[0].payload["markdown"].strip())
-        self.assertEqual(runtime.get(result["task_id"]).status, "completed")
+        self.assertEqual(runtime.get(result["work_id"]).status, "completed")
 
     def test_search_then_answer_kind_match_on_work_runtime(self) -> None:
         self._main("index-text", str(README_PATH), "--title", "README")
@@ -155,13 +155,13 @@ class WorkCliTests(unittest.TestCase):
             self._main("index-text", str(README_PATH), "--title", "README")
         )
         self.assertEqual(ingest["status"], "completed")
-        listed = self._main("tasks")
-        self.assertIn(ingest["task_id"], listed)
-        status = self._first_json_object(self._main("status", ingest["task_id"]))
-        self.assertEqual(status["task"]["id"], ingest["task_id"])
-        self.assertEqual(status["task"]["status"], "completed")
-        report = self._main("result", ingest["task_id"])
-        self.assertIn(ingest["task_id"], report)
+        listed = self._main("work")
+        self.assertIn(ingest["work_id"], listed)
+        status = self._first_json_object(self._main("status", ingest["work_id"]))
+        self.assertEqual(status["work"]["id"], ingest["work_id"])
+        self.assertEqual(status["work"]["status"], "completed")
+        report = self._main("result", ingest["work_id"])
+        self.assertIn(ingest["work_id"], report)
         runtime = _work_runtime(self.db, knowledge=True)
         work_id = runtime.accept(
             TaskBrief(
@@ -175,7 +175,7 @@ class WorkCliTests(unittest.TestCase):
         )
         ran = self._first_json_object(self._main("run", work_id))
         self.assertEqual(ran["status"], "completed")
-        self.assertEqual(ran["task_id"], work_id)
+        self.assertEqual(ran["work_id"], work_id)
         pending_id = runtime.accept(
             TaskBrief(
                 objective="Search Atlas knowledge for: later cancel",
@@ -215,7 +215,7 @@ class WorkCliTests(unittest.TestCase):
         )
         store = runtime.store
         step = store.list_steps(work_id)[0]
-        store.set_task_status(work_id, "active")
+        store.set_work_status(work_id, "active")
         store.begin_execution(
             work_id,
             step_id=step.id,
@@ -223,7 +223,7 @@ class WorkCliTests(unittest.TestCase):
             capability_version=step.capability_version or "1.0.0",
         )
         recovered = self._first_json_object(self._main("recover", work_id))
-        self.assertEqual(recovered["task_id"], work_id)
+        self.assertEqual(recovered["work_id"], work_id)
         self.assertEqual(recovered["recovered"], 1)
         self.assertEqual(recovered["failed_closed"], 0)
         inventory = DeploymentInventory()

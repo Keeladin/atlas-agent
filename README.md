@@ -17,7 +17,7 @@ Atlas 2.0 is under active development. The durable runtime and core governance c
 | Area | Current state |
 |---|---|
 | Durable WorkRuntime / WorkEngine | **Implemented** |
-| SQLite task / step / execution state | **Implemented** |
+| SQLite work / step / execution state | **Implemented** |
 | CapabilityDefinition catalog + execution profiles | **Implemented** |
 | ContextBuilder + immutable ContextManifest | **Implemented** |
 | Verification and completion gates | **Implemented** |
@@ -117,7 +117,7 @@ flowchart TB
     end
 
     subgraph STATE[Durable State]
-        TS[(SQLite Task Store\ntasks • steps • executions\nartifacts • claims • approvals\ncheckpoints • events)]
+        TS[(SQLite Work Store\nwork • steps • executions\nartifacts • claims • approvals\ncheckpoints • events)]
         KM[(Knowledge Store\nSQLite / FTS5)]
         PS[(Provider Eval Scores)]
         CM[(Context Manifests)]
@@ -557,7 +557,7 @@ index-text   Index a UTF-8 text file into local knowledge
 search       Search local full-text knowledge
 cancel       Cancel a non-terminal work item
 status       Show a work snapshot
-tasks        List durable work items
+work         List durable work items
 ```
 
 ### Index local knowledge

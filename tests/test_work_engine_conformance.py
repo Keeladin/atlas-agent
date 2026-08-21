@@ -62,7 +62,7 @@ def _semantic_snapshot(store, work_id, result) -> dict:
         "result_status": result.status,
         "result_reason": result.reason,
         "result_executions": result.executions,
-        "work_status": store.get_task(work_id).status,
+        "work_status": store.get_work(work_id).status,
         "steps": tuple((step.capability, step.status) for step in steps),
         "executions": tuple(
             (
@@ -195,7 +195,7 @@ class WorkEngineConformanceTests(unittest.TestCase):
             delivered = request.surface.invoke(
                 "mail.deliver", {"to": "ops@example.invalid"}
             )
-            seen[request.work_id or request.task_id] = (
+            seen[request.work_id] = (
                 request.surface.allowed_tools,
                 bait.ok,
                 delivered.ok,
@@ -233,7 +233,7 @@ class WorkEngineConformanceTests(unittest.TestCase):
         attempts: dict[str, int] = {}
 
         def handler(request):
-            key = request.work_id or request.task_id
+            key = request.work_id
             attempts[key] = attempts.get(key, 0) + 1
             if attempts[key] == 1:
                 return CapabilityOutcome("rework", output={"n": 1}, error="again")
@@ -292,7 +292,7 @@ class WorkEngineConformanceTests(unittest.TestCase):
         calls: dict[str, int] = {}
 
         def handler(request):
-            key = request.work_id or request.task_id
+            key = request.work_id
             calls[key] = calls.get(key, 0) + 1
             return CapabilityOutcome(
                 "pass",
@@ -388,7 +388,7 @@ class WorkEngineConformanceTests(unittest.TestCase):
         seen: dict[str, object] = {}
 
         def handler(request):
-            seen[request.work_id or request.task_id] = request.context.get(
+            seen[request.work_id] = request.context.get(
                 "invocation_input"
             )
             return _pass(request)
@@ -506,7 +506,7 @@ class WorkEngineConformanceTests(unittest.TestCase):
         )
         self.assertEqual(left, right)
         self.assertEqual(left["result_status"], "failed")
-        self.assertEqual(left["result_reason"], "task execution budget exhausted")
+        self.assertEqual(left["result_reason"], "work execution budget exhausted")
         self.assertEqual(left["result_executions"], 1)
 
     def test_foreign_step_fails_on_runtime_and_engine(self) -> None:

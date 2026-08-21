@@ -9,7 +9,6 @@ from unittest.mock import patch
 from atlas_core.advanced import TaskBrief
 from atlas_core.capabilities import CapabilityBinding, CapabilityOutcome
 from atlas_core.runtime_types import RuntimeResult
-from atlas_core.tasks import TaskStoreError
 from atlas_core.work import (
     UNAVAILABLE,
     CapabilityExecutionProfile,
@@ -18,6 +17,7 @@ from atlas_core.work import (
     WorkError,
     WorkRuntime,
     WorkStore,
+    WorkStoreError,
     build_work_runtime,
 )
 
@@ -69,15 +69,15 @@ class WorkRuntimeTests(unittest.TestCase):
         self.assertTrue(self.work_db.is_file())
         self.assertFalse(self.chat_db.exists())
         tables = _table_names(self.work_db)
-        self.assertIn("tasks", tables)
+        self.assertIn("work", tables)
         self.assertIn("work_contracts", tables)
-        self.assertIn("task_steps", tables)
-        self.assertIn("task_executions", tables)
-        self.assertIn("task_artifacts", tables)
-        self.assertIn("task_claims", tables)
-        self.assertIn("task_approvals", tables)
-        self.assertIn("task_events", tables)
-        self.assertIn("task_checkpoints", tables)
+        self.assertIn("work_steps", tables)
+        self.assertIn("work_executions", tables)
+        self.assertIn("work_artifacts", tables)
+        self.assertIn("work_claims", tables)
+        self.assertIn("work_approvals", tables)
+        self.assertIn("work_events", tables)
+        self.assertIn("work_checkpoints", tables)
         self.assertNotIn("conversations", tables)
         self.assertNotIn("conversation_turns", tables)
         kinds = {
@@ -139,7 +139,7 @@ class WorkRuntimeTests(unittest.TestCase):
         result = runtime.run(work_id)
         self.assertEqual(calls, [work_id])
         self.assertIsInstance(result, RuntimeResult)
-        self.assertEqual(result.task_id, work_id)
+        self.assertEqual(result.work_id, work_id)
         self.assertGreaterEqual(result.executions, 1)
         self.assertEqual(result.status, "completed")
         executions = engine.store.list_executions(work_id)
@@ -169,7 +169,7 @@ class WorkRuntimeTests(unittest.TestCase):
         with self.assertRaises(WorkError) as ctx:
             runtime.accept(_brief(), "read")
         self.assertIn("required_authority", str(ctx.exception))
-        self.assertEqual(runtime._engine.store.list_tasks(), ())
+        self.assertEqual(runtime._engine.store.list_work(), ())
 
     def test_accept_persists_exactly_one_contract(self) -> None:
         runtime = self._runtime()
@@ -227,7 +227,7 @@ class WorkRuntimeTests(unittest.TestCase):
         runtime = self._runtime()
         work_id = runtime.accept(_brief(), "execute_external")
         contract = runtime.contract(work_id)
-        with self.assertRaises(TaskStoreError):
+        with self.assertRaises(WorkStoreError):
             runtime._engine.store.insert_work_contract(
                 work_id=contract.work_id,
                 contract_id=contract.contract_id + "-dup",
@@ -328,7 +328,7 @@ class WorkRuntimeTests(unittest.TestCase):
                 inputs={"knowledge.index": {"title": "nope"}},
             )
         self.assertIn("accepted brief", str(ctx.exception))
-        self.assertEqual(runtime._engine.store.list_tasks(), ())
+        self.assertEqual(runtime._engine.store.list_work(), ())
 
     def test_kind_match_dependencies_are_deterministic(self) -> None:
         profiles = DeploymentInventory()

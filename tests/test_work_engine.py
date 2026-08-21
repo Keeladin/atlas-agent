@@ -141,7 +141,7 @@ class WorkEngineTests(unittest.TestCase):
         result = self._engine(runtime).run(contract, report)
         store = runtime._engine.store
         self.assertEqual(result.status, "completed")
-        self.assertEqual(result.reason, "task reached terminal state")
+        self.assertEqual(result.reason, "work reached terminal state")
         self.assertGreaterEqual(result.executions, 1)
         executions = store.list_executions(work_id)
         self.assertEqual(len(executions), 1)
@@ -170,7 +170,7 @@ class WorkEngineTests(unittest.TestCase):
 
         def handler(request):
             self.assertIsNotNone(request.surface)
-            self.assertEqual(request.work_id, request.task_id)
+            self.assertTrue(request.work_id)
             seen["surface"] = request.surface
             bait = request.surface.invoke("bait.tool", {})
             self.assertFalse(bait.ok)
@@ -604,7 +604,7 @@ class WorkEngineTests(unittest.TestCase):
         self.assertEqual(contract.work_budget.max_executions, 1)
         result = self._engine(runtime).run(contract, report)
         self.assertEqual(result.status, "failed")
-        self.assertEqual(result.reason, "task execution budget exhausted")
+        self.assertEqual(result.reason, "work execution budget exhausted")
         self.assertEqual(len(runtime._engine.store.list_executions(work_id)), 1)
 
     def test_recover_fail_closes_non_idempotent_running_execution(self) -> None:
@@ -629,7 +629,7 @@ class WorkEngineTests(unittest.TestCase):
         )
         store = runtime._engine.store
         step = store.list_steps(work_id)[0]
-        store.set_task_status(work_id, "active")
+        store.set_work_status(work_id, "active")
         store.begin_execution(
             work_id,
             step_id=step.id,
@@ -658,7 +658,7 @@ class WorkEngineTests(unittest.TestCase):
         )
         store = runtime._engine.store
         step = store.list_steps(work_id)[0]
-        store.set_task_status(work_id, "active")
+        store.set_work_status(work_id, "active")
         store.begin_execution(
             work_id,
             step_id=step.id,

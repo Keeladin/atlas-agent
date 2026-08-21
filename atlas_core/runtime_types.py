@@ -24,7 +24,7 @@ class RuntimeBudget:
 
 @dataclass(frozen=True)
 class RuntimeResult:
-    task_id: str
+    work_id: str
     status: str
     cycles: int
     executions: int
@@ -32,7 +32,7 @@ class RuntimeResult:
 
 @dataclass(frozen=True)
 class RecoveryResult:
-    task_id: str
+    work_id: str
     recovered: int
     failed_closed: int
     status: str

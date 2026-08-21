@@ -1,12 +1,24 @@
 from __future__ import annotations
 
-from atlas_core.tasks import TaskStore
+from .store_common import InvalidTransitionError, UnknownRecordError, WorkStoreError
+from .store_core import WorkStoreCoreMixin
+from .store_execution import WorkStoreExecutionMixin
+from .store_records import WorkStoreRecordsMixin
+from .store_schema import WorkStoreSchemaMixin
 
 
-class WorkStore(TaskStore):
-    """Work durable store.
+class WorkStore(
+    WorkStoreSchemaMixin,
+    WorkStoreCoreMixin,
+    WorkStoreExecutionMixin,
+    WorkStoreRecordsMixin,
+):
+    """Durable SQLite source of truth for Atlas Work execution."""
 
-    Method names stay ``get_task`` / ``add_step`` / ``begin_execution`` and
-    table names remain ``task_*``. That is isolated persistence naming debt,
-    not a second execution topology.
-    """
+
+__all__ = [
+    "InvalidTransitionError",
+    "UnknownRecordError",
+    "WorkStore",
+    "WorkStoreError",
+]

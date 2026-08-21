@@ -5,7 +5,8 @@ from typing import Any
 
 from atlas_core.events import RuntimeEvent
 from atlas_core.runtime_types import RecoveryResult, RuntimeResult
-from atlas_core.tasks import InvalidTransitionError, StepRecord
+from .records import StepRecord
+from .store import InvalidTransitionError
 
 from .contract import WorkContract
 from .resolve import ResolveReport
@@ -41,14 +42,14 @@ class WorkLifecycleMixin:
     ) -> RuntimeResult:
         work_id = contract.work_id
         _require_report_matches_contract(contract, report)
-        task = self.store.get_task(work_id)
+        task = self.store.get_work(work_id)
         if task.status in {"completed", "failed", "cancelled"}:
             return RuntimeResult(
                 work_id,
                 task.status,
                 0,
                 len(self.store.list_executions(work_id)),
-                "task already terminal",
+                "work already terminal",
             )
         if report.unarmed:
             return RuntimeResult(work_id, task.status, 0, 0, UNAVAILABLE)
@@ -57,26 +58,26 @@ class WorkLifecycleMixin:
 
         budget = contract.work_budget
         if task.status == "planned":
-            self.store.set_task_status(work_id, "active")
-            self._emit(work_id, "task.started")
+            self.store.set_work_status(work_id, "active")
+            self._emit(work_id, "work.started")
 
         cycles = 0
         while cycles < budget.max_cycles:
             cycles += 1
             before = len(self.store.list_executions(work_id))
             if before >= budget.max_executions:
-                self.store.set_task_status(work_id, "failed")
+                self.store.set_work_status(work_id, "failed")
                 self._emit(
                     work_id,
-                    "task.failed",
-                    payload={"reason": "task execution budget exhausted"},
+                    "work.failed",
+                    payload={"reason": "work execution budget exhausted"},
                 )
                 return RuntimeResult(
                     work_id,
                     "failed",
                     cycles,
                     before,
-                    "task execution budget exhausted",
+                    "work execution budget exhausted",
                 )
 
             remaining = budget.max_executions - before
@@ -84,21 +85,21 @@ class WorkLifecycleMixin:
                 contract, report, max_new_executions=remaining
             )
             after = len(self.store.list_executions(work_id))
-            task = self.store.get_task(work_id)
+            task = self.store.get_work(work_id)
             if task.status in {"completed", "failed", "cancelled"}:
                 return RuntimeResult(
                     work_id,
                     task.status,
                     cycles,
                     after,
-                    "task reached terminal state",
+                    "work reached terminal state",
                 )
             if not progressed:
                 if task.status != "waiting":
-                    self.store.set_task_status(work_id, "waiting")
+                    self.store.set_work_status(work_id, "waiting")
                 self._emit(
                     work_id,
-                    "task.paused",
+                    "work.paused",
                     payload={"reason": "no executable ready steps"},
                 )
                 return RuntimeResult(
@@ -109,11 +110,11 @@ class WorkLifecycleMixin:
                     "no executable ready steps",
                 )
 
-        if self.store.get_task(work_id).status == "active":
-            self.store.set_task_status(work_id, "waiting")
+        if self.store.get_work(work_id).status == "active":
+            self.store.set_work_status(work_id, "waiting")
         self._emit(
             work_id,
-            "task.paused",
+            "work.paused",
             payload={"reason": "runtime cycle budget reached"},
         )
         return RuntimeResult(
@@ -139,10 +140,10 @@ class WorkLifecycleMixin:
             self._fail_membership(work_id)
             return False
 
-        task = self.store.get_task(work_id)
+        task = self.store.get_work(work_id)
         if task.status == "waiting":
-            self.store.set_task_status(work_id, "active")
-            self._emit(work_id, "task.resumed")
+            self.store.set_work_status(work_id, "active")
+            self._emit(work_id, "work.resumed")
 
         self._release_approval_blocks(work_id)
         self._fail_mismatches(work_id, report)
@@ -197,7 +198,7 @@ class WorkLifecycleMixin:
     ) -> int:
         work_id = contract.work_id
         _require_report_matches_contract(contract, report)
-        if self.store.get_task(work_id).status in {"completed", "failed", "cancelled"}:
+        if self.store.get_work(work_id).status in {"completed", "failed", "cancelled"}:
             return 0
         pending_approval_steps = {
             approval.step_id
@@ -237,8 +238,8 @@ class WorkLifecycleMixin:
             self.store.set_step_status(step.id, "pending")
             resumed += 1
             self._emit(work_id, "step.retry_ready", step_id=step.id)
-        if resumed and self.store.get_task(work_id).status == "waiting":
-            self.store.set_task_status(work_id, "active")
+        if resumed and self.store.get_work(work_id).status == "waiting":
+            self.store.set_work_status(work_id, "active")
         if resumed:
             self.store.create_checkpoint(work_id, reason="explicit blocked-step resume")
         self._settle_work(work_id)
@@ -251,7 +252,7 @@ class WorkLifecycleMixin:
     ) -> RecoveryResult:
         work_id = contract.work_id
         _require_report_matches_contract(contract, report)
-        task = self.store.get_task(work_id)
+        task = self.store.get_work(work_id)
         if task.status in {"completed", "cancelled"}:
             return RecoveryResult(work_id, 0, 0, task.status)
 
@@ -326,17 +327,17 @@ class WorkLifecycleMixin:
             work_id, reason="explicit interrupted-execution recovery"
         )
         if failed_closed:
-            current = self.store.get_task(work_id)
+            current = self.store.get_work(work_id)
             if current.status not in {"failed", "cancelled", "completed"}:
-                self.store.set_task_status(work_id, "failed")
-        elif recovered and self.store.get_task(work_id).status == "waiting":
-            self.store.set_task_status(work_id, "active")
+                self.store.set_work_status(work_id, "failed")
+        elif recovered and self.store.get_work(work_id).status == "waiting":
+            self.store.set_work_status(work_id, "active")
         self._settle_work(work_id)
         return RecoveryResult(
             work_id,
             recovered,
             failed_closed,
-            self.store.get_task(work_id).status,
+            self.store.get_work(work_id).status,
         )
 
     def _membership_violation(self, contract: WorkContract) -> bool:
@@ -348,12 +349,12 @@ class WorkLifecycleMixin:
         return step_ids != contract_ids
 
     def _fail_membership(self, work_id: str) -> RuntimeResult:
-        task = self.store.get_task(work_id)
+        task = self.store.get_work(work_id)
         if task.status not in {"failed", "cancelled", "completed"}:
-            self.store.set_task_status(work_id, "failed")
+            self.store.set_work_status(work_id, "failed")
             self._emit(
                 work_id,
-                "task.failed",
+                "work.failed",
                 payload={"reason": "work steps do not match the contract"},
             )
         return RuntimeResult(
@@ -412,7 +413,7 @@ class WorkLifecycleMixin:
         approved = [
             approval
             for approval in self.store.list_approvals(
-                step.task_id,
+                step.work_id,
                 status="approved",
             )
             if approval.step_id == step.id
@@ -430,7 +431,7 @@ class WorkLifecycleMixin:
         pending = [
             approval
             for approval in self.store.list_approvals(
-                step.task_id,
+                step.work_id,
                 status="pending",
             )
             if approval.step_id == step.id
@@ -438,7 +439,7 @@ class WorkLifecycleMixin:
         ]
         if not pending:
             approval = self.store.request_approval(
-                step.task_id,
+                step.work_id,
                 step_id=step.id,
                 required_authority=required_authority,
                 requested_action=(
@@ -447,7 +448,7 @@ class WorkLifecycleMixin:
                 ),
             )
             self._emit(
-                step.task_id,
+                step.work_id,
                 "approval.requested",
                 step_id=step.id,
                 payload={
@@ -459,39 +460,39 @@ class WorkLifecycleMixin:
             self.store.set_step_status(step.id, "blocked")
 
     def _settle_work(self, work_id: str) -> None:
-        task = self.store.get_task(work_id)
+        task = self.store.get_work(work_id)
         steps = self.store.list_steps(work_id)
         if any(step.status == "failed" for step in steps):
             if task.status not in {"failed", "cancelled", "completed"}:
-                self.store.set_task_status(work_id, "failed")
+                self.store.set_work_status(work_id, "failed")
                 self._emit(
                     work_id,
-                    "task.failed",
+                    "work.failed",
                     payload={"reason": "one or more required steps failed"},
                 )
             return
         decision = self.completion.evaluate(work_id)
         if decision.complete:
             if task.status != "completed":
-                self.store.set_task_status(work_id, "completed")
+                self.store.set_work_status(work_id, "completed")
                 self.store.create_checkpoint(work_id, reason="task completed")
-                self._emit(work_id, "task.completed")
+                self._emit(work_id, "work.completed")
             return
         if decision.status == "failed" and task.status not in {
             "failed",
             "cancelled",
             "completed",
         }:
-            self.store.set_task_status(work_id, "failed")
+            self.store.set_work_status(work_id, "failed")
             self.store.create_checkpoint(work_id, reason="completion rejected")
             self._emit(
                 work_id,
-                "task.failed",
+                "work.failed",
                 payload={"reason": "; ".join(decision.reasons) or "completion rejected"},
             )
             return
         if not self.store.ready_steps(work_id) and task.status == "active":
-            self.store.set_task_status(work_id, "waiting")
+            self.store.set_work_status(work_id, "waiting")
 
 
 def _require_report_matches_contract(

@@ -23,10 +23,28 @@ DOC_PATHS = (
 FORBIDDEN_IDENTIFIERS = (
     "TaskRuntime",
     "TaskPlanner",
+    "TaskStore",
+    "TaskStoreError",
     "CapabilityRegistry",
     "CapabilityRegistryError",
     "RuntimeFrame",
     "work_surfaces",
+)
+FORBIDDEN_PERSISTENCE = (
+    "create_task(",
+    "get_task(",
+    "list_tasks(",
+    "set_task_status(",
+    "task_steps",
+    "task_artifacts",
+    "task_executions",
+    "task_approvals",
+    "task_events",
+    "task_checkpoints",
+    "task_criteria",
+    "task_claims",
+    "task_context_manifests",
+    "task_runtime",
 )
 DELETED_MODULES = re.compile(
     r"atlas_core\.(planner|bootstrap|runtime_lifecycle|runtime_execution|runtime_finish)"
@@ -70,7 +88,36 @@ class LegacyEngineAbsentTests(unittest.TestCase):
             for token in FORBIDDEN_IDENTIFIERS:
                 if token in source:
                     offenders.append(f"{relative}: {token}")
+            if "atlas_companion" in relative:
+                continue
+            if relative.endswith("advanced/intent.py"):
+                continue
+            stripped = stripped.replace("TaskBrief", "").replace("task_brief", "")
+            for token in FORBIDDEN_PERSISTENCE:
+                if token in stripped:
+                    offenders.append(f"{relative}: {token}")
         self.assertEqual(offenders, [])
+
+    def test_work_schema_has_no_task_tables(self) -> None:
+        schema = (ROOT / "atlas_core" / "work" / "store_schema.py").read_text(
+            encoding="utf-8"
+        )
+        for token in (
+            "CREATE TABLE IF NOT EXISTS tasks",
+            "task_steps",
+            "task_id",
+            "task_runtime",
+        ):
+            with self.subTest(token=token):
+                self.assertNotIn(token, schema)
+        self.assertIn("CREATE TABLE IF NOT EXISTS work (", schema)
+        self.assertIn("CREATE TABLE IF NOT EXISTS work_contracts", schema)
+        self.assertIn("FOREIGN KEY (work_id) REFERENCES work(id)", schema)
+
+    def test_runtime_results_use_work_id(self) -> None:
+        source = (ROOT / "atlas_core" / "runtime_types.py").read_text(encoding="utf-8")
+        self.assertIn("work_id: str", source)
+        self.assertNotIn("task_id", source)
 
     def test_companion_does_not_import_work_execution(self) -> None:
         companion = ROOT / "atlas_companion"

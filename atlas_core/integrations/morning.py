@@ -6,14 +6,14 @@ from pathlib import Path
 from atlas_core.capabilities import (
     CapabilityExecutionProfile,
     CapabilityOutcome,
-    CapabilityRegistry,
     ExecutionBudget,
     require,
 )
 from atlas_core.verification import VerificationResult, VerifierRegistry
+from atlas_core.work.inventory import DeploymentInventory
 
 
-def _morning_handler(request, *, task_store=None):
+def _morning_handler(request, *, store=None):
     from atlas_morning.config import load_aliases, load_config
     from atlas_morning.load import load_messages
     from atlas_morning.pack import build_pack, infer_operational_day, render_pack
@@ -21,8 +21,8 @@ def _morning_handler(request, *, task_store=None):
 
     payload = {}
     direct_ids = request.direct_input_artifact_ids or request.input_artifact_ids
-    if task_store is not None and direct_ids:
-        payload = task_store.get_artifact(direct_ids[-1]).payload
+    if store is not None and direct_ids:
+        payload = store.get_artifact(direct_ids[-1]).payload
     else:
         artifacts = request.context.get("artifacts", [])
         if artifacts:
@@ -75,14 +75,14 @@ def _verify_morning(spec, output, context):
 
 
 def register_morning_workflow(
-    capabilities: CapabilityRegistry,
+    inventory: DeploymentInventory,
     verifiers: VerifierRegistry,
     *,
-    task_store=None,
+    store=None,
 ) -> None:
+    require("operations.morning_pack.generate")
     verifiers.register("morning.output_contract", _verify_morning, replace=True)
-    capabilities.register(
-        require("operations.morning_pack.generate"),
+    inventory.register(
         CapabilityExecutionProfile(
             capability_id="operations.morning_pack.generate",
             executor_kind="deterministic",
@@ -116,5 +116,5 @@ def register_morning_workflow(
             privacy="local_only",
             budget=ExecutionBudget(max_attempts=2, max_context_chars=32_000),
         ),
-        lambda request: _morning_handler(request, task_store=task_store),
+        lambda request: _morning_handler(request, store=store),
     )

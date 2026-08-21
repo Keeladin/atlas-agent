@@ -4,10 +4,17 @@ import argparse
 import json
 from pathlib import Path
 
+from atlas_core.advanced.brief import TaskBrief
 from atlas_core.bootstrap import build_runtime
-from atlas_core.knowledge import source_content_sha256
+from atlas_core.integrations import register_morning_workflow
+from atlas_core.knowledge import KnowledgeStore, register_knowledge_capabilities, source_content_sha256
 from atlas_core.planner import TaskPlanner
 from atlas_core.presentation import TaskPresenter
+from atlas_core.verification import VerifierRegistry
+from atlas_core.work import DeploymentInventory, build_work_runtime
+
+
+_WORK_COMMANDS = frozenset({"morning", "index-text", "search"})
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -20,7 +27,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    morning = sub.add_parser("morning", help="Run the existing Morning Workflow through TaskRuntime")
+    morning = sub.add_parser("morning", help="Run the existing Morning Workflow through WorkRuntime")
     morning.add_argument("input")
     morning.add_argument("--config", required=True)
     morning.add_argument("--aliases")
@@ -62,29 +69,39 @@ def _print_result(result) -> None:
     print(json.dumps({"task_id": result.task_id, "status": result.status, "cycles": result.cycles, "executions": result.executions, "reason": result.reason}, ensure_ascii=False, indent=2))
 
 
+def _work_runtime(db_path, *, morning: bool = False, knowledge: bool = False):
+    verifiers = VerifierRegistry()
+    inventory = DeploymentInventory()
+    runtime = build_work_runtime(
+        db_path=db_path,
+        profiles=inventory,
+        verifiers=verifiers,
+    )
+    if morning:
+        register_morning_workflow(inventory, verifiers, store=runtime.store)
+    if knowledge:
+        knowledge_store = KnowledgeStore(db_path)
+        knowledge_store.initialize()
+        register_knowledge_capabilities(
+            inventory,
+            verifiers,
+            store=runtime.store,
+            knowledge_store=knowledge_store,
+        )
+    return runtime
+
+
 def main() -> None:
     args = _parser().parse_args()
+    if args.command in _WORK_COMMANDS:
+        _run_work_command(args)
+        return
     runtime = build_runtime(db_path=args.db, provider_config=args.providers)
     store = runtime.store
     if args.command == "result":
         print(TaskPresenter(store).build(args.task_id).render_markdown()); return
     if args.command == "cancel":
         task = store.set_task_status(args.task_id, "cancelled"); store.create_checkpoint(task.id, reason="task cancelled from CLI"); print(f"{task.id}\t{task.status}"); return
-    if args.command == "index-text":
-        source = Path(args.path).expanduser()
-        if not source.is_file():
-            raise SystemExit(f"index-text source is missing or not a file: {source}")
-        text = source.read_text(encoding="utf-8")
-        resolved = str(source.resolve())
-        task = store.create_task(objective=f"Index local knowledge source {source.name}", success_criteria=("The source is durably indexed with chunk provenance.",), authority_scope="modify_internal", metadata={"interface": "cli", "workflow": "knowledge_ingest"})
-        request = store.put_artifact(task.id, kind="knowledge_ingest_request", payload={"title": args.title or source.name, "source_path": resolved, "source_uri": args.source_uri or resolved, "content_sha256": source_content_sha256(text), "byte_size": source.stat().st_size, "chunk_chars": args.chunk_chars, "overlap_chars": args.overlap_chars})
-        store.add_step(task.id, description="Chunk and index extracted text.", capability="knowledge.ingest_text", capability_version=runtime.capabilities.get("knowledge.ingest_text").profile.version, input_artifact_ids=(request.id,), metadata={"accept_all_criteria": True})
-        _print_result(runtime.run_until_blocked(task.id)); return
-    if args.command == "search":
-        task = store.create_task(objective=f"Search Atlas knowledge for: {args.query}", success_criteria=("A source-grounded local knowledge search result is produced.",), authority_scope="read", metadata={"interface": "cli", "workflow": "knowledge_search"})
-        request = store.put_artifact(task.id, kind="knowledge_search_request", payload={"query": args.query, "limit": args.limit})
-        store.add_step(task.id, description="Retrieve matching knowledge chunks.", capability="knowledge.search", capability_version=runtime.capabilities.get("knowledge.search").profile.version, input_artifact_ids=(request.id,), metadata={"accept_all_criteria": True})
-        _print_result(runtime.run_until_blocked(task.id)); print(TaskPresenter(store).build(task.id).render_markdown()); return
     if args.command == "tasks":
         for task in store.list_tasks(status=args.status): print(f"{task.id}\t{task.status}\t{task.objective}")
         return
@@ -108,13 +125,85 @@ def main() -> None:
         print(json.dumps({"task_id": task.id, "status": task.status, "planned_steps": len(plan.steps), "notes": list(plan.notes)}, ensure_ascii=False, indent=2))
         if args.run: _print_result(runtime.run_until_blocked(task.id))
         return
+
+
+def _run_work_command(args) -> None:
+    if args.command == "index-text":
+        source = Path(args.path).expanduser()
+        if not source.is_file():
+            raise SystemExit(f"index-text source is missing or not a file: {source}")
+        text = source.read_text(encoding="utf-8")
+        resolved = str(source.resolve())
+        runtime = _work_runtime(args.db, knowledge=True)
+        work_id = runtime.accept(
+            TaskBrief(
+                objective=f"Index local knowledge source {source.name}",
+                capabilities=("knowledge.ingest_text",),
+                required_authority="modify_internal",
+                expected_effect="The source is durably indexed with chunk provenance.",
+            ),
+            "modify_internal",
+            inputs={
+                "knowledge.ingest_text": {
+                    "title": args.title or source.name,
+                    "source_path": resolved,
+                    "source_uri": args.source_uri or resolved,
+                    "content_sha256": source_content_sha256(text),
+                    "byte_size": source.stat().st_size,
+                    "chunk_chars": args.chunk_chars,
+                    "overlap_chars": args.overlap_chars,
+                }
+            },
+        )
+        _print_result(runtime.run(work_id))
+        return
+    if args.command == "search":
+        runtime = _work_runtime(args.db, knowledge=True)
+        work_id = runtime.accept(
+            TaskBrief(
+                objective=f"Search Atlas knowledge for: {args.query}",
+                capabilities=("knowledge.search",),
+                required_authority="read",
+                expected_effect="A source-grounded local knowledge search result is produced.",
+            ),
+            "read",
+            inputs={"knowledge.search": {"query": args.query, "limit": args.limit}},
+        )
+        _print_result(runtime.run(work_id))
+        print(TaskPresenter(runtime.store).build(work_id).render_markdown())
+        return
     if args.command == "morning":
-        task = store.create_task(objective="Generate the TMM morning operational pack.", success_criteria=("The frozen Morning Workflow produces a verified non-empty pack for the requested operational day.",), authority_scope="read", metadata={"interface": "cli", "workflow": "morning_v1"})
-        input_artifact = store.put_artifact(task.id, kind="morning_request", payload={"input": str(Path(args.input)), "config": str(Path(args.config)), "aliases": str(Path(args.aliases)) if args.aliases else None, "corrections": str(Path(args.corrections)) if args.corrections else None, "day": args.day})
-        store.add_step(task.id, description="Generate and verify the morning pack.", capability="operations.morning_pack.generate", capability_version=runtime.capabilities.get("operations.morning_pack.generate").profile.version, input_artifact_ids=(input_artifact.id,), metadata={"accept_all_criteria": True})
-        result = runtime.run_until_blocked(task.id); _print_result(result)
-        packs = [artifact for artifact in store.list_artifacts(task.id) if artifact.kind == "morning_pack"]
-        if packs: print(packs[-1].payload["markdown"])
+        runtime = _work_runtime(args.db, morning=True)
+        work_id = runtime.accept(
+            TaskBrief(
+                objective="Generate the TMM morning operational pack.",
+                capabilities=("operations.morning_pack.generate",),
+                required_authority="read",
+                expected_effect=(
+                    "The frozen Morning Workflow produces a verified non-empty "
+                    "pack for the requested operational day."
+                ),
+            ),
+            "read",
+            inputs={
+                "operations.morning_pack.generate": {
+                    "input": str(Path(args.input)),
+                    "config": str(Path(args.config)),
+                    "aliases": str(Path(args.aliases)) if args.aliases else None,
+                    "corrections": str(Path(args.corrections)) if args.corrections else None,
+                    "day": args.day,
+                }
+            },
+        )
+        result = runtime.run(work_id)
+        _print_result(result)
+        packs = [
+            artifact
+            for artifact in runtime.store.list_artifacts(work_id)
+            if artifact.kind == "morning_pack"
+        ]
+        if packs:
+            print(packs[-1].payload["markdown"])
         return
 
 

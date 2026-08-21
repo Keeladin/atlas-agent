@@ -334,7 +334,7 @@ class CapabilityArchitectureTests(unittest.TestCase):
         source = (
             Path(__file__).resolve().parents[1] / "atlas_core" / "__main__.py"
         ).read_text(encoding="utf-8")
-        ids = re.findall(r'capability="([^"]+)"', source)
+        ids = re.findall(r'capabilities=\("([^"]+)",\)', source)
         self.assertEqual(
             set(ids),
             {

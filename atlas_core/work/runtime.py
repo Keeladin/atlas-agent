@@ -221,6 +221,7 @@ def build_work_runtime(
     tool_gateway: ToolGateway | None = None,
     profiles: DeploymentInventory | None = None,
     budget: RuntimeBudget | None = None,
+    verifiers: VerifierRegistry | None = None,
 ) -> WorkRuntime:
     """Only composition root for WorkRuntime."""
 
@@ -229,11 +230,11 @@ def build_work_runtime(
     store.initialize_work_schema()
     profile_index = profiles if profiles is not None else DeploymentInventory()
     gateway = tool_gateway if tool_gateway is not None else ToolGateway()
-    verifiers = VerifierRegistry()
+    verifier_registry = verifiers if verifiers is not None else VerifierRegistry()
     engine = WorkEngine(
         store=store,
         tools=gateway,
-        verifiers=verifiers,
+        verifiers=verifier_registry,
     )
     return WorkRuntime(
         store=store,
@@ -241,6 +242,6 @@ def build_work_runtime(
         tools=gateway,
         engine=engine,
         budget=budget,
-        verifiers=verifiers,
+        verifiers=verifier_registry,
         definitions=catalog(),
     )

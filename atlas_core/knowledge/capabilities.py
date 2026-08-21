@@ -6,13 +6,12 @@ from pathlib import Path
 from atlas_core.capabilities import (
     CapabilityExecutionProfile,
     CapabilityOutcome,
-    CapabilityRegistry,
     ExecutionBudget,
     RetryPolicy,
     require,
 )
-from atlas_core.tasks import TaskStore
 from atlas_core.verification import VerificationResult, VerifierRegistry
+from atlas_core.work.inventory import DeploymentInventory
 
 from .store import (
     MAX_SEARCH_RESULT_CHARS,
@@ -241,7 +240,7 @@ def grounded_answer_from_hits(query: str, results: list[dict]) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _payload(store: TaskStore, request):
+def _payload(store, request):
     candidate_ids = request.direct_input_artifact_ids or request.input_artifact_ids
     if not candidate_ids:
         raise ValueError("Knowledge capability requires an input artifact.")
@@ -374,16 +373,16 @@ def _bounded_search_rows(query: str, hits) -> tuple[list[dict], bool]:
 
 
 def register_knowledge_capabilities(
-    capabilities: CapabilityRegistry,
+    inventory: DeploymentInventory,
     verifiers: VerifierRegistry,
     *,
-    task_store: TaskStore,
+    store,
     knowledge_store: KnowledgeStore,
 ) -> None:
     verifiers.register("knowledge.search_contract", _search_verifier, replace=True)
 
     def ingest(request):
-        data = _payload(task_store, request)
+        data = _payload(store, request)
         result = knowledge_store.ingest_text(
             title=str(data.get("title") or ""),
             text=_ingest_text(data),
@@ -415,7 +414,7 @@ def register_knowledge_capabilities(
         )
 
     def search(request):
-        data = _payload(task_store, request)
+        data = _payload(store, request)
         query = str(data.get("query") or "")
         limit = int(data.get("limit", 8))
         hits = knowledge_store.search(query, limit=limit)
@@ -453,7 +452,7 @@ def register_knowledge_capabilities(
     def answer(request):
         payload = None
         for artifact_id in reversed(request.input_artifact_ids):
-            artifact = task_store.get_artifact(artifact_id)
+            artifact = store.get_artifact(artifact_id)
             if artifact.kind == "knowledge_search_results" and isinstance(artifact.payload, dict):
                 payload = artifact.payload
                 break
@@ -475,8 +474,8 @@ def register_knowledge_capabilities(
             ),
         )
 
-    capabilities.register(
-        require("knowledge.ingest_text"),
+    require("knowledge.ingest_text")
+    inventory.register(
         CapabilityExecutionProfile(
             capability_id="knowledge.ingest_text",
             version="1.1.0",
@@ -520,8 +519,8 @@ def register_knowledge_capabilities(
         ),
         ingest,
     )
-    capabilities.register(
-        require("knowledge.search"),
+    require("knowledge.search")
+    inventory.register(
         CapabilityExecutionProfile(
             capability_id="knowledge.search",
             executor_kind="deterministic",
@@ -555,8 +554,8 @@ def register_knowledge_capabilities(
         ),
         search,
     )
-    capabilities.register(
-        require("knowledge.answer"),
+    require("knowledge.answer")
+    inventory.register(
         CapabilityExecutionProfile(
             capability_id="knowledge.answer",
             executor_kind="deterministic",

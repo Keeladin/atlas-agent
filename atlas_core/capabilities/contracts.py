@@ -129,10 +129,9 @@ class CapabilityRequest:
     dependency_artifact_ids: tuple[str, ...] = ()
     idempotency_key: str | None = None
     work_id: str | None = None
-    # TaskRuntime/WorkRuntime bridge until WorkEngine (PR 5) constructs a
-    # typed ExecutionSurface at invoke. Not a public execution API. Death:
-    # remove this field when WorkEngine requires surface at the handler
-    # boundary and TaskRuntime no longer builds CapabilityRequest.
+    # WorkEngine sets a typed ExecutionSurface and requires it at invoke.
+    # TaskRuntime still uses the WorkRuntime.work_surfaces bridge until PR 5b.
+    # Type stays Any so atlas_core.capabilities does not import atlas_core.work.
     surface: Any = None
 
 

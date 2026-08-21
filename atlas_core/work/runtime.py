@@ -23,11 +23,10 @@ from .contract import (
 from .inventory import DeploymentInventory
 from .resolve import ImplementationResolver, ResolveMismatch, ResolveReport
 from .surface import project_surface
-from .work import WorkError, WorkId, WorkRecord
+from .work import UNAVAILABLE, WorkError, WorkId, WorkRecord
 
 
 DEFAULT_WORK_DB = Path("instance/atlas-work.db")
-UNAVAILABLE = "implementation unavailable"
 
 
 class WorkRuntime:

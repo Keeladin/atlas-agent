@@ -1,4 +1,5 @@
 from .contract import ContractCapability, WorkContract, compile_contract
+from .engine import WorkEngine
 from .inventory import DeploymentInventory
 from .profile import CapabilityExecutionProfile
 from .resolve import (
@@ -9,8 +10,8 @@ from .resolve import (
     ResolvedWork,
 )
 from .surface import ExecutionSurface, SurfaceError, project_surface
-from .runtime import UNAVAILABLE, WorkRuntime, build_work_runtime
-from .work import WorkError, WorkId, WorkRecord
+from .runtime import WorkRuntime, build_work_runtime
+from .work import UNAVAILABLE, WorkError, WorkId, WorkRecord
 
 __all__ = [
     "CapabilityExecutionProfile",
@@ -25,6 +26,7 @@ __all__ = [
     "SurfaceError",
     "UNAVAILABLE",
     "WorkContract",
+    "WorkEngine",
     "WorkError",
     "WorkId",
     "WorkRecord",

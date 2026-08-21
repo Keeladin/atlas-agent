@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+from atlas_core.context import ContextBuilder
+from atlas_core.events import EventBus
+from atlas_core.runtime_types import RecoveryResult, RuntimeResult
+from atlas_core.tasks import TaskStore
+from atlas_core.tools import ToolGateway
+from atlas_core.verification import CompletionVerifier, OutcomeGate, VerifierRegistry
+
+from .contract import WorkContract
+from .execution import WorkExecutionMixin
+from .finish import WorkFinishMixin
+from .lifecycle import WorkLifecycleMixin
+from .resolve import ResolveReport
+
+
+class WorkEngine(WorkLifecycleMixin, WorkExecutionMixin, WorkFinishMixin):
+    """Native Work step-execution engine.
+
+    Inputs are a persisted ``WorkContract`` and a ``ResolveReport`` already
+    projected onto that contract. This class does not consult process-global
+    executable sets, does not re-resolve pins, and is not called by
+    ``WorkRuntime.run`` until the later cutover.
+    """
+
+    def __init__(
+        self,
+        *,
+        store: TaskStore,
+        tools: ToolGateway,
+        verifiers: VerifierRegistry | None = None,
+        event_bus: EventBus | None = None,
+        outcome_gate: OutcomeGate | None = None,
+    ) -> None:
+        self.store = store
+        self.tools = tools
+        self.verifiers = verifiers or VerifierRegistry()
+        self.event_bus = event_bus or EventBus()
+        self.context_builder = ContextBuilder(store)
+        self.completion = CompletionVerifier(store)
+        self.outcome_gate = outcome_gate or OutcomeGate()
+
+    def run(self, contract: WorkContract, report: ResolveReport) -> RuntimeResult:
+        return self.run_until_blocked(contract, report)
+
+    def recover(
+        self, contract: WorkContract, report: ResolveReport
+    ) -> RecoveryResult:
+        return self.recover_interrupted(contract, report)
+
+    def resume(self, contract: WorkContract, report: ResolveReport) -> int:
+        return self.resume_blocked(contract, report)

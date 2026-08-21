@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 WorkId = str
 
+UNAVAILABLE = "implementation unavailable"
+
 
 class WorkError(RuntimeError):
     pass

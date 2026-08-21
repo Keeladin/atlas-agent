@@ -16,7 +16,7 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
       await login(password)
       onAuthed()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed')
+      setError(err instanceof Error ? err.message : 'Sign-in failed')
     } finally {
       setBusy(false)
     }
@@ -31,24 +31,30 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
         padding: '1rem',
       }}
     >
-      <Panel title="Atlas Companion">
-        <p style={{ color: 'var(--text-muted)', marginTop: 0 }}>
-          Sign in to the Atlas host. Sessions use an HTTP-only cookie over HTTPS.
+      <Panel>
+        <div className="brand" style={{ marginBottom: '0.85rem' }}>
+          <div className="brand-mark" aria-hidden />
+          <div>
+            <strong>Atlas</strong>
+            <small>Personal workspace</small>
+          </div>
+        </div>
+        <p className="meta" style={{ marginTop: 0, marginBottom: '0.9rem' }}>
+          Sign in to your Atlas host. Sessions use a secure cookie over HTTPS.
         </p>
-        <form onSubmit={onSubmit} style={{ display: 'grid', gap: '0.75rem' }}>
-          <label>
-            Password
+        <form onSubmit={onSubmit}>
+          <div className="field">
+            <label htmlFor="password">Password</label>
             <input
+              id="password"
               type="password"
               autoComplete="current-password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               required
             />
-          </label>
-          {error ? (
-            <div style={{ color: 'var(--danger)' }}>{error}</div>
-          ) : null}
+          </div>
+          {error ? <p className="error-text">{error}</p> : null}
           <button className="primary" type="submit" disabled={busy}>
             {busy ? 'Signing in…' : 'Sign in'}
           </button>

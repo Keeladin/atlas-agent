@@ -1,15 +1,23 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
-import type { FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { FormEvent, UIEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import type { Conversation } from '../api/types'
+import { Inspect } from '../ui/Inspect'
 import { Panel } from '../ui/Panel'
+
+const NEAR_BOTTOM_PX = 72
 
 export function Chat() {
   const queryClient = useQueryClient()
   const [activeId, setActiveId] = useState<string | null>(null)
   const [message, setMessage] = useState('')
+  const [stickToBottom, setStickToBottom] = useState(true)
+  const [showJump, setShowJump] = useState(false)
+  const threadRef = useRef<HTMLDivElement>(null)
+  const composerRef = useRef<HTMLTextAreaElement>(null)
+  const bootstrapped = useRef(false)
 
   const listQuery = useQuery({
     queryKey: ['conversations'],
@@ -23,6 +31,41 @@ export function Chat() {
     enabled: Boolean(activeId),
   })
 
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const el = threadRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior })
+    setStickToBottom(true)
+    setShowJump(false)
+  }, [])
+
+  const focusComposer = useCallback(() => {
+    requestAnimationFrame(() => composerRef.current?.focus())
+  }, [])
+
+  const selectConversation = useCallback(
+    (id: string, options?: { focus?: boolean }) => {
+      setActiveId(id)
+      setStickToBottom(true)
+      setShowJump(false)
+      if (options?.focus) focusComposer()
+    },
+    [focusComposer],
+  )
+
+  useEffect(() => {
+    if (!stickToBottom) {
+      setShowJump(true)
+      return
+    }
+    scrollToLatest('auto')
+  }, [
+    activeId,
+    conversationQuery.data?.turns?.length,
+    stickToBottom,
+    scrollToLatest,
+  ])
+
   const createMutation = useMutation({
     mutationFn: () =>
       api<Conversation>('/api/chat/conversations', {
@@ -30,10 +73,42 @@ export function Chat() {
         body: JSON.stringify({ title: 'Chat' }),
       }),
     onSuccess: (conversation) => {
-      setActiveId(conversation.id)
       void queryClient.invalidateQueries({ queryKey: ['conversations'] })
+      selectConversation(conversation.id, { focus: true })
     },
   })
+
+  const createConversation = createMutation.mutate
+  const creating = createMutation.isPending
+
+  // Prefer most recent conversation; otherwise open a blank ready-to-type chat.
+  useEffect(() => {
+    if (bootstrapped.current || activeId || !listQuery.isSuccess) return
+    const list = listQuery.data?.conversations || []
+    if (list.length > 0) {
+      bootstrapped.current = true
+      selectConversation(list[0].id)
+      return
+    }
+    if (creating) return
+    bootstrapped.current = true
+    createConversation()
+  }, [
+    activeId,
+    creating,
+    createConversation,
+    listQuery.isSuccess,
+    listQuery.data?.conversations,
+    selectConversation,
+  ])
+
+  function onThreadScroll(event: UIEvent<HTMLDivElement>) {
+    const el = event.currentTarget
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    const nearBottom = distance <= NEAR_BOTTOM_PX
+    setStickToBottom(nearBottom)
+    setShowJump(!nearBottom)
+  }
 
   const sendMutation = useMutation({
     mutationFn: () =>
@@ -43,122 +118,181 @@ export function Chat() {
       }),
     onSuccess: () => {
       setMessage('')
+      setStickToBottom(true)
       void queryClient.invalidateQueries({ queryKey: ['conversation', activeId] })
       void queryClient.invalidateQueries({ queryKey: ['conversations'] })
+      focusComposer()
     },
   })
 
   function onSend(event: FormEvent) {
     event.preventDefault()
-    if (!activeId) return
+    if (!activeId || !message.trim()) return
     sendMutation.mutate()
   }
 
+  const turns = conversationQuery.data?.turns || []
+  const ready = Boolean(activeId)
+
   return (
-    <div style={{ display: 'grid', gap: '1rem' }}>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          gap: '1rem',
-          flexWrap: 'wrap',
-        }}
-      >
-        <div>
-          <h1 style={{ margin: 0 }}>Chat</h1>
-          <p style={{ color: 'var(--text-muted)' }}>
-            ChatRuntime only. Use Plan Work to move an intent into Advanced → Work.
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button type="button" onClick={() => createMutation.mutate()}>
-            New conversation
-          </button>
-          <Link to="/work/new">
-            <button className="primary" type="button">
-              Plan Work
-            </button>
-          </Link>
-        </div>
+    <div className="chat-page">
+      <div className="chat-page-header">
+        <h1>Chat</h1>
+        <p>
+          Talk with Atlas. Start work from the left rail when talk becomes a
+          responsibility.
+        </p>
       </div>
-      <div
-        style={{
-          display: 'grid',
-          gap: '1rem',
-          gridTemplateColumns: 'minmax(180px, 240px) minmax(0, 1fr)',
-        }}
-      >
-        <Panel title="Conversations">
-          <div style={{ display: 'grid', gap: '0.4rem' }}>
+
+      {listQuery.isError || conversationQuery.isError ? (
+        <div className="offline-banner">
+          Could not reach chat. Check your connection or sign in again.
+        </div>
+      ) : null}
+
+      <div className="chat-layout">
+        <Panel className="chat-rail" title="Conversations">
+          <div className="chat-rail-actions">
+            <button
+              className="primary"
+              type="button"
+              onClick={() => createMutation.mutate()}
+              disabled={createMutation.isPending}
+            >
+              New chat
+            </button>
+            <Link to="/work/new">
+              <button className="primary" type="button">
+                Start work from this
+              </button>
+            </Link>
+          </div>
+          <h2 className="chat-section-title">Recents</h2>
+          <div className="chat-rail-scroll">
             {(listQuery.data?.conversations || []).map((item) => (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setActiveId(item.id)}
+                className="ghost chat-recent-item"
+                onClick={() => selectConversation(item.id)}
                 style={{
-                  textAlign: 'left',
                   background:
                     item.id === activeId
-                      ? 'rgba(91, 140, 255, 0.18)'
-                      : 'var(--bg-elevated)',
+                      ? 'rgba(110, 168, 255, 0.12)'
+                      : 'transparent',
                 }}
               >
-                {item.title}
+                <strong>{item.title}</strong>
+                <span className="meta">{item.turn_count} messages</span>
               </button>
             ))}
+            {!listQuery.data?.conversations?.length && !createMutation.isPending ? (
+              <p className="empty">No conversations yet.</p>
+            ) : null}
           </div>
         </Panel>
-        <Panel title={conversationQuery.data?.title || 'Transcript'}>
-          {!activeId ? (
-            <p style={{ color: 'var(--text-muted)' }}>
-              Select or create a conversation.
-            </p>
-          ) : (
-            <>
-              <div style={{ display: 'grid', gap: '0.65rem', marginBottom: '1rem' }}>
-                {(conversationQuery.data?.turns || []).map((turn) => (
+
+        <Panel className="chat-thread-pane">
+          <div className="chat-thread-body">
+            {!ready ? (
+              <p className="empty">Opening chat…</p>
+            ) : (
+              <>
+                <div className="chat-thread-title">
+                  <strong>
+                    {conversationQuery.data?.title || 'Conversation'}
+                  </strong>
+                </div>
+                <div className="chat-thread-wrap">
                   <div
-                    key={turn.id}
-                    style={{
-                      padding: '0.75rem',
-                      borderRadius: 12,
-                      background:
-                        turn.role === 'user'
-                          ? 'rgba(91, 140, 255, 0.12)'
-                          : 'var(--bg-elevated)',
-                      border: '1px solid var(--border)',
-                    }}
+                    className="thread"
+                    ref={threadRef}
+                    onScroll={onThreadScroll}
                   >
-                    <div
-                      style={{
-                        fontSize: '0.75rem',
-                        color: 'var(--text-muted)',
-                        marginBottom: '0.35rem',
-                      }}
-                    >
-                      {turn.role}
-                    </div>
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{turn.content}</div>
+                    {turns.map((turn) => (
+                      <div
+                        key={turn.id}
+                        className={`bubble ${turn.role === 'user' ? 'user' : ''}`}
+                      >
+                        <div className="who">
+                          {turn.role === 'user' ? 'You' : 'Atlas'}
+                        </div>
+                        {turn.content}
+                      </div>
+                    ))}
+                    {!turns.length ? (
+                      <p className="empty">Say hello to start.</p>
+                    ) : null}
+                    {sendMutation.isError ? (
+                      <p className="error-text">
+                        {(sendMutation.error as Error).message}
+                      </p>
+                    ) : null}
                   </div>
-                ))}
+                  {showJump ? (
+                    <button
+                      type="button"
+                      className="jump-latest"
+                      onClick={() => scrollToLatest('smooth')}
+                    >
+                      Jump to latest
+                    </button>
+                  ) : null}
+                </div>
+                <form className="composer" onSubmit={onSend}>
+                  <textarea
+                    ref={composerRef}
+                    value={message}
+                    onChange={(event) => setMessage(event.target.value)}
+                    placeholder="Message Atlas…"
+                    required
+                  />
+                  <button
+                    className="primary"
+                    type="submit"
+                    disabled={sendMutation.isPending}
+                  >
+                    Send
+                  </button>
+                </form>
+              </>
+            )}
+          </div>
+        </Panel>
+
+        <Panel className="chat-context-pane" title="Context">
+          <div className="chat-context-scroll">
+            <p className="meta" style={{ marginTop: 0 }}>
+              Helpful next steps — not runtime noise.
+            </p>
+            <div className="list-row">
+              <div>
+                <strong>Suggested next step</strong>
+                <div className="meta">Start work when ready</div>
               </div>
-              <form onSubmit={onSend} style={{ display: 'grid', gap: '0.5rem' }}>
-                <textarea
-                  value={message}
-                  onChange={(event) => setMessage(event.target.value)}
-                  placeholder="Message Atlas…"
-                  required
-                />
-                <button
-                  className="primary"
-                  type="submit"
-                  disabled={sendMutation.isPending}
-                >
-                  Send
+            </div>
+            <div className="list-row">
+              <div>
+                <strong>Bridge</strong>
+                <div className="meta">Turn this chat into durable Work</div>
+              </div>
+              <Link to="/work/new">
+                <button className="ghost" type="button">
+                  Plan
                 </button>
-              </form>
-            </>
-          )}
+              </Link>
+            </div>
+            <Inspect label="Inspect conversation details">
+              {JSON.stringify(
+                {
+                  conversation_id: activeId,
+                  turn_count: turns.length,
+                },
+                null,
+                2,
+              )}
+            </Inspect>
+          </div>
         </Panel>
       </div>
     </div>

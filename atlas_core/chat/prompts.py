@@ -4,6 +4,7 @@ from collections.abc import Sequence
 
 from .awareness import CapabilityAwareness
 from .conversations import ConversationTurn
+from .identity import AtlasChatIdentity, TurnProviderTruth, render_identity_truth
 
 
 CHAT_SYSTEM = """You are Atlas in conversation.
@@ -37,8 +38,21 @@ def render_awareness(items: Sequence[CapabilityAwareness]) -> str:
     return "\n".join(lines)
 
 
-def build_system_prompt(awareness: Sequence[CapabilityAwareness]) -> str:
-    return f"{CHAT_SYSTEM.rstrip()}\n\n{render_awareness(awareness)}\n"
+def build_system_prompt(
+    awareness: Sequence[CapabilityAwareness],
+    *,
+    identity: AtlasChatIdentity | None = None,
+    turn_provider: TurnProviderTruth | None = None,
+) -> str:
+    identity = identity or AtlasChatIdentity()
+    turn_provider = turn_provider or TurnProviderTruth(
+        provider_key=None, model=None, local=None
+    )
+    return (
+        f"{CHAT_SYSTEM.rstrip()}\n\n"
+        f"{render_identity_truth(identity, turn_provider)}\n\n"
+        f"{render_awareness(awareness)}\n"
+    )
 
 
 def build_model_input(turns: Sequence[ConversationTurn]) -> str:

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mobile Work · Atlas Companion proposal</title>
+  <link rel="stylesheet" href="../design-system.css" />
+</head>
+<body style="background:#05080f">
+  <div class="proposal-banner" style="max-width:420px;margin:1rem auto 0">Mobile work detail — decision first, progress second, inspect last.</div>
+  <div class="phone-frame">
+    <div class="notch">9:41</div>
+    <div class="phone-body">
+      <div style="color:var(--faint);font-size:0.78rem;margin-bottom:0.35rem">Work</div>
+      <strong style="font-size:1.2rem;display:block;margin-bottom:0.35rem">Send the weekly ops email</strong>
+      <div class="actions" style="margin-bottom:0.85rem">
+        <span class="chip waiting">Waiting</span>
+        <span class="chip confirm">Confirm</span>
+      </div>
+
+      <div class="card decision-confirm" style="margin-bottom:0.75rem">
+        <h2>Confirm message</h2>
+        <p style="margin-top:0">Atlas wants to send this email to <strong>ops@example.invalid</strong> with subject <strong>Weekly ops report</strong>.</p>
+        <div class="actions" style="flex-direction:column;align-items:stretch">
+          <button class="confirm" type="button">Confirm &amp; send</button>
+          <button class="danger" type="button">Deny</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:0.75rem">
+        <h2>Progress</h2>
+        <div class="timeline">
+          <div class="t-item done"><strong>Prepared</strong></div>
+          <div class="t-item waiting"><strong>Waiting for confirmation</strong></div>
+          <div class="t-item" style="opacity:.45"><strong>Send</strong></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <details class="inspect" open>
+          <summary>Inspect details</summary>
+          <pre style="margin-top:0.65rem">Technical identifiers stay collapsed by default on phone too.</pre>
+        </details>
+      </div>
+    </div>
+    <nav class="bottom-nav">
+      <a href="mobile-home.html">Home</a>
+      <a href="mobile-chat.html">Chat</a>
+      <a class="active" href="mobile-work.html">Work</a>
+      <a href="#">Knowledge</a>
+      <a href="#">More</a>
+    </nav>
+  </div>
+</body>
+</html>

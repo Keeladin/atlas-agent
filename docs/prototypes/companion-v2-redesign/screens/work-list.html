@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Work · Atlas Companion proposal</title>
+  <link rel="stylesheet" href="../design-system.css" />
+</head>
+<body>
+  <div class="proposal-banner">Visual proposal only — not wired to production Companion.</div>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="mark"></div><div><strong>Atlas</strong><span>Personal workspace</span></div></div>
+      <nav class="nav">
+        <a href="home.html"><span class="dot"></span>Home</a>
+        <a href="chat.html"><span class="dot"></span>Chat</a>
+        <a class="active" href="work-list.html"><span class="dot"></span>Work</a>
+        <a href="plan-work.html"><span class="dot"></span>Plan</a>
+        <a href="#"><span class="dot"></span>Knowledge</a>
+        <a href="#"><span class="dot"></span>Files</a>
+        <a href="#"><span class="dot"></span>Settings</a>
+      </nav>
+      <div class="sidebar-foot"><strong>Signed in</strong><small>Owner session · host local</small></div>
+    </aside>
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h1>Work</h1>
+          <p>Durable responsibilities Atlas is carrying — progress, waits, and outcomes at a glance.</p>
+        </div>
+        <div class="actions">
+          <a href="plan-work.html"><button class="primary" type="button">Plan new work</button></a>
+        </div>
+      </div>
+
+      <div class="filters">
+        <button class="active" type="button">All</button>
+        <button type="button">Needs you</button>
+        <button type="button">In progress</button>
+        <button type="button">Waiting</button>
+        <button type="button">Done</button>
+      </div>
+
+      <div class="stack">
+        <a class="card" href="work-detail.html" style="display:block">
+          <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;align-items:flex-start">
+            <div>
+              <h2 style="margin:0 0 0.35rem;font-size:1.1rem">Send the weekly ops email</h2>
+              <div class="meta" style="color:var(--muted)">Atlas is ready — waiting for your confirmation before sending</div>
+            </div>
+            <span class="chip confirm">Needs confirmation</span>
+          </div>
+          <div class="progress" style="margin-top:0.9rem"><span style="width:55%"></span></div>
+          <div class="meta" style="margin-top:0.45rem;color:var(--faint)">Prepared · confirmation · send</div>
+        </a>
+
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+            <div>
+              <h2 style="margin:0 0 0.35rem;font-size:1.1rem">Create inbox triage workflow</h2>
+              <div class="meta" style="color:var(--muted)">Waiting for permission to act outside Atlas</div>
+            </div>
+            <span class="chip auth">Needs authority</span>
+          </div>
+          <div class="progress" style="margin-top:0.9rem"><span style="width:28%;background:linear-gradient(90deg,#a78bfa,#38bdf8)"></span></div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+            <div>
+              <h2 style="margin:0 0 0.35rem;font-size:1.1rem">Search plant manuals for conveyor faults</h2>
+              <div class="meta" style="color:var(--muted)">Searching local knowledge</div>
+            </div>
+            <span class="chip running">In progress</span>
+          </div>
+          <div class="progress" style="margin-top:0.9rem"><span style="width:78%"></span></div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+            <div>
+              <h2 style="margin:0 0 0.35rem;font-size:1.1rem">Index maintenance notes</h2>
+              <div class="meta" style="color:var(--muted)">Finished · 24 chunks added to knowledge</div>
+            </div>
+            <span class="chip done">Done</span>
+          </div>
+          <div class="progress" style="margin-top:0.9rem"><span style="width:100%;background:linear-gradient(90deg,#34d399,#6ee7b7)"></span></div>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

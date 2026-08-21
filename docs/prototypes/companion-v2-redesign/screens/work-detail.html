@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Work detail · Atlas Companion proposal</title>
+  <link rel="stylesheet" href="../design-system.css" />
+</head>
+<body>
+  <div class="proposal-banner">Visual proposal only — not wired to production Companion.</div>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="mark"></div><div><strong>Atlas</strong><span>Personal workspace</span></div></div>
+      <nav class="nav">
+        <a href="home.html"><span class="dot"></span>Home</a>
+        <a href="chat.html"><span class="dot"></span>Chat</a>
+        <a class="active" href="work-list.html"><span class="dot"></span>Work</a>
+        <a href="plan-work.html"><span class="dot"></span>Plan</a>
+        <a href="#"><span class="dot"></span>Knowledge</a>
+        <a href="#"><span class="dot"></span>Files</a>
+        <a href="#"><span class="dot"></span>Settings</a>
+      </nav>
+      <div class="sidebar-foot"><strong>Signed in</strong><small>Owner session · host local</small></div>
+    </aside>
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <div style="color:var(--faint);font-size:0.85rem;margin-bottom:0.35rem"><a href="work-list.html">Work</a> / Current</div>
+          <h1>Send the weekly ops email</h1>
+          <p>Atlas prepared the message and is waiting for your confirmation before anything is sent.</p>
+          <div class="actions" style="margin-top:0.65rem">
+            <span class="chip waiting">Waiting</span>
+            <span class="chip confirm">Needs confirmation</span>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="button">Continue</button>
+          <button class="danger" type="button">Cancel work</button>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="stack">
+          <section class="card decision-confirm">
+            <h2>Decision needed · Confirm message</h2>
+            <p style="margin-top:0;font-size:1.05rem;line-height:1.5">
+              Atlas wants to send this email to <strong>ops@example.invalid</strong>
+              with subject <strong>Weekly ops report</strong>.
+            </p>
+            <div class="card" style="box-shadow:none;background:#0a1020;margin:0.75rem 0 1rem">
+              <div style="color:var(--faint);font-size:0.78rem;margin-bottom:0.45rem">Message preview</div>
+              Team — brief update: two short stoppages on Line B, and the east conveyor fault is still open pending parts. No safety incidents.
+            </div>
+            <div class="actions">
+              <button class="confirm" type="button">Confirm &amp; send</button>
+              <button class="danger" type="button">Deny</button>
+              <button type="button">Cancel confirmation</button>
+            </div>
+            <div class="inspect">
+              <summary>Inspect exact payload</summary>
+              <pre>Shown only on demand. No identifiers in the default card.</pre>
+            </div>
+          </section>
+
+          <section class="card">
+            <h2>Progress</h2>
+            <div class="timeline">
+              <div class="t-item done">
+                <strong>Prepared</strong>
+                <div class="meta" style="color:var(--muted)">Objective accepted and message drafted from your chat</div>
+              </div>
+              <div class="t-item waiting">
+                <strong>Waiting for confirmation</strong>
+                <div class="meta" style="color:var(--muted)">Nothing has been sent yet</div>
+              </div>
+              <div class="t-item" style="opacity:0.45">
+                <strong>Send email</strong>
+                <div class="meta" style="color:var(--muted)">Runs only after you confirm</div>
+              </div>
+              <div class="t-item" style="opacity:0.45">
+                <strong>Outcome</strong>
+                <div class="meta" style="color:var(--muted)">Receipt and evidence appear here</div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div class="stack">
+          <section class="card">
+            <h2>Outcome so far</h2>
+            <p style="color:var(--muted);margin-top:0">No send yet. This work is paused for your decision — not running in the background.</p>
+            <div class="progress"><span style="width:55%"></span></div>
+          </section>
+
+          <section class="card">
+            <h2>Artifacts</h2>
+            <div class="list-row">
+              <div><strong>Email draft</strong><div class="meta">Ready for confirmation</div></div>
+              <button class="ghost" type="button">View</button>
+            </div>
+            <div class="list-row">
+              <div><strong>Original request</strong><div class="meta">From chat</div></div>
+              <button class="ghost" type="button">View</button>
+            </div>
+          </section>
+
+          <section class="card">
+            <h2>Evidence</h2>
+            <p style="color:var(--muted);margin:0">Evidence and receipts will appear after the send completes.</p>
+          </section>
+
+          <section class="card">
+            <h2>Activity</h2>
+            <div class="list-row"><div><strong>Confirmation requested</strong><div class="meta">Just now</div></div></div>
+            <div class="list-row"><div><strong>Work started</strong><div class="meta">A minute ago</div></div></div>
+            <div class="inspect">
+              <summary>Inspect technical details</summary>
+              <pre>Contract, pins, raw event names, and IDs live here — not in the main cockpit.</pre>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

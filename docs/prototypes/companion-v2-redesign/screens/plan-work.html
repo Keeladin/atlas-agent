@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Plan Work · Atlas Companion proposal</title>
+  <link rel="stylesheet" href="../design-system.css" />
+</head>
+<body>
+  <div class="proposal-banner">Visual proposal only — not wired to production Companion.</div>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="mark"></div><div><strong>Atlas</strong><span>Personal workspace</span></div></div>
+      <nav class="nav">
+        <a href="home.html"><span class="dot"></span>Home</a>
+        <a href="chat.html"><span class="dot"></span>Chat</a>
+        <a href="work-list.html"><span class="dot"></span>Work</a>
+        <a class="active" href="plan-work.html"><span class="dot"></span>Plan</a>
+        <a href="#"><span class="dot"></span>Knowledge</a>
+        <a href="#"><span class="dot"></span>Files</a>
+        <a href="#"><span class="dot"></span>Settings</a>
+      </nav>
+      <div class="sidebar-foot"><strong>Signed in</strong><small>Owner session · host local</small></div>
+    </aside>
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h1>Plan work</h1>
+          <p>Describe what Atlas should own. Review the plan, grant the right permission, then accept it into durable work.</p>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <section class="card">
+          <h2>1 · Intent</h2>
+          <div class="field">
+            <label>What should Atlas do?</label>
+            <textarea>Send a short weekly ops email to ops@example.invalid summarizing downtime and the open conveyor issue.</textarea>
+          </div>
+          <div class="field">
+            <label>Notes for planning</label>
+            <textarea>Keep it brief. Confirmation before send.</textarea>
+          </div>
+          <button class="primary" type="button">Create plan</button>
+        </section>
+
+        <section class="card">
+          <h2>2 · Review plan</h2>
+          <div class="brief-preview">
+            <div class="row"><span>Objective</span><div>Send the weekly ops email</div></div>
+            <div class="row"><span>Will do</span><div>Prepare and send an email communication</div></div>
+            <div class="row"><span>Permission</span><div>Communicate · you can raise or keep as proposed</div></div>
+            <div class="row"><span>Expected result</span><div>External communication delivered after confirmation</div></div>
+            <div class="row"><span>Constraints</span><div>Keep it short</div></div>
+          </div>
+          <div class="field" style="margin-top:1rem">
+            <label>Authority for this work</label>
+            <select>
+              <option>Communicate</option>
+              <option>Read</option>
+              <option>Modify internal</option>
+              <option>Execute external</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Message details</label>
+            <input value="To: ops@example.invalid  ·  Subject: Weekly ops report" />
+          </div>
+          <div class="actions">
+            <a href="work-detail.html"><button class="primary" type="button">Accept into Work</button></a>
+            <button type="button">Revise plan</button>
+          </div>
+          <div class="inspect">
+            <summary>Inspect technical plan</summary>
+            <pre>Capability pins and raw brief JSON stay collapsed.</pre>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

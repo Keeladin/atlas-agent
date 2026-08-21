@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Home · Atlas Companion proposal</title>
+  <link rel="stylesheet" href="../design-system.css" />
+</head>
+<body>
+  <div class="proposal-banner">Visual proposal only — not wired to production Companion.</div>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="mark"></div><div><strong>Atlas</strong><span>Personal workspace</span></div></div>
+      <nav class="nav">
+        <a class="active" href="home.html"><span class="dot"></span>Home</a>
+        <a href="chat.html"><span class="dot"></span>Chat</a>
+        <a href="work-list.html"><span class="dot"></span>Work</a>
+        <a href="plan-work.html"><span class="dot"></span>Plan</a>
+        <a href="#"><span class="dot"></span>Knowledge</a>
+        <a href="#"><span class="dot"></span>Files</a>
+        <a href="#"><span class="dot"></span>Settings</a>
+      </nav>
+      <div class="sidebar-foot"><strong>Signed in</strong><small>Owner session · host local</small></div>
+    </aside>
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h1>Good evening</h1>
+          <p>Atlas is holding three things that need you, and two pieces of work already underway.</p>
+        </div>
+        <div class="actions">
+          <a href="chat.html"><button type="button">Continue chat</button></a>
+          <a href="plan-work.html"><button class="primary" type="button">Start work</button></a>
+        </div>
+      </div>
+
+      <div class="grid-3" style="margin-bottom:1rem">
+        <div class="card kpi"><div class="value" style="color:#ffd978">3</div><div class="label">Needs your attention</div></div>
+        <div class="card kpi"><div class="value" style="color:#93c5fd">2</div><div class="label">In progress</div></div>
+        <div class="card kpi"><div class="value" style="color:#6ee7b7">5</div><div class="label">Finished today</div></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="stack">
+          <section class="card attention">
+            <h2>Needs you</h2>
+            <div class="list-row">
+              <div>
+                <strong>Confirm sending the weekly ops email</strong>
+                <div class="meta">Atlas prepared the message · waiting for your go-ahead</div>
+              </div>
+              <span class="chip confirm">Confirm</span>
+            </div>
+            <div class="list-row">
+              <div>
+                <strong>Approve external automation access</strong>
+                <div class="meta">Creating a workflow needs a higher permission</div>
+              </div>
+              <span class="chip auth">Authority</span>
+            </div>
+            <div class="list-row">
+              <div>
+                <strong>Recover interrupted indexing</strong>
+                <div class="meta">Knowledge ingest stopped mid-run after a restart</div>
+              </div>
+              <span class="chip waiting">Recover</span>
+            </div>
+          </section>
+
+          <section class="card">
+            <h2>In motion</h2>
+            <div class="list-row">
+              <div>
+                <strong>Search plant manuals for conveyor faults</strong>
+                <div class="meta">Searching local knowledge · almost done</div>
+                <div class="progress" style="margin-top:0.55rem"><span style="width:78%"></span></div>
+              </div>
+              <span class="chip running">Running</span>
+            </div>
+            <div class="list-row">
+              <div>
+                <strong>Draft morning pack for Tuesday</strong>
+                <div class="meta">Assembling verified sources</div>
+                <div class="progress" style="margin-top:0.55rem"><span style="width:42%"></span></div>
+              </div>
+              <span class="chip running">Running</span>
+            </div>
+          </section>
+        </div>
+
+        <div class="stack">
+          <section class="card">
+            <h2>Jump back in</h2>
+            <div class="list-row">
+              <div>
+                <strong>Morning briefing chat</strong>
+                <div class="meta">Last message 12 minutes ago</div>
+              </div>
+              <button class="ghost" type="button">Open</button>
+            </div>
+            <div class="list-row">
+              <div>
+                <strong>Email to ops</strong>
+                <div class="meta">Waiting for confirmation</div>
+              </div>
+              <a href="work-detail.html"><button class="ghost" type="button">Open</button></a>
+            </div>
+            <div class="list-row">
+              <div>
+                <strong>Index maintenance notes</strong>
+                <div class="meta">Completed this morning</div>
+              </div>
+              <span class="chip done">Done</span>
+            </div>
+          </section>
+
+          <section class="card">
+            <h2>Quick starts</h2>
+            <div class="actions" style="flex-direction:column;align-items:stretch">
+              <button type="button">Ask Atlas anything</button>
+              <button type="button">Turn a chat into work</button>
+              <button type="button">Index a file into knowledge</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

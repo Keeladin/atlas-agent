@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mobile Chat · Atlas Companion proposal</title>
+  <link rel="stylesheet" href="../design-system.css" />
+</head>
+<body style="background:#05080f">
+  <div class="proposal-banner" style="max-width:420px;margin:1rem auto 0">Mobile chat — full-width conversation, work CTA stays reachable.</div>
+  <div class="phone-frame">
+    <div class="notch">9:41</div>
+    <div class="phone-body" style="display:flex;flex-direction:column;min-height:700px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
+        <strong>Morning briefing</strong>
+        <button type="button" style="min-height:34px">Work</button>
+      </div>
+      <div class="thread" style="flex:1">
+        <div class="bubble user"><div class="who">You</div>Draft a short weekly ops email.</div>
+        <div class="bubble"><div class="who">Atlas</div>Draft ready. I can start work and ask you to confirm before sending.</div>
+        <div class="bubble user"><div class="who">You</div>Yes — to ops@example.invalid.</div>
+      </div>
+      <div class="composer" style="margin-top:0.75rem;grid-template-columns:1fr">
+        <textarea placeholder="Message Atlas…" style="min-height:44px"></textarea>
+        <button class="primary" type="button">Send</button>
+      </div>
+    </div>
+    <nav class="bottom-nav">
+      <a href="mobile-home.html">Home</a>
+      <a class="active" href="mobile-chat.html">Chat</a>
+      <a href="mobile-work.html">Work</a>
+      <a href="#">Knowledge</a>
+      <a href="#">More</a>
+    </nav>
+  </div>
+</body>
+</html>

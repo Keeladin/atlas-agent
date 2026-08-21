@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chat · Atlas Companion proposal</title>
+  <link rel="stylesheet" href="../design-system.css" />
+</head>
+<body>
+  <div class="proposal-banner">Visual proposal only — not wired to production Companion.</div>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="mark"></div><div><strong>Atlas</strong><span>Personal workspace</span></div></div>
+      <nav class="nav">
+        <a href="home.html"><span class="dot"></span>Home</a>
+        <a class="active" href="chat.html"><span class="dot"></span>Chat</a>
+        <a href="work-list.html"><span class="dot"></span>Work</a>
+        <a href="plan-work.html"><span class="dot"></span>Plan</a>
+        <a href="#"><span class="dot"></span>Knowledge</a>
+        <a href="#"><span class="dot"></span>Files</a>
+        <a href="#"><span class="dot"></span>Settings</a>
+      </nav>
+      <div class="sidebar-foot"><strong>Signed in</strong><small>Owner session · host local</small></div>
+    </aside>
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h1>Chat</h1>
+          <p>Conversation with Atlas. When talk becomes responsibility, start work without leaving the thread.</p>
+        </div>
+        <div class="actions">
+          <button type="button">New chat</button>
+          <a href="plan-work.html"><button class="primary" type="button">Start work from this</button></a>
+        </div>
+      </div>
+
+      <div class="chat-layout">
+        <section class="card" style="padding:0.85rem">
+          <h2>Recents</h2>
+          <div class="list-row"><div><strong>Morning briefing</strong><div class="meta">Active</div></div></div>
+          <div class="list-row"><div><strong>Conveyor troubleshooting</strong><div class="meta">Yesterday</div></div></div>
+          <div class="list-row"><div><strong>Ops email wording</strong><div class="meta">Mon</div></div></div>
+        </section>
+
+        <section class="card" style="display:flex;flex-direction:column;min-height:70vh">
+          <div class="thread" style="flex:1">
+            <div class="bubble user">
+              <div class="who">You</div>
+              Can you draft a short weekly ops email to the team summarizing downtime and the open conveyor issue?
+            </div>
+            <div class="bubble">
+              <div class="who">Atlas</div>
+              Here’s a concise draft based on this week’s notes:
+              <br /><br />
+              Subject: Weekly ops summary<br /><br />
+              Team — brief update: two short stoppages on Line B, and the east conveyor fault is still open pending parts. No safety incidents. I’ll keep the morning pack current.
+              <br /><br />
+              If you want this sent, I can turn it into work and ask you to confirm the exact message first.
+            </div>
+            <div class="bubble user">
+              <div class="who">You</div>
+              Yes — prepare it to send to ops@example.invalid.
+            </div>
+            <div class="bubble">
+              <div class="who">Atlas</div>
+              Ready. I’ll open a work item that pauses for your confirmation before anything goes out.
+              <div class="actions" style="margin-top:0.75rem">
+                <a href="plan-work.html"><button class="primary" type="button">Review &amp; start work</button></a>
+                <button type="button">Edit draft in chat</button>
+              </div>
+            </div>
+          </div>
+          <div class="composer" style="margin-top:1rem">
+            <textarea placeholder="Message Atlas…"></textarea>
+            <button class="primary" type="button">Send</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Context</h2>
+          <div class="meta" style="color:var(--muted);margin-bottom:0.85rem">Helpful side panel — not runtime noise.</div>
+          <div class="list-row"><div><strong>Suggested next step</strong><div class="meta">Start work to send the email</div></div></div>
+          <div class="list-row"><div><strong>Related knowledge</strong><div class="meta">Morning pack · Line B notes</div></div></div>
+          <div class="list-row"><div><strong>Tone</strong><div class="meta">Short, operational</div></div></div>
+          <div class="inspect">
+            <summary>Inspect conversation details</summary>
+            <pre>Hidden by default. Technical identifiers stay here.</pre>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

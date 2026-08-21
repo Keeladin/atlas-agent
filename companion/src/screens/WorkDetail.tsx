@@ -3,8 +3,11 @@ import { useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { WorkDetail as WorkDetailType } from '../api/types'
+import { phaseChip, stepTone } from '../lib/workLabels'
+import { Chip } from '../ui/Chip'
+import { Inspect } from '../ui/Inspect'
 import { Panel } from '../ui/Panel'
-import { StatusChip } from '../ui/StatusChip'
+import { StepProgress } from '../ui/StepProgress'
 
 export function WorkDetail() {
   const { workId = '' } = useParams()
@@ -15,7 +18,7 @@ export function WorkDetail() {
     enabled: Boolean(workId),
     refetchInterval: (query) => {
       const phase = query.state.data?.phase
-      return phase === 'running' || phase === 'active' ? 2000 : false
+      return phase === 'running' || phase === 'active' ? 2500 : false
     },
   })
 
@@ -29,8 +32,8 @@ export function WorkDetail() {
     )
     const refresh = () => {
       void queryClient.invalidateQueries({ queryKey: ['work-detail', workId] })
+      void queryClient.invalidateQueries({ queryKey: ['work'] })
     }
-    source.onmessage = refresh
     source.addEventListener('confirmation.requested', refresh)
     source.addEventListener('confirmation.applied', refresh)
     source.addEventListener('approval.requested', refresh)
@@ -39,11 +42,13 @@ export function WorkDetail() {
     source.addEventListener('work.completed', refresh)
     source.addEventListener('work.failed', refresh)
     source.addEventListener('capability.completed', refresh)
+    source.onmessage = refresh
     return () => source.close()
   }, [workId, queryClient, detailQuery.data?.events?.length])
 
   const runMutation = useMutation({
-    mutationFn: () => api(`/api/work/${workId}/run`, { method: 'POST', body: '{}' }),
+    mutationFn: () =>
+      api(`/api/work/${workId}/run`, { method: 'POST', body: '{}' }),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: ['work-detail', workId] }),
   })
@@ -61,43 +66,47 @@ export function WorkDetail() {
   })
 
   const detail = detailQuery.data
-
-  if (detailQuery.isLoading) return <p>Loading work…</p>
-  if (detailQuery.error) {
+  if (detailQuery.isLoading) return <p className="empty">Loading work…</p>
+  if (detailQuery.isError) {
     return (
-      <p style={{ color: 'var(--danger)' }}>
-        {(detailQuery.error as Error).message}
-      </p>
+      <div className="offline-banner">
+        {(detailQuery.error as Error).message || 'Could not load this work.'}
+      </div>
     )
   }
   if (!detail) return null
 
-  const phaseLabel =
-    detail.phase === 'waiting_confirmation'
-      ? 'waiting · confirmation'
-      : detail.phase === 'waiting_authority'
-        ? 'waiting · authority'
-        : detail.phase
+  const chip = phaseChip(detail)
+  const waitingNotRunning =
+    detail.phase === 'waiting_confirmation' ||
+    detail.phase === 'waiting_authority'
 
   return (
-    <div style={{ display: 'grid', gap: '1rem' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+    <div className="stack">
+      <div className="topbar">
         <div>
-          <Link to="/work" style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-            ← Work
-          </Link>
-          <h1 style={{ margin: '0.35rem 0' }}>{detail.objective}</h1>
-          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <StatusChip value={detail.status} />
-            <StatusChip value={detail.phase} label={phaseLabel} />
-            <StatusChip value={detail.authority_scope} label={`authority ${detail.authority_scope}`} />
+          <div className="crumb">
+            <Link to="/work">Work</Link> / Current
           </div>
-          <p style={{ color: 'var(--text-muted)', marginBottom: 0 }}>
-            {detail.work_id}
-            {detail.blocking ? ` · ${detail.blocking.message}` : ''}
+          <h1>{detail.objective}</h1>
+          <p>
+            {waitingNotRunning
+              ? detail.blocking?.message ||
+                'Atlas is waiting for your decision — nothing is executing.'
+              : detail.blocking?.message ||
+                'Track progress, decisions, artifacts, and outcome.'}
           </p>
+          <div className="actions" style={{ marginTop: '0.55rem' }}>
+            <Chip tone={chip.tone}>{chip.label}</Chip>
+            {detail.phase === 'waiting_confirmation' ? (
+              <Chip tone="confirm">Needs confirmation</Chip>
+            ) : null}
+            {detail.phase === 'waiting_authority' ? (
+              <Chip tone="auth">Needs authority approval</Chip>
+            ) : null}
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+        <div className="actions">
           {detail.actions.includes('run') ? (
             <button
               className="primary"
@@ -105,11 +114,12 @@ export function WorkDetail() {
               disabled={runMutation.isPending}
               onClick={() => runMutation.mutate()}
             >
-              Run
+              Continue
             </button>
           ) : null}
           {detail.actions.includes('recover') ? (
             <button
+              className="warn"
               type="button"
               disabled={recoverMutation.isPending}
               onClick={() => recoverMutation.mutate()}
@@ -124,122 +134,190 @@ export function WorkDetail() {
               disabled={cancelMutation.isPending}
               onClick={() => cancelMutation.mutate()}
             >
-              Cancel
+              Cancel work
             </button>
           ) : null}
         </div>
       </div>
 
-      {(detail.pending_approvals.length > 0 ||
-        detail.pending_confirmations.length > 0) && (
-        <Panel title="Needs you">
-          <div style={{ display: 'grid', gap: '0.75rem' }}>
-            {detail.pending_approvals.map((item) => (
-              <AuthorityCard
-                key={item.id}
-                item={item}
-                onDone={() =>
-                  queryClient.invalidateQueries({
-                    queryKey: ['work-detail', workId],
-                  })
-                }
-              />
-            ))}
-            {detail.pending_confirmations.map((item) => (
-              <ConfirmationCard
-                key={item.id}
-                item={item}
-                onDone={() =>
-                  queryClient.invalidateQueries({
-                    queryKey: ['work-detail', workId],
-                  })
-                }
-              />
-            ))}
-          </div>
-        </Panel>
-      )}
-
-      <Panel title="Contract">
-        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'var(--mono)', fontSize: '0.85rem' }}>
-          {JSON.stringify(detail.contract, null, 2)}
-        </pre>
-        <div style={{ marginTop: '0.75rem', display: 'grid', gap: '0.5rem' }}>
-          {detail.capabilities.map((pin) => (
-            <div
-              key={String(pin.capability_id)}
-              style={{
-                border: '1px solid var(--border)',
-                borderRadius: 10,
-                padding: '0.65rem 0.8rem',
-              }}
-            >
-              <strong>{String(pin.capability_id)}</strong>
-              <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                armed={String(pin.armed)} · confirmation={String(pin.confirmation)} ·{' '}
-                {String(pin.executor_kind || '—')}
-              </div>
+      <div className="grid-2">
+        <div className="stack">
+          {(detail.pending_approvals.length > 0 ||
+            detail.pending_confirmations.length > 0) && (
+            <div className="stack">
+              {detail.pending_approvals.map((item) => (
+                <AuthorityCard
+                  key={item.id}
+                  item={item}
+                  onDone={() =>
+                    queryClient.invalidateQueries({
+                      queryKey: ['work-detail', workId],
+                    })
+                  }
+                />
+              ))}
+              {detail.pending_confirmations.map((item) => (
+                <ConfirmationCard
+                  key={item.id}
+                  item={item}
+                  onDone={() =>
+                    queryClient.invalidateQueries({
+                      queryKey: ['work-detail', workId],
+                    })
+                  }
+                />
+              ))}
             </div>
-          ))}
-        </div>
-      </Panel>
+          )}
 
-      <Panel title="Steps">
-        <div style={{ display: 'grid', gap: '0.5rem' }}>
-          {detail.steps.map((step) => (
-            <div
-              key={step.id}
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                gap: '0.75rem',
-                flexWrap: 'wrap',
-                padding: '0.65rem 0',
-                borderBottom: '1px solid var(--border)',
-              }}
-            >
-              <div>
-                <div>
-                  <strong>
-                    {step.ordinal}. {step.description}
-                  </strong>
+          <Panel title="Progress">
+            <StepProgress steps={detail.steps} />
+            <div className="timeline" style={{ marginTop: '0.85rem' }}>
+              {detail.steps.map((step) => (
+                <div
+                  key={step.id}
+                  className={`t-item ${
+                    step.status === 'pass' || step.status === 'skipped'
+                      ? 'done'
+                      : step.status === 'blocked'
+                        ? 'waiting'
+                        : step.status === 'failed'
+                          ? 'failed'
+                          : step.status === 'pending'
+                            ? 'pending'
+                            : ''
+                  }`}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      gap: '0.75rem',
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <div>
+                      <strong>{step.description}</strong>
+                      <div className="meta">
+                        {step.capability || 'Step'}
+                      </div>
+                    </div>
+                    <Chip tone={stepTone(step.status)}>
+                      {stepLabel(step.status)}
+                    </Chip>
+                  </div>
                 </div>
-                <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                  {step.capability} {step.capability_version || ''}
+              ))}
+              {!detail.steps.length ? (
+                <p className="empty">No steps yet.</p>
+              ) : null}
+            </div>
+          </Panel>
+        </div>
+
+        <div className="stack">
+          <Panel
+            title="Outcome"
+            tone={detail.status === 'failed' ? 'failed' : undefined}
+          >
+            {detail.status === 'completed' ? (
+              <p style={{ marginTop: 0 }}>Work finished successfully.</p>
+            ) : detail.status === 'failed' ? (
+              <p style={{ marginTop: 0 }} className="error-text">
+                Work failed. Inspect activity and recover if needed.
+              </p>
+            ) : waitingNotRunning ? (
+              <p style={{ marginTop: 0 }}>
+                Paused for your decision. No execution is running.
+              </p>
+            ) : (
+              <p style={{ marginTop: 0 }} className="meta">
+                {detail.blocking?.message || 'In progress.'}
+              </p>
+            )}
+            <StepProgress steps={detail.steps} />
+          </Panel>
+
+          <Panel title="Artifacts">
+            <div className="scroll-panel">
+              {detail.artifacts.map((item) => (
+                <details key={String(item.id)} className="list-row" style={{ display: 'block' }}>
+                  <summary>
+                    <strong>{String(item.kind)}</strong>
+                    <div className="meta">Open preview</div>
+                  </summary>
+                  <Inspect label="Inspect artifact">
+                    {JSON.stringify(item.payload, null, 2)}
+                  </Inspect>
+                </details>
+              ))}
+              {!detail.artifacts.length ? (
+                <p className="empty">No artifacts yet.</p>
+              ) : null}
+            </div>
+          </Panel>
+
+          <Panel title="Evidence">
+            <div className="scroll-panel">
+              {detail.claims.map((claim) => (
+                <div key={String(claim.id)} className="list-row">
+                  <div>
+                    <strong>{String(claim.subject)}</strong>
+                    <div className="meta">{String(claim.kind)}</div>
+                  </div>
                 </div>
-              </div>
-              <StatusChip value={step.status} />
+              ))}
+              {detail.executions.map((execution) => (
+                <div key={String(execution.id)} className="list-row">
+                  <div>
+                    <strong>{String(execution.capability)}</strong>
+                    <div className="meta">
+                      Attempt {String(execution.attempt)} · {String(execution.status)}
+                      {execution.error ? ` · ${String(execution.error)}` : ''}
+                    </div>
+                  </div>
+                  <Chip tone={stepTone(String(execution.status))}>
+                    {String(execution.status)}
+                  </Chip>
+                </div>
+              ))}
+              {!detail.claims.length && !detail.executions.length ? (
+                <p className="empty">Evidence appears as work completes.</p>
+              ) : null}
             </div>
-          ))}
-        </div>
-      </Panel>
+          </Panel>
 
-      <Panel title="Artifacts">
-        <ArtifactList items={detail.artifacts} />
-      </Panel>
-
-      <Panel title="Evidence">
-        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'var(--mono)', fontSize: '0.85rem' }}>
-          {JSON.stringify({ claims: detail.claims, executions: detail.executions }, null, 2)}
-        </pre>
-      </Panel>
-
-      <Panel title="Events">
-        <div style={{ display: 'grid', gap: '0.45rem' }}>
-          {detail.events.map((event) => (
-            <div
-              key={String(event.id)}
-              style={{
-                fontFamily: 'var(--mono)',
-                fontSize: '0.8rem',
-                color: 'var(--text-muted)',
-              }}
-            >
-              #{String(event.id)} {String(event.created_at)} · {String(event.name)}
+          <Panel title="Activity">
+            <div className="scroll-panel">
+              {[...detail.events].reverse().map((event) => (
+                <div key={String(event.id)} className="list-row">
+                  <div>
+                    <strong>{humanEventName(String(event.name))}</strong>
+                    <div className="meta">{String(event.created_at)}</div>
+                  </div>
+                </div>
+              ))}
+              {!detail.events.length ? (
+                <p className="empty">No activity yet.</p>
+              ) : null}
             </div>
-          ))}
+            <Inspect label="Inspect technical details">
+              {JSON.stringify(
+                {
+                  work_id: detail.work_id,
+                  phase: detail.phase,
+                  status: detail.status,
+                  contract: detail.contract,
+                  capabilities: detail.capabilities,
+                  events: detail.events,
+                },
+                null,
+                2,
+              )}
+            </Inspect>
+          </Panel>
         </div>
-      </Panel>
+      </div>
     </div>
   )
 }
@@ -268,16 +346,27 @@ function AuthorityCard({
     onSuccess: onDone,
   })
   return (
-    <Panel title="Authority approval" tone="authority">
+    <Panel title="Authority approval" tone="decision-auth">
       <p style={{ marginTop: 0 }}>
-        Atlas needs <strong>{item.required_authority}</strong> authority.
+        Atlas needs <strong>{item.required_authority}</strong> authority before
+        continuing.
       </p>
-      <p style={{ color: 'var(--text-muted)' }}>{item.requested_action}</p>
-      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-        <button className="primary" type="button" onClick={() => approve.mutate()}>
+      <p className="meta">{item.requested_action}</p>
+      <div className="actions">
+        <button
+          className="authority"
+          type="button"
+          disabled={approve.isPending}
+          onClick={() => approve.mutate()}
+        >
           Approve authority
         </button>
-        <button className="danger" type="button" onClick={() => deny.mutate()}>
+        <button
+          className="danger"
+          type="button"
+          disabled={deny.isPending}
+          onClick={() => deny.mutate()}
+        >
           Deny authority
         </button>
       </div>
@@ -316,67 +405,86 @@ function ConfirmationCard({
       }),
     onSuccess: onDone,
   })
+  const invocation =
+    item.payload && typeof item.payload.invocation_input === 'object'
+      ? (item.payload.invocation_input as Record<string, unknown>)
+      : null
+
   return (
-    <Panel title="Payload confirmation" tone="confirmation">
-      <p style={{ marginTop: 0, fontSize: '1.05rem' }}>{item.summary}</p>
-      <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-        {item.capability_id} · {item.payload_sha256.slice(0, 12)}…
+    <Panel title="Payload confirmation" tone="decision-confirm">
+      <p style={{ marginTop: 0, fontSize: '1.05rem', lineHeight: 1.5 }}>
+        {item.summary}
       </p>
-      <pre
-        style={{
-          margin: '0 0 0.75rem',
-          whiteSpace: 'pre-wrap',
-          fontFamily: 'var(--mono)',
-          fontSize: '0.8rem',
-          background: '#0d1524',
-          padding: '0.75rem',
-          borderRadius: 10,
-        }}
-      >
-        {JSON.stringify(item.payload, null, 2)}
-      </pre>
-      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-        <button className="primary" type="button" onClick={() => confirm.mutate()}>
+      {invocation ? (
+        <div
+          className="card"
+          style={{ boxShadow: 'none', background: '#0a1020', margin: '0.75rem 0 1rem' }}
+        >
+          <div className="meta" style={{ marginBottom: '0.35rem' }}>
+            Message preview
+          </div>
+          {Object.entries(invocation).map(([key, value]) => (
+            <div key={key} className="brief-row">
+              <span>{key}</span>
+              <div>{typeof value === 'string' ? value : JSON.stringify(value)}</div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className="actions">
+        <button
+          className="confirm"
+          type="button"
+          disabled={confirm.isPending}
+          onClick={() => confirm.mutate()}
+        >
           Confirm payload
         </button>
-        <button className="danger" type="button" onClick={() => deny.mutate()}>
+        <button
+          className="danger"
+          type="button"
+          disabled={deny.isPending}
+          onClick={() => deny.mutate()}
+        >
           Deny confirmation
         </button>
-        <button type="button" onClick={() => cancel.mutate()}>
+        <button
+          type="button"
+          disabled={cancel.isPending}
+          onClick={() => cancel.mutate()}
+        >
           Cancel confirmation
         </button>
       </div>
+      <Inspect label="Inspect exact payload">
+        {JSON.stringify(item.payload, null, 2)}
+      </Inspect>
     </Panel>
   )
 }
 
-function ArtifactList({ items }: { items: Array<Record<string, unknown>> }) {
-  if (!items.length) return <p style={{ color: 'var(--text-muted)' }}>No artifacts.</p>
-  return (
-    <div style={{ display: 'grid', gap: '0.5rem' }}>
-      {items.map((item) => (
-        <details
-          key={String(item.id)}
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 10,
-            padding: '0.55rem 0.75rem',
-          }}
-        >
-          <summary>
-            <strong>{String(item.kind)}</strong> · {String(item.id)}
-          </summary>
-          <pre
-            style={{
-              whiteSpace: 'pre-wrap',
-              fontFamily: 'var(--mono)',
-              fontSize: '0.8rem',
-            }}
-          >
-            {JSON.stringify(item.payload, null, 2)}
-          </pre>
-        </details>
-      ))}
-    </div>
-  )
+function stepLabel(status: string) {
+  if (status === 'pass') return 'Done'
+  if (status === 'blocked') return 'Waiting'
+  if (status === 'running') return 'Running'
+  if (status === 'failed') return 'Failed'
+  if (status === 'skipped') return 'Skipped'
+  if (status === 'rework') return 'Rework'
+  return 'Pending'
+}
+
+function humanEventName(name: string) {
+  const map: Record<string, string> = {
+    'work.started': 'Work started',
+    'work.paused': 'Work paused',
+    'work.completed': 'Work completed',
+    'work.failed': 'Work failed',
+    'confirmation.requested': 'Confirmation requested',
+    'confirmation.applied': 'Confirmation applied',
+    'approval.requested': 'Authority approval requested',
+    'approval.applied': 'Authority approval applied',
+    'capability.completed': 'Step completed',
+    'capability.started': 'Step started',
+  }
+  return map[name] || name.replace(/\./g, ' ')
 }

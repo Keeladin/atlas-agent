@@ -11,7 +11,14 @@ import { WorkList } from './screens/WorkList'
 import { WorkNew } from './screens/WorkNew'
 import { Shell } from './ui/Shell'
 
-const queryClient = new QueryClient()
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: 1,
+      refetchOnWindowFocus: false,
+    },
+  },
+})
 
 export default function App() {
   const [ready, setReady] = useState(false)
@@ -20,15 +27,12 @@ export default function App() {
   useEffect(() => {
     void loadSession()
       .then((session) => setAuthed(Boolean(session.authenticated)))
+      .catch(() => setAuthed(false))
       .finally(() => setReady(true))
   }, [])
 
   if (!ready) {
-    return (
-      <div style={{ padding: '2rem', color: 'var(--text-muted)' }}>
-        Loading Companion…
-      </div>
-    )
+    return <div className="empty" style={{ padding: '2rem' }}>Loading Atlas…</div>
   }
 
   if (!authed) {

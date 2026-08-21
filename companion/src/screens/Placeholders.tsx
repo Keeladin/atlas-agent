@@ -4,7 +4,7 @@ export function Knowledge() {
   return (
     <Placeholder
       title="Knowledge"
-      body="Browse and search will attach here. Indexing and grounded search run as Work capabilities, not a separate Companion runtime."
+      body="Browse and search will live here. Indexing and grounded answers still run as Work — this screen is the library, not a second runtime."
     />
   )
 }
@@ -13,7 +13,7 @@ export function Files() {
   return (
     <Placeholder
       title="Files"
-      body="File library and upload will feed Work inputs. Placeholder kept for navigation integrity."
+      body="Upload and attach files for Work inputs. Indexing into knowledge remains a Work action."
     />
   )
 }
@@ -22,17 +22,24 @@ export function Settings() {
   return (
     <Placeholder
       title="Settings"
-      body="Provider inventory and host health will surface here. Mutations stay on the authenticated Atlas API."
+      body="Host health and provider inventory will surface here. Mutations stay on the authenticated Atlas API."
     />
   )
 }
 
 function Placeholder({ title, body }: { title: string; body: string }) {
   return (
-    <div style={{ display: 'grid', gap: '1rem' }}>
-      <h1 style={{ margin: 0 }}>{title}</h1>
+    <div className="stack">
+      <div className="topbar">
+        <div>
+          <h1>{title}</h1>
+          <p>{body}</p>
+        </div>
+      </div>
       <Panel>
-        <p style={{ color: 'var(--text-muted)', margin: 0 }}>{body}</p>
+        <p className="empty" style={{ margin: 0 }}>
+          Coming next — navigation is ready.
+        </p>
       </Panel>
     </div>
   )

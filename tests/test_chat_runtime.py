@@ -159,6 +159,78 @@ class ChatRuntimeTests(unittest.TestCase):
         self.assertIn("You cannot call tools.", prompt)
         self.assertIn("Work request", prompt)
         self.assertNotIn("execute_workflow", prompt)
+        self.assertIn("Atlas identity (runtime truth", prompt)
+        self.assertIn("user's own Atlas host", prompt)
+        self.assertIn("Turn provider facts", prompt)
+
+    def test_who_are_you_uses_atlas_identity_not_provider(self) -> None:
+        chat = self._runtime()
+        result = chat.respond("who are you?")
+        reply = result.reply.casefold()
+        self.assertIn("atlas", reply)
+        self.assertIn("host", reply)
+        self.assertNotIn("i'm a cloud", reply)
+        self.assertNotIn("test-model", reply.casefold())
+        self.assertEqual(self.provider.requests, [])
+
+    def test_what_model_keeps_identity_separate_from_provider(self) -> None:
+        chat = self._runtime()
+        result = chat.respond("what model are you?")
+        reply = result.reply.casefold()
+        self.assertIn("atlas", reply)
+        self.assertIn("not a foundation-model brand", reply)
+        self.assertIn("test-model", reply)
+        self.assertIn("local model provider", reply)
+        self.assertEqual(self.provider.requests, [])
+
+    def test_are_you_cloud_based_is_false_for_atlas_product(self) -> None:
+        chat = self._runtime()
+        result = chat.respond("are you a cloud based model?")
+        reply = result.reply.casefold()
+        self.assertTrue(reply.startswith("no."))
+        self.assertIn("own atlas host", reply)
+        self.assertIn("does not make atlas cloud-based", reply)
+        self.assertIn("local model provider", reply)
+        self.assertNotIn("yes, i'm a cloud", reply)
+        self.assertEqual(self.provider.requests, [])
+
+    def test_local_provider_turn_reports_local_placement(self) -> None:
+        provider = FakeProvider(_spec(), [], "should not be used")
+        chat = self._runtime(provider)
+        result = chat.respond("Are you running locally?")
+        self.assertIn("local model provider", result.reply.casefold())
+        self.assertIn("own atlas host", result.reply.casefold())
+        self.assertEqual(provider.requests, [])
+        self.assertTrue(chat.turn_provider.local)
+
+    def test_cloud_provider_turn_does_not_make_atlas_cloud_based(self) -> None:
+        cloud = FakeProvider(
+            ProviderSpec(
+                key="cloud:xai",
+                model="grok-test",
+                provider_kind="openai_compatible_chat",
+                capabilities={},
+                local=False,
+                enabled=True,
+            ),
+            [],
+            "Yes, I'm a cloud-based AI",
+        )
+        chat = self._runtime(cloud)
+        result = chat.respond("are you cloud based?")
+        reply = result.reply.casefold()
+        self.assertTrue(reply.startswith("no."))
+        self.assertIn("cloud model provider", reply)
+        self.assertIn("does not make atlas cloud-based", reply)
+        self.assertNotIn("yes, i'm a cloud-based ai", reply)
+        self.assertEqual(cloud.requests, [])
+        self.assertFalse(chat.turn_provider.local)
+
+        model_reply = chat.respond("what model are you?").reply.casefold()
+        self.assertIn("grok-test", model_reply)
+        self.assertIn("cloud model provider", model_reply)
+        self.assertIn("atlas", model_reply)
+        self.assertEqual(cloud.requests, [])
 
 
 def _table_names(path: Path) -> set[str]:

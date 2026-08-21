@@ -12,6 +12,12 @@ from atlas_core.providers import (
 
 from .awareness import CapabilityAwareness, explain_manifest
 from .conversations import ConversationStore, ConversationView
+from .identity import (
+    AtlasChatIdentity,
+    TurnProviderTruth,
+    answer_identity_question,
+    match_identity_intent,
+)
 from .prompts import build_model_input, build_system_prompt
 
 
@@ -40,11 +46,26 @@ class ChatRuntime:
         conversations: ConversationStore,
         provider: ModelProvider,
         awareness: tuple[CapabilityAwareness, ...],
+        identity: AtlasChatIdentity | None = None,
     ) -> None:
         self._conversations = conversations
         self._provider = provider
         self._awareness = awareness
-        self._system = build_system_prompt(awareness)
+        self._identity = identity or AtlasChatIdentity()
+        self._turn_provider = TurnProviderTruth.from_provider(provider)
+        self._system = build_system_prompt(
+            awareness,
+            identity=self._identity,
+            turn_provider=self._turn_provider,
+        )
+
+    @property
+    def identity(self) -> AtlasChatIdentity:
+        return self._identity
+
+    @property
+    def turn_provider(self) -> TurnProviderTruth:
+        return self._turn_provider
 
     def respond(self, message: str, conversation_id: str | None = None) -> ChatReply:
         text = (message or "").strip()
@@ -53,17 +74,27 @@ class ChatRuntime:
         record = self._conversations.get_or_create(conversation_id)
         self._conversations.add_turn(record.id, role="user", content=text)
         turns = self._conversations.list_turns(record.id)
-        response = self._provider.generate(
-            ModelRequest(
-                capability_id=_REPLY_LABEL,
-                system=self._system,
-                input=build_model_input(turns),
-                max_output_chars=_MAX_OUTPUT_CHARS,
+
+        intent = match_identity_intent(text)
+        if intent is not None:
+            reply = answer_identity_question(
+                intent,
+                identity=self._identity,
+                turn=self._turn_provider,
             )
-        )
-        reply = (response.text or "").strip()
-        if not reply:
-            raise ChatError("Chat provider returned an empty reply.")
+        else:
+            response = self._provider.generate(
+                ModelRequest(
+                    capability_id=_REPLY_LABEL,
+                    system=self._system,
+                    input=build_model_input(turns),
+                    max_output_chars=_MAX_OUTPUT_CHARS,
+                )
+            )
+            reply = (response.text or "").strip()
+            if not reply:
+                raise ChatError("Chat provider returned an empty reply.")
+
         self._conversations.add_turn(record.id, role="atlas", content=reply)
         return ChatReply(
             conversation_id=record.id,
@@ -93,6 +124,7 @@ def build_chat_runtime(
     db_path: str | Path = DEFAULT_CHAT_DB,
     provider_config: str | Path | None = None,
     provider: ModelProvider | None = None,
+    identity: AtlasChatIdentity | None = None,
 ) -> ChatRuntime:
     """Only composition root for ChatRuntime."""
 
@@ -107,6 +139,7 @@ def build_chat_runtime(
         conversations=store,
         provider=chosen,
         awareness=explain_manifest(),
+        identity=identity,
     )
 
 

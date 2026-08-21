@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Companion v2 visual proposals · Atlas</title>
+  <link rel="stylesheet" href="design-system.css" />
+  <style>
+    .gallery { max-width: 1180px; margin: 0 auto; padding: 1.5rem; }
+    .shots {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .shot {
+      display: block;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      overflow: hidden;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .shot img {
+      width: 100%;
+      height: 190px;
+      object-fit: cover;
+      display: block;
+      background: #0b1220;
+    }
+    .shot .body { padding: 0.9rem 1rem 1.1rem; }
+    .shot strong { display: block; margin-bottom: 0.25rem; }
+    .shot span { color: var(--faint); font-size: 0.85rem; }
+    .mood {
+      width: 100%;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      display: block;
+      margin: 1rem 0 1.5rem;
+    }
+    .pair {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    @media (max-width: 900px) {
+      .pair { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="gallery">
+    <div class="proposal-banner">
+      Review package — high-fidelity visuals + interactive HTML mockups.
+      No Companion implementation yet. Preserve API/auth/SSE/routing/DTOs only.
+    </div>
+    <h1 style="margin:0 0 0.35rem;letter-spacing:-0.03em">The face of Atlas</h1>
+    <p style="color:var(--muted);max-width:66ch;margin-top:0">
+      Personal AI workspace for daily use: desktop sidebar, strong widescreen use,
+      human language, visual progress and decisions, Inspect for deep runtime.
+      Not an admin console.
+    </p>
+
+    <img class="mood" src="assets/mood-board.jpg" alt="Atlas visual mood board" />
+
+    <h2 style="margin:0">Desktop proposals</h2>
+    <p style="color:var(--faint);margin:0.35rem 0 0">Click a card for the interactive HTML mockup (accurate structure &amp; copy).</p>
+    <div class="shots">
+      <a class="shot" href="screens/home.html">
+        <img src="assets/home-desktop.jpg" alt="Home desktop proposal" />
+        <div class="body"><strong>Home</strong><span>Attention / command centre</span></div>
+      </a>
+      <a class="shot" href="screens/chat.html">
+        <img src="assets/chat-desktop.jpg" alt="Chat desktop proposal" />
+        <div class="body"><strong>Chat</strong><span>First-class conversation + start work</span></div>
+      </a>
+      <a class="shot" href="screens/work-list.html">
+        <img src="assets/work-list-desktop.jpg" alt="Work list desktop proposal" />
+        <div class="body"><strong>Work list</strong><span>Progress and waits without IDs</span></div>
+      </a>
+      <a class="shot" href="screens/work-detail.html">
+        <img src="assets/work-detail-desktop.jpg" alt="Work detail desktop proposal" />
+        <div class="body"><strong>Work detail</strong><span>Decisions, timeline, artifacts, inspect</span></div>
+      </a>
+      <a class="shot" href="screens/plan-work.html">
+        <img src="assets/plan-work-desktop.jpg" alt="Plan Work desktop proposal" />
+        <div class="body"><strong>Plan Work</strong><span>Intent → human plan review → accept</span></div>
+      </a>
+    </div>
+
+    <h2 style="margin:2rem 0 0.35rem">Android / PWA adaptation</h2>
+    <div class="pair">
+      <a class="shot" href="screens/mobile-home.html">
+        <img src="assets/home-mobile.jpg" alt="Mobile home proposal" style="height:360px;object-fit:contain;background:#05080f" />
+        <div class="body"><strong>Mobile Home</strong><span>Bottom nav · needs-you first</span></div>
+      </a>
+      <div class="stack">
+        <a class="shot" href="screens/mobile-chat.html">
+          <div class="body"><strong>Mobile Chat</strong><span>Full-thread conversation · work CTA</span></div>
+        </a>
+        <a class="shot" href="screens/mobile-work.html">
+          <div class="body"><strong>Mobile Work</strong><span>Decision card first · inspect last</span></div>
+        </a>
+      </div>
+    </div>
+
+    <section class="card" style="margin-top:2rem">
+      <h2>What to approve / reject</h2>
+      <ul style="margin:0;padding-left:1.1rem;color:var(--muted)">
+        <li><strong>Direction:</strong> personal command centre vs admin harness</li>
+        <li><strong>Navigation:</strong> desktop sidebar + mobile bottom nav</li>
+        <li><strong>Language:</strong> human states only; IDs/JSON under Inspect</li>
+        <li><strong>Work cockpit:</strong> decision cards + timeline + artifacts before technical detail</li>
+        <li><strong>Chat:</strong> conversation-first with explicit Start work bridge</li>
+        <li><strong>Palette:</strong> ink navy, amber attention, cyan confirmation, violet authority</li>
+      </ul>
+      <p style="color:var(--faint);margin:0.85rem 0 0">
+        Interactive mockups: <code>docs/prototypes/companion-v2-redesign/</code>
+        · local gallery: <code>http://127.0.0.1:8767/</code>
+      </p>
+    </section>
+  </div>
+</body>
+</html>

@@ -4,33 +4,17 @@ export function Panel({
   title,
   children,
   tone,
+  className = '',
 }: {
   title?: string
   children: ReactNode
-  tone?: 'default' | 'authority' | 'confirmation' | 'danger'
+  tone?: 'attention' | 'decision-auth' | 'decision-confirm' | 'failed'
+  className?: string
 }) {
-  const border =
-    tone === 'authority'
-      ? 'var(--authority)'
-      : tone === 'confirmation'
-        ? 'var(--confirmation)'
-        : tone === 'danger'
-          ? 'var(--danger)'
-          : 'var(--border)'
+  const toneClass = tone ? ` ${tone}` : ''
   return (
-    <section
-      className="panel"
-      style={{
-        background: 'var(--bg-panel)',
-        border: `1px solid ${border}`,
-        borderRadius: 'var(--radius)',
-        padding: '1rem',
-        boxShadow: 'var(--shadow)',
-      }}
-    >
-      {title ? (
-        <h2 style={{ margin: '0 0 0.75rem', fontSize: '1rem' }}>{title}</h2>
-      ) : null}
+    <section className={`card${toneClass} ${className}`.trim()}>
+      {title ? <h2>{title}</h2> : null}
       {children}
     </section>
   )

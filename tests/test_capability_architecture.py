@@ -161,10 +161,9 @@ class CapabilityArchitectureTests(unittest.TestCase):
         )
 
         def handler(request):
-            result = gateway.invoke(
+            result = request.surface.invoke(
                 "mail.deliver",
                 {"to": "ops@example.invalid"},
-                authority_scope="communicate",
             )
             return CapabilityOutcome(
                 "pass" if result.ok else "fail",

@@ -128,6 +128,12 @@ class CapabilityRequest:
     direct_input_artifact_ids: tuple[str, ...] = ()
     dependency_artifact_ids: tuple[str, ...] = ()
     idempotency_key: str | None = None
+    work_id: str | None = None
+    # TaskRuntime/WorkRuntime bridge until WorkEngine (PR 5) constructs a
+    # typed ExecutionSurface at invoke. Not a public execution API. Death:
+    # remove this field when WorkEngine requires surface at the handler
+    # boundary and TaskRuntime no longer builds CapabilityRequest.
+    surface: Any = None
 
 
 @dataclass(frozen=True)

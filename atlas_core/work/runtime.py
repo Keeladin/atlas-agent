@@ -21,7 +21,8 @@ from .contract import (
     work_contract_from_stored,
 )
 from .inventory import DeploymentInventory
-from .resolve import ImplementationResolver, ResolveMismatch
+from .resolve import ImplementationResolver, ResolveMismatch, ResolveReport
+from .surface import project_surface
 from .work import WorkError, WorkId, WorkRecord
 
 
@@ -113,7 +114,10 @@ class WorkRuntime:
                 capability_version=pin.profile_version,
                 dependencies=[step_ids[dep] for dep in dependencies[pin.capability_id]],
                 input_artifact_ids=input_ids,
-                metadata={"accept_all_criteria": True},
+                metadata={
+                    "accept_all_criteria": True,
+                    "allowed_tools": list(pin.tools),
+                },
             )
             step_ids[pin.capability_id] = record.id
         store.create_checkpoint(work_id, reason="work accepted from task brief")
@@ -142,7 +146,11 @@ class WorkRuntime:
                 )
         if report.mismatches:
             self._fail_resolve_mismatches(work_id, report.mismatches)
-        return self._engine.run_until_blocked(work_id)
+        self._bind_run_surfaces(work_id, report)
+        try:
+            return self._engine.run_until_blocked(work_id)
+        finally:
+            self._engine.work_surfaces.pop(work_id, None)
 
     def _fail_resolve_mismatches(
         self,
@@ -170,6 +178,29 @@ class WorkRuntime:
                 status="fail",
                 error=f"resolve mismatch: {mismatch.reason}",
             )
+
+    def _bind_run_surfaces(self, work_id: WorkId, report: ResolveReport) -> None:
+        """Attach run-local surfaces for this work_id. Temporary until WorkEngine."""
+        store = self._engine.store
+        task = store.get_task(work_id)
+        by_capability = {
+            step.capability: step
+            for step in store.list_steps(work_id)
+            if step.capability
+        }
+        surfaces: dict[str, object] = {}
+        for capability_id, resolved in report.resolved.capabilities.items():
+            step = by_capability.get(capability_id)
+            if step is None:
+                continue
+            surfaces[capability_id] = project_surface(
+                resolved,
+                work_id=work_id,
+                step_id=step.id,
+                authority_scope=task.authority_scope,
+                kernel=self._tool_gateway,
+            )
+        self._engine.work_surfaces[work_id] = surfaces
 
     def get(self, work_id: WorkId) -> WorkRecord:
         task = self._engine.store.get_task(work_id)

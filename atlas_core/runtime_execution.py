@@ -198,14 +198,16 @@ class RuntimeExecutionMixin:
 
         try:
             tool_descriptors = ()
-            if profile.tools:
+            pinned_tools = tuple(step.metadata.get("allowed_tools") or ())
+            tool_refs = pinned_tools or profile.tools
+            if tool_refs:
                 if self.tool_gateway is None:
                     raise ValueError(
                         "capability contract declares allowed_tools but no ToolGateway is configured"
                     )
                 tool_descriptors = tuple(
                     descriptor.as_context_dict()
-                    for descriptor in self.tool_gateway.descriptors(profile.tools)
+                    for descriptor in self.tool_gateway.descriptors(tool_refs)
                 )
             previous_manifest_id = None
             failure_reason = None
@@ -306,6 +308,13 @@ class RuntimeExecutionMixin:
                 direct_input_artifact_ids=direct_ids,
                 dependency_artifact_ids=dependency_ids,
                 idempotency_key=f"{step.task_id}:{step.id}:{profile.capability_id}",
+                work_id=step.task_id,
+                # Temporary: WorkRuntime.work_surfaces bridge. Remove with WorkEngine.
+                surface=(
+                    getattr(self, "work_surfaces", {}).get(step.task_id, {}).get(
+                        step.capability
+                    )
+                ),
             )
             try:
                 outcome = (

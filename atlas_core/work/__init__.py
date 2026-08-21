@@ -8,6 +8,7 @@ from .resolve import (
     ResolvedCapability,
     ResolvedWork,
 )
+from .surface import ExecutionSurface, SurfaceError, project_surface
 from .runtime import UNAVAILABLE, WorkRuntime, build_work_runtime
 from .work import WorkError, WorkId, WorkRecord
 
@@ -15,11 +16,13 @@ __all__ = [
     "CapabilityExecutionProfile",
     "ContractCapability",
     "DeploymentInventory",
+    "ExecutionSurface",
     "ImplementationResolver",
     "ResolveMismatch",
     "ResolveReport",
     "ResolvedCapability",
     "ResolvedWork",
+    "SurfaceError",
     "UNAVAILABLE",
     "WorkContract",
     "WorkError",
@@ -28,4 +31,5 @@ __all__ = [
     "WorkRuntime",
     "build_work_runtime",
     "compile_contract",
+    "project_surface",
 ]

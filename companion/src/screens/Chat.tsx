@@ -4,6 +4,7 @@ import type { FormEvent, MouseEvent, PointerEvent, UIEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import type { Conversation } from '../api/types'
+import { nextActiveAfterDelete } from '../lib/conversationOwnership'
 import { Inspect } from '../ui/Inspect'
 import { Panel } from '../ui/Panel'
 import { Workspace, WorkspaceRailSection } from '../ui/Workspace'
@@ -120,23 +121,29 @@ export function Chat() {
         method: 'DELETE',
       }),
     onSuccess: (_data, id) => {
-      const remaining = (listQuery.data?.conversations || []).filter(
-        (item) => item.id !== id,
+      const nextId = nextActiveAfterDelete(
+        id,
+        listQuery.data?.conversations || [],
+        activeId,
       )
       void queryClient.invalidateQueries({ queryKey: ['conversations'] })
       setDeleteId(null)
       setMenu(null)
-      if (activeId === id) {
-        if (remaining[0]) selectConversation(remaining[0].id, { focus: true })
-        else {
-          setShowArchived(false)
-          setActiveId(null)
-          bootstrapped.current = false
-          createConversation()
-        }
+      if (activeId !== id) return
+      if (nextId) {
+        selectConversation(nextId, { focus: true })
+        return
       }
+      setShowArchived(false)
+      setActiveId(null)
+      bootstrapped.current = false
+      createConversation()
     },
   })
+
+  useEffect(() => {
+    if (deleteId) setMenu(null)
+  }, [deleteId])
 
   useEffect(() => {
     if (bootstrapped.current || activeId || !listQuery.isSuccess) return
@@ -241,6 +248,7 @@ export function Chat() {
               onMenu={(event) => {
                 event.preventDefault()
                 event.stopPropagation()
+                if (deleteId) return
                 setMenu({ id: item.id, x: event.clientX, y: event.clientY })
               }}
               onLongPress={() =>
@@ -256,7 +264,7 @@ export function Chat() {
           ) : null}
         </div>
       </WorkspaceRailSection>
-      {menu ? (
+      {menu && !deleteId ? (
         <ConversationMenu
           item={(listQuery.data?.conversations || []).find((row) => row.id === menu.id)}
           x={menu.x}
@@ -289,13 +297,18 @@ export function Chat() {
             })
           }}
           onDelete={() => {
-            setDeleteId(menu.id)
+            const id = menu.id
             setMenu(null)
+            setDeleteId(id)
           }}
         />
       ) : null}
       {deleteId ? (
-        <div className="menu-confirm">
+        <div
+          className="menu-confirm"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
           <p className="meta" style={{ marginTop: 0 }}>
             Delete this conversation and its messages?
           </p>
@@ -303,12 +316,26 @@ export function Chat() {
             <button
               className="danger"
               type="button"
+              aria-label="Delete conversation permanently"
               disabled={deleteMutation.isPending}
-              onClick={() => deleteMutation.mutate(deleteId)}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                deleteMutation.mutate(deleteId)
+              }}
             >
               Delete
             </button>
-            <button type="button" onClick={() => setDeleteId(null)}>
+            <button
+              type="button"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                setDeleteId(null)
+              }}
+            >
               Keep
             </button>
           </div>
@@ -579,7 +606,17 @@ function ConversationMenu({
         <button type="button" role="menuitem" onClick={onArchive}>
           {item.archived ? 'Restore' : 'Archive'}
         </button>
-        <button className="danger" type="button" role="menuitem" onClick={onDelete}>
+        <button
+          className="danger"
+          type="button"
+          role="menuitem"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onDelete()
+          }}
+        >
           Delete
         </button>
       </div>

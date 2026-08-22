@@ -1198,6 +1198,14 @@ a.card:hover {
   margin-bottom: 0.55rem;
 }
 
+.chat-rail .workspace-rail-section {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .menu-layer {
   position: fixed;
   inset: 0;
@@ -1224,9 +1232,20 @@ a.card:hover {
 }
 
 .menu-confirm {
+  position: relative;
+  z-index: 60;
+  flex: 0 0 auto;
+  pointer-events: auto;
   margin-top: 0.65rem;
   padding: 0.7rem 0.8rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--atlas-border);
   background: var(--atlas-surface-1);
+}
+
+.menu-confirm .actions,
+.menu-confirm button {
+  pointer-events: auto;
+  position: relative;
+  z-index: 1;
 }

@@ -177,7 +177,7 @@ class WorkLifecycleMixin:
         parallel: list[StepRecord] = []
         serial: list[StepRecord] = []
         for step in ready:
-            pin = contract.capability(step.capability or "")
+            pin = contract.contract_capability(step.contract_capability_ordinal or 0)
             (parallel if pin.parallel_safe else serial).append(step)
 
         progressed = False
@@ -239,12 +239,12 @@ class WorkLifecycleMixin:
             ):
                 continue
             try:
-                pin = contract.capability(step.capability or "")
+                pin = contract.contract_capability(step.contract_capability_ordinal or 0)
             except WorkError:
                 continue
             if not pin.armed or pin.budget is None:
                 continue
-            if step.capability not in report.resolved.capabilities:
+            if (step.contract_capability_ordinal or 0) not in report.resolved.capabilities:
                 self.store.set_step_status(step.id, "failed")
                 continue
             attempts = self.store.list_executions(work_id, step_id=step.id)
@@ -292,10 +292,13 @@ class WorkLifecycleMixin:
                 continue
             pin = None
             try:
-                pin = contract.capability(execution.capability)
+                execution_step = self.store.get_step(execution.step_id)
+                pin = contract.contract_capability(execution_step.contract_capability_ordinal or 0)
             except WorkError:
                 pin = None
-            resolved = report.resolved.capabilities.get(execution.capability)
+            resolved = report.resolved.capabilities.get(
+                execution_step.contract_capability_ordinal or 0
+            ) if pin is not None else None
             unsafe = (
                 pin is None
                 or not pin.armed
@@ -392,9 +395,9 @@ class WorkLifecycleMixin:
         steps = self.store.list_steps(contract.work_id)
         if any(not step.capability for step in steps):
             return True
-        step_ids = {step.capability for step in steps}
-        contract_ids = {pin.capability_id for pin in contract.capabilities}
-        return step_ids != contract_ids
+        step_ids = [step.contract_capability_ordinal for step in steps]
+        contract_ids = [pin.contract_capability_ordinal for pin in contract.capabilities]
+        return sorted(step_ids, key=lambda item: item or 0) != sorted(contract_ids, key=lambda item: item or 0)
 
     def _fail_membership(self, work_id: str) -> RuntimeResult:
         task = self.store.get_work(work_id)

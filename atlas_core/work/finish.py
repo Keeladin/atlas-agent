@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from typing import Any
 
 from atlas_core.capabilities import CapabilityOutcome
@@ -9,7 +10,7 @@ from atlas_core.schema_validation import SchemaValidationError, validate_json
 from .records import StepRecord
 from atlas_core.verification import VerificationResult
 
-from .contract import ContractCapability
+from .contract import ContractCapability, WorkContract
 
 
 class WorkFinishMixin:
@@ -17,6 +18,7 @@ class WorkFinishMixin:
         self,
         step: StepRecord,
         pin: ContractCapability,
+        contract: WorkContract,
         profile: CapabilityExecutionProfile,
         execution_id: str,
         context: dict[str, Any],
@@ -209,6 +211,124 @@ class WorkFinishMixin:
         execution_error = outcome.error
         if verification is not None and verification.status != "pass":
             execution_error = execution_error or verification.summary
+        manifest = self.store.context_manifest_for_execution(execution_id)
+        criteria_by_ordinal = {
+            item.ordinal: item for item in self.store.list_criteria(step.work_id)
+        }
+        fallback_claim_evidence = list(output_ids)
+        if receipt_artifact_id is not None:
+            fallback_claim_evidence.append(receipt_artifact_id)
+        if not fallback_claim_evidence:
+            running_execution = self.store.get_execution(execution_id)
+            fallback_claim_evidence.extend(running_execution.input_artifact_ids)
+        for claim in outcome.claims:
+            claim_kind = str(claim.get("kind", "inferred"))
+            claim_evidence = (
+                tuple(claim["evidence_artifact_ids"])
+                if "evidence_artifact_ids" in claim
+                else tuple(fallback_claim_evidence)
+            )
+            linked_ordinals = tuple(claim.get("criterion_ordinals", ()))
+            authorized = {
+                binding.criterion_ordinal for binding in contract.criterion_bindings
+                if binding.contract_capability_ordinal == step.contract_capability_ordinal
+            }
+            if any(item not in authorized for item in linked_ordinals):
+                final_status = "rework"
+                execution_error = "claim links to an unauthorized criterion"
+                linked_ordinals = ()
+            self.store.add_claim(
+                step.work_id,
+                step_id=step.id,
+                kind=claim_kind,
+                subject=str(claim.get("subject") or pin.capability_id),
+                value=claim.get("value"),
+                evidence_artifact_ids=claim_evidence,
+                confidence=claim.get("confidence"),
+                execution_id=execution_id,
+                context_manifest_id=None if manifest is None else manifest.id,
+                criterion_ids=tuple(criteria_by_ordinal[item].id for item in linked_ordinals),
+            )
+
+        grounded_evidence: dict[int, tuple[str, ...]] = {}
+        grounded_verdicts: dict[int, str] = {}
+        if final_status == "pass":
+            for criterion in criteria_by_ordinal.values():
+                if criterion.satisfaction_policy != "evidence_grounded":
+                    continue
+                if not any(
+                    binding.criterion_ordinal == criterion.ordinal
+                    and binding.contract_capability_ordinal == step.contract_capability_ordinal
+                    for binding in contract.criterion_bindings
+                ):
+                    continue
+                linked = self.store.criterion_claims(criterion.id, execution_id=execution_id)
+                qualifying = tuple(
+                    claim for claim in linked
+                    if claim.kind in {"observed", "retrieved", "calculated", "executed"}
+                    and claim.evidence_artifact_ids
+                )
+                source_ids = tuple(artifact_id for artifact_id in dict.fromkeys(
+                    artifact_id for claim in qualifying for artifact_id in claim.evidence_artifact_ids
+                ) if artifact_id not in set(output_ids))
+                qualifying = tuple(
+                    claim for claim in qualifying
+                    if any(artifact_id in source_ids for artifact_id in claim.evidence_artifact_ids)
+                )
+                document = {
+                    "contract_sha256": contract.sha256,
+                    "contract_capability_ordinal": step.contract_capability_ordinal,
+                    "criterion": {"ordinal": criterion.ordinal, "text": criterion.text},
+                    "execution_id": execution_id,
+                    "claims": [
+                        {"id": claim.id, "kind": claim.kind, "subject": claim.subject, "value": claim.value,
+                         "evidence": [{"id": artifact_id, "sha256": self.store.get_artifact(artifact_id).sha256,
+                                       "payload": self.store.get_artifact(artifact_id).payload}
+                                      for artifact_id in claim.evidence_artifact_ids]}
+                        for claim in qualifying
+                    ],
+                    "deliverable_artifacts": [
+                        {"id": artifact_id, "sha256": self.store.get_artifact(artifact_id).sha256,
+                         "payload": self.store.get_artifact(artifact_id).payload}
+                        for artifact_id in output_ids
+                    ],
+                }
+                encoded = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+                input_sha256 = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+                if not qualifying:
+                    criterion_result = VerificationResult("rework", "criterion has no qualifying linked grounded claims")
+                elif self.grounded_criterion_verifier is None:
+                    criterion_result = VerificationResult("abstain", "independent criterion verifier is unavailable")
+                else:
+                    criterion_result = self.grounded_criterion_verifier.verify(profile, document)
+                criterion_artifact = self.store.put_artifact(
+                    step.work_id, step_id=step.id, kind="criterion_verification_result",
+                    payload={"status": criterion_result.status, "summary": criterion_result.summary,
+                             "input_sha256": input_sha256, "criterion_ordinal": criterion.ordinal,
+                             "evaluated_claim_ids": [claim.id for claim in qualifying],
+                             "details": criterion_result.details},
+                    metadata={"execution_id": execution_id, "criterion_id": criterion.id},
+                )
+                self.store.add_criterion_verification(
+                    work_id=step.work_id, criterion_id=criterion.id,
+                    contract_capability_ordinal=step.contract_capability_ordinal or 0,
+                    step_id=step.id, execution_id=execution_id, status=criterion_result.status,
+                    input_sha256=input_sha256, artifact_id=criterion_artifact.id,
+                )
+                if criterion_result.status == "pass":
+                    grounded_evidence[criterion.ordinal] = source_ids
+                    grounded_verdicts[criterion.ordinal] = criterion_artifact.id
+                else:
+                    self.store.set_criterion_status(
+                        criterion.id,
+                        "rejected" if criterion_result.status == "fail" else "pending",
+                        evidence_artifact_ids=(source_ids if criterion_result.status == "fail" else ()),
+                        note=criterion_result.summary,
+                        verification_artifact_id=criterion_artifact.id,
+                    )
+                    final_status = criterion_result.status
+                    execution_error = execution_error or criterion_result.summary
+
         execution = self.store.finish_execution(
             execution_id,
             status=final_status,
@@ -266,28 +386,6 @@ class WorkFinishMixin:
             fallback_evidence.append(receipt_artifact_id)
         if not fallback_evidence:
             fallback_evidence.extend(execution.input_artifact_ids)
-        evidence_ids = tuple(fallback_evidence)
-        for claim in outcome.claims:
-            claim_kind = str(claim.get("kind", "inferred"))
-            # An explicit empty list is meaningful for evidence-optional claims.
-            # Preserve the legacy fallback only for producers that omitted the
-            # field altogether. In particular, a model outcome must not acquire
-            # its newly-created output artifact as evidence merely by finishing.
-            claim_evidence = (
-                tuple(claim["evidence_artifact_ids"])
-                if "evidence_artifact_ids" in claim
-                else evidence_ids
-            )
-            self.store.add_claim(
-                step.work_id,
-                step_id=step.id,
-                kind=claim_kind,
-                subject=str(claim.get("subject") or pin.capability_id),
-                value=claim.get("value"),
-                evidence_artifact_ids=claim_evidence,
-                confidence=claim.get("confidence"),
-            )
-
         if final_status == "pass":
             criterion_evidence = list(output_ids)
             if receipt_artifact_id is not None:
@@ -297,7 +395,9 @@ class WorkFinishMixin:
             self._accept_declared_criteria(
                 step,
                 criterion_evidence,
-                profile.metadata,
+                contract,
+                grounded_evidence,
+                grounded_verdicts,
             )
 
         self.store.create_checkpoint(
@@ -322,26 +422,36 @@ class WorkFinishMixin:
         self,
         step: StepRecord,
         evidence_artifact_ids: list[str],
-        metadata: dict[str, Any],
+        contract: WorkContract,
+        grounded_evidence: dict[int, tuple[str, ...]],
+        grounded_verdicts: dict[int, str],
     ) -> None:
         criteria = self.store.list_criteria(step.work_id)
-        ordinals = set(step.metadata.get("satisfies_criteria", ())) | set(
-            metadata.get("satisfies_criteria", ())
-        )
-        if (
-            step.metadata.get("accept_all_criteria")
-            or metadata.get("accept_all_criteria")
-        ):
-            ordinals = {criterion.ordinal for criterion in criteria}
+        ordinals = {
+            binding.criterion_ordinal for binding in contract.criterion_bindings
+            if binding.contract_capability_ordinal == step.contract_capability_ordinal
+        }
         if ordinals and not evidence_artifact_ids:
             raise ValueError(
                 "A step cannot satisfy success criteria without durable evidence."
             )
         for criterion in criteria:
             if criterion.ordinal in ordinals and criterion.status != "accepted":
+                selected_evidence = (
+                    list(grounded_evidence.get(criterion.ordinal, ()))
+                    if criterion.satisfaction_policy == "evidence_grounded"
+                    else evidence_artifact_ids
+                )
+                if criterion.satisfaction_policy == "evidence_grounded" and not selected_evidence:
+                    continue
                 self.store.set_criterion_status(
                     criterion.id,
                     "accepted",
-                    evidence_artifact_ids=evidence_artifact_ids,
+                    evidence_artifact_ids=selected_evidence,
                     note=f"satisfied by step {step.id}",
+                    verification_artifact_id=(
+                        grounded_verdicts.get(criterion.ordinal)
+                        if criterion.satisfaction_policy == "evidence_grounded"
+                        else None
+                    ),
                 )

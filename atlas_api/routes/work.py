@@ -10,7 +10,7 @@ from starlette.routing import Route
 from atlas_api.auth import require_mutation_auth, require_session
 from atlas_api.sse import work_events_stream
 from atlas_api.views.work import build_work_detail, work_list_item
-from atlas_core.advanced.brief import TaskBrief
+from atlas_core.advanced.brief import TaskBrief, TaskCriterion, TaskCriterionBinding
 from atlas_core.work import UnavailableWork, WorkError, WorkStoreError
 from atlas_core.work.store import InvalidTransitionError, UnknownRecordError
 
@@ -31,6 +31,8 @@ def _brief_from_body(payload: dict[str, Any]) -> TaskBrief:
     constraints = brief_payload.get("constraints") or ()
     if isinstance(constraints, str):
         constraints = (constraints,)
+    criteria = brief_payload.get("criteria") or ()
+    bindings = brief_payload.get("criterion_bindings") or ()
     return TaskBrief(
         objective=str(brief_payload.get("objective") or ""),
         capabilities=tuple(str(item) for item in capabilities),
@@ -41,6 +43,21 @@ def _brief_from_body(payload: dict[str, Any]) -> TaskBrief:
         notes=brief_payload.get("notes"),
         completion_grounding_policy=str(
             brief_payload.get("completion_grounding_policy") or "none"
+        ),
+        criteria=tuple(
+            TaskCriterion(
+                text=str(item.get("text") or ""),
+                satisfaction_policy=str(item.get("satisfaction_policy") or "deliverable"),
+                semantic_verification=str(item.get("semantic_verification") or "none"),
+            )
+            for item in criteria if isinstance(item, dict)
+        ),
+        criterion_bindings=tuple(
+            TaskCriterionBinding(
+                criterion_ordinal=int(item.get("criterion_ordinal") or 0),
+                capability_ordinal=int(item.get("capability_ordinal") or 0),
+            )
+            for item in bindings if isinstance(item, dict)
         ),
     )
 

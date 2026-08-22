@@ -20,6 +20,8 @@ from .store_common import UnknownRecordError
 
 class ArtifactLookup(Protocol):
     def get_artifact(self, artifact_id: str) -> ArtifactRecord: ...
+    def get_context_manifest(self, manifest_id: str) -> Any: ...
+    def get_step(self, step_id: str) -> Any: ...
 
 
 class WorkModelConsumer:
@@ -122,6 +124,8 @@ class WorkModelConsumer:
                     work_id=contract.work_id,
                     pack=pack,
                     store=self._store,
+                    contract=contract,
+                    execution_id=execution_id,
                 )
             except ModelOutputError as exc:
                 return CapabilityOutcome(
@@ -239,6 +243,7 @@ def _system_instruction(pack: ContextPack, pin: ContractCapability) -> str:
             "Return only strict JSON with exactly these keys: deliverable, claims, limitations.",
             "deliverable must be the requested user-facing text.",
             "claims must be an array of objects with kind, subject, statement, and evidence_artifact_ids.",
+            "Each claim must also contain criterion_ordinals listing the exact success criteria it is intended to support; use an empty array when it supports none.",
             "Only cite full-content artifact IDs supplied in this execution context.",
             "Use inferred or suggested for reasoning that has no evidence artifact; do not label it retrieved, observed, calculated, or executed.",
             "limitations must be an array of concise strings.",
@@ -252,9 +257,20 @@ def _normalize_claim_bearing_output(
     work_id: str,
     pack: ContextPack,
     store: ArtifactLookup,
+    contract: WorkContract | None = None,
+    execution_id: str | None = None,
 ) -> tuple[str, tuple[dict[str, Any], ...], tuple[str, ...]]:
     if pack.manifest.work_id != work_id:
         raise ModelOutputError("context manifest does not belong to this work")
+    if execution_id is not None:
+        persisted_manifest = store.get_context_manifest(pack.manifest.manifest_id)
+        if (
+            persisted_manifest.execution_id != execution_id
+            or persisted_manifest.work_id != work_id
+            or persisted_manifest.step_id != pack.manifest.step_id
+            or persisted_manifest.manifest != pack.manifest.as_dict()
+        ):
+            raise ModelOutputError("context manifest is not persisted for this execution")
     try:
         envelope = json.loads(
             text,
@@ -284,14 +300,25 @@ def _normalize_claim_bearing_output(
     }
     claims: list[dict[str, Any]] = []
     for raw in raw_claims:
-        if not isinstance(raw, dict) or set(raw) != {
-            "kind", "subject", "statement", "evidence_artifact_ids"
-        }:
-            raise ModelOutputError("each claim must contain exactly kind, subject, statement, and evidence_artifact_ids")
+        allowed_keys = {"kind", "subject", "statement", "evidence_artifact_ids", "criterion_ordinals"}
+        if not isinstance(raw, dict) or set(raw) not in (allowed_keys, allowed_keys - {"criterion_ordinals"}):
+            raise ModelOutputError("each claim contains invalid fields")
         kind = raw["kind"]
         subject = raw["subject"]
         statement = raw["statement"]
         evidence = raw["evidence_artifact_ids"]
+        criterion_ordinals = raw.get("criterion_ordinals", [])
+        if not isinstance(criterion_ordinals, list) or any(not isinstance(item, int) for item in criterion_ordinals):
+            raise ModelOutputError("claim criterion_ordinals must be an array of integers")
+        if len(set(criterion_ordinals)) != len(criterion_ordinals):
+            raise ModelOutputError("claim criterion_ordinals must not contain duplicates")
+        # The executing pin is carried explicitly by the persisted step; semantic
+        # capability identity is never sufficient authorization.
+        if contract is not None:
+            step_ordinal = store.get_step(pack.manifest.step_id).contract_capability_ordinal
+            authorized = {item.criterion_ordinal for item in contract.criterion_bindings if item.contract_capability_ordinal == step_ordinal}
+            if any(item not in authorized for item in criterion_ordinals):
+                raise ModelOutputError("claim links to a criterion not authorized for this contract capability")
         if not isinstance(kind, str) or kind not in CLAIM_KINDS:
             raise ModelOutputError("claim kind is invalid")
         if not isinstance(subject, str) or not subject.strip():
@@ -322,6 +349,7 @@ def _normalize_claim_bearing_output(
                 "subject": subject.strip(),
                 "value": {"statement": statement.strip()},
                 "evidence_artifact_ids": evidence_ids,
+                "criterion_ordinals": tuple(criterion_ordinals),
             }
         )
     return deliverable.strip(), tuple(claims), tuple(item.strip() for item in raw_limitations)

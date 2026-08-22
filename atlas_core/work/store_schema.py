@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -93,8 +94,14 @@ class WorkStoreSchemaMixin:
                         ('pending','accepted','rejected','unknown')),
                     evidence_artifact_ids_json TEXT NOT NULL DEFAULT '[]',
                     note TEXT,
+                    satisfaction_policy TEXT NOT NULL DEFAULT 'deliverable' CHECK
+                        (satisfaction_policy IN ('deliverable','evidence_grounded')),
+                    semantic_verification TEXT NOT NULL DEFAULT 'none' CHECK
+                        (semantic_verification IN ('none','required')),
+                    verification_artifact_id TEXT,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (work_id) REFERENCES work(id) ON DELETE CASCADE,
+                    FOREIGN KEY (verification_artifact_id) REFERENCES work_artifacts(id) ON DELETE SET NULL,
                     UNIQUE(work_id, ordinal)
                 );
 
@@ -105,6 +112,7 @@ class WorkStoreSchemaMixin:
                     description TEXT NOT NULL,
                     capability TEXT,
                     capability_version TEXT,
+                    contract_capability_ordinal INTEGER,
                     status TEXT NOT NULL CHECK (status IN
                         ('pending','running','pass','rework','blocked','failed','skipped')),
                     dependencies_json TEXT NOT NULL,
@@ -196,9 +204,44 @@ class WorkStoreSchemaMixin:
                     value_json TEXT NOT NULL,
                     evidence_artifact_ids_json TEXT NOT NULL,
                     confidence REAL,
+                    execution_id TEXT,
+                    context_manifest_id TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (work_id) REFERENCES work(id) ON DELETE CASCADE,
-                    FOREIGN KEY (step_id) REFERENCES work_steps(id) ON DELETE SET NULL
+                    FOREIGN KEY (step_id) REFERENCES work_steps(id) ON DELETE SET NULL,
+                    FOREIGN KEY (execution_id) REFERENCES work_executions(id) ON DELETE SET NULL,
+                    FOREIGN KEY (context_manifest_id) REFERENCES work_context_manifests(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS work_claim_criteria (
+                    claim_id TEXT NOT NULL,
+                    criterion_id TEXT NOT NULL,
+                    execution_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (claim_id, criterion_id),
+                    FOREIGN KEY (claim_id) REFERENCES work_claims(id) ON DELETE CASCADE,
+                    FOREIGN KEY (criterion_id) REFERENCES work_criteria(id) ON DELETE CASCADE,
+                    FOREIGN KEY (execution_id) REFERENCES work_executions(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS work_criterion_verifications (
+                    id TEXT PRIMARY KEY,
+                    work_id TEXT NOT NULL,
+                    criterion_id TEXT NOT NULL,
+                    contract_capability_ordinal INTEGER NOT NULL,
+                    step_id TEXT NOT NULL,
+                    execution_id TEXT NOT NULL,
+                    evaluation_attempt INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('pass','rework','abstain','fail')),
+                    input_sha256 TEXT NOT NULL,
+                    artifact_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (work_id) REFERENCES work(id) ON DELETE CASCADE,
+                    FOREIGN KEY (criterion_id) REFERENCES work_criteria(id) ON DELETE CASCADE,
+                    FOREIGN KEY (step_id) REFERENCES work_steps(id) ON DELETE CASCADE,
+                    FOREIGN KEY (execution_id) REFERENCES work_executions(id) ON DELETE CASCADE,
+                    FOREIGN KEY (artifact_id) REFERENCES work_artifacts(id) ON DELETE CASCADE,
+                    UNIQUE (criterion_id, evaluation_attempt)
                 );
 
                 CREATE TABLE IF NOT EXISTS work_approvals (
@@ -261,6 +304,54 @@ class WorkStoreSchemaMixin:
                 );
                 """
             )
+
+            # Version 3 adds policy/provenance columns to existing durable rows.
+            # CREATE TABLE IF NOT EXISTS does not evolve pre-existing tables.
+            criterion_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(work_criteria)")
+            }
+            if "satisfaction_policy" not in criterion_columns:
+                db.execute(
+                    "ALTER TABLE work_criteria ADD COLUMN satisfaction_policy "
+                    "TEXT NOT NULL DEFAULT 'deliverable'"
+                )
+            if "semantic_verification" not in criterion_columns:
+                db.execute(
+                    "ALTER TABLE work_criteria ADD COLUMN semantic_verification "
+                    "TEXT NOT NULL DEFAULT 'none'"
+                )
+            if "verification_artifact_id" not in criterion_columns:
+                db.execute(
+                    "ALTER TABLE work_criteria ADD COLUMN verification_artifact_id TEXT"
+                )
+            step_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(work_steps)")
+            }
+            if "contract_capability_ordinal" not in step_columns:
+                db.execute(
+                    "ALTER TABLE work_steps ADD COLUMN contract_capability_ordinal INTEGER"
+                )
+            claim_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(work_claims)")
+            }
+            if "execution_id" not in claim_columns:
+                db.execute("ALTER TABLE work_claims ADD COLUMN execution_id TEXT")
+            if "context_manifest_id" not in claim_columns:
+                db.execute("ALTER TABLE work_claims ADD COLUMN context_manifest_id TEXT")
+            if existing_version is not None and existing_version < 3:
+                # Phase A contracts already froze the global policy. Materialize
+                # that policy onto their legacy criterion rows during migration.
+                for row in db.execute("SELECT work_id,payload_json FROM work_contracts"):
+                    try:
+                        payload = json.loads(row["payload_json"])
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if payload.get("completion_grounding_policy") == "evidence_required":
+                        db.execute(
+                            "UPDATE work_criteria SET satisfaction_policy='evidence_grounded', "
+                            "semantic_verification='required' WHERE work_id=?",
+                            (row["work_id"],),
+                        )
 
             if existing_version is None:
                 db.execute(

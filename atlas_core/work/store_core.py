@@ -21,6 +21,7 @@ class WorkStoreCoreMixin:
         status: str = "planned",
         metadata: dict[str, Any] | None = None,
         work_id: str | None = None,
+        criterion_specs: Iterable[Any] | None = None,
     ) -> WorkState:
         objective = objective.strip()
         if not objective:
@@ -38,10 +39,12 @@ class WorkStoreCoreMixin:
                 "INSERT INTO work (id,objective,success_criteria_json,constraints_json,authority_scope,status,metadata_json) VALUES (?,?,?,?,?,?,?)",
                 (work_id, objective, _json_dump(criteria), _json_dump(constraints_tuple), authority_scope, status, _json_dump(metadata or {})),
             )
+            specs = tuple(criterion_specs or ())
             for ordinal, text in enumerate(criteria, start=1):
+                spec = specs[ordinal - 1] if ordinal <= len(specs) else None
                 db.execute(
-                    "INSERT INTO work_criteria (id,work_id,ordinal,text,status) VALUES (?,?,?,?, 'pending')",
-                    (_new_id("criterion"), work_id, ordinal, text),
+                    "INSERT INTO work_criteria (id,work_id,ordinal,text,status,satisfaction_policy,semantic_verification) VALUES (?,?,?,?, 'pending',?,?)",
+                    (_new_id("criterion"), work_id, ordinal, text, getattr(spec, "satisfaction_policy", "deliverable"), getattr(spec, "semantic_verification", "none")),
                 )
         return self.get_work(work_id)
 
@@ -128,6 +131,8 @@ class WorkStoreCoreMixin:
         "work_executions",
         "work_context_manifests",
         "work_checkpoints",
+        "work_claim_criteria",
+        "work_criterion_verifications",
         "work_claims",
         "work_approvals",
         "work_confirmations",
@@ -159,6 +164,12 @@ class WorkStoreCoreMixin:
                 if table == "work":
                     count = db.execute(
                         "SELECT COUNT(*) AS n FROM work WHERE id=?", (work_id,)
+                    ).fetchone()
+                elif table == "work_claim_criteria":
+                    count = db.execute(
+                        "SELECT COUNT(*) AS n FROM work_claim_criteria l "
+                        "JOIN work_criteria c ON c.id=l.criterion_id WHERE c.work_id=?",
+                        (work_id,),
                     ).fetchone()
                 else:
                     count = db.execute(
@@ -246,6 +257,7 @@ class WorkStoreCoreMixin:
         *,
         evidence_artifact_ids: Iterable[str] = (),
         note: str | None = None,
+        verification_artifact_id: str | None = None,
     ) -> CriterionRecord:
         if status not in CRITERION_STATUSES:
             raise ValueError(f"Unsupported criterion status: {status}")
@@ -256,12 +268,14 @@ class WorkStoreCoreMixin:
             work_id = row["work_id"]
         evidence_ids = tuple(dict.fromkeys(evidence_artifact_ids))
         self._validate_artifacts_for_work(work_id, evidence_ids)
+        if verification_artifact_id is not None:
+            self._validate_artifacts_for_work(work_id, (verification_artifact_id,))
         if status == "accepted" and not evidence_ids:
             raise ValueError("Accepted success criteria require evidence artifacts.")
         with self._db() as db:
             db.execute(
-                "UPDATE work_criteria SET status=?,evidence_artifact_ids_json=?,note=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (status, _json_dump(evidence_ids), note, criterion_id),
+                "UPDATE work_criteria SET status=?,evidence_artifact_ids_json=?,note=?,verification_artifact_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (status, _json_dump(evidence_ids), note, verification_artifact_id, criterion_id),
             )
             row = db.execute("SELECT * FROM work_criteria WHERE id=?", (criterion_id,)).fetchone()
         return self._criterion_from_row(row)
@@ -278,6 +292,7 @@ class WorkStoreCoreMixin:
         ordinal: int | None = None,
         metadata: dict[str, Any] | None = None,
         step_id: str | None = None,
+        contract_capability_ordinal: int | None = None,
     ) -> StepRecord:
         self.get_work(work_id)
         description = description.strip()
@@ -299,8 +314,8 @@ class WorkStoreCoreMixin:
         step_id = step_id or _new_id("step")
         with self._db() as db:
             db.execute(
-                "INSERT INTO work_steps (id,work_id,ordinal,description,capability,capability_version,status,dependencies_json,input_artifact_ids_json,metadata_json) VALUES (?,?,?,?,?,?,'pending',?,?,?)",
-                (step_id, work_id, ordinal, description, capability.strip() if capability else None, capability_version.strip() if capability_version else None, _json_dump(dep_ids), _json_dump(input_ids), _json_dump(metadata or {})),
+                "INSERT INTO work_steps (id,work_id,ordinal,description,capability,capability_version,contract_capability_ordinal,status,dependencies_json,input_artifact_ids_json,metadata_json) VALUES (?,?,?,?,?,?,?,'pending',?,?,?)",
+                (step_id, work_id, ordinal, description, capability.strip() if capability else None, capability_version.strip() if capability_version else None, contract_capability_ordinal, _json_dump(dep_ids), _json_dump(input_ids), _json_dump(metadata or {})),
             )
         return self.get_step(step_id)
 

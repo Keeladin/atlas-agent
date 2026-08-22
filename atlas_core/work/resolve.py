@@ -22,13 +22,14 @@ class ResolvedCapability:
 @dataclass(frozen=True)
 class ResolvedWork:
     contract: WorkContract
-    capabilities: dict[str, ResolvedCapability]
+    capabilities: dict[int, ResolvedCapability]
 
 
 @dataclass(frozen=True)
 class ResolveMismatch:
     capability_id: str
     reason: str
+    contract_capability_ordinal: int | None = None
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,7 @@ class ImplementationResolver:
         inventory: DeploymentInventory,
         tool_inventory: ToolGateway | None = None,
     ) -> ResolveReport:
-        bound: dict[str, ResolvedCapability] = {}
+        bound: dict[int, ResolvedCapability] = {}
         unarmed: list[str] = []
         mismatches: list[ResolveMismatch] = []
         for pin in contract.capabilities:
@@ -58,7 +59,7 @@ class ImplementationResolver:
             if mismatch is not None:
                 mismatches.append(mismatch)
                 continue
-            bound[pin.capability_id] = _bind_pin(pin, inventory, tool_inventory)
+            bound[pin.contract_capability_ordinal or 0] = _bind_pin(pin, inventory, tool_inventory)
         return ResolveReport(
             resolved=ResolvedWork(contract, bound),
             unarmed=tuple(unarmed),
@@ -72,22 +73,22 @@ def _match_pin(
     tool_inventory: ToolGateway | None,
 ) -> ResolveMismatch | None:
     if not pin.profile_version:
-        return ResolveMismatch(pin.capability_id, "version_missing")
+        return ResolveMismatch(pin.capability_id, "version_missing", pin.contract_capability_ordinal)
     profile = inventory.get(pin.capability_id, pin.profile_version)
     if profile is None:
-        return ResolveMismatch(pin.capability_id, "version_missing")
+        return ResolveMismatch(pin.capability_id, "version_missing", pin.contract_capability_ordinal)
     if not _execution_snapshot_matches(pin, profile):
-        return ResolveMismatch(pin.capability_id, "profile_mismatch")
+        return ResolveMismatch(pin.capability_id, "profile_mismatch", pin.contract_capability_ordinal)
     if pin.executor_kind in _DETERMINISTIC_KINDS:
         if inventory.handler(pin.capability_id, pin.profile_version) is None:
-            return ResolveMismatch(pin.capability_id, "handler_missing")
+            return ResolveMismatch(pin.capability_id, "handler_missing", pin.contract_capability_ordinal)
     for reference in pin.tools:
         if tool_inventory is None:
-            return ResolveMismatch(pin.capability_id, "tool_missing")
+            return ResolveMismatch(pin.capability_id, "tool_missing", pin.contract_capability_ordinal)
         try:
             _get_pinned_tool(tool_inventory, reference)
         except KeyError:
-            return ResolveMismatch(pin.capability_id, "tool_missing")
+            return ResolveMismatch(pin.capability_id, "tool_missing", pin.contract_capability_ordinal)
     return None
 
 

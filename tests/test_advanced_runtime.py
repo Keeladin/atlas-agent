@@ -97,6 +97,8 @@ class AdvancedRuntimeTests(unittest.TestCase):
                 "deliverable_kind",
                 "notes",
                 "completion_grounding_policy",
+                "criteria",
+                "criterion_bindings",
             },
         )
         ids = {item.id for item in brief_catalog()}

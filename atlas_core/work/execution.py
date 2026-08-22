@@ -45,7 +45,10 @@ class WorkExecutionMixin:
             )
             return True
 
-        pin = contract.capability(step.capability)
+        if step.contract_capability_ordinal is None:
+            self.store.set_step_status(step.id, "failed")
+            return True
+        pin = contract.contract_capability(step.contract_capability_ordinal)
         if not pin.armed:
             self.store.set_step_status(step.id, "failed")
             self._emit(
@@ -60,7 +63,7 @@ class WorkExecutionMixin:
             (
                 item
                 for item in report.mismatches
-                if item.capability_id == pin.capability_id
+                if item.contract_capability_ordinal == pin.contract_capability_ordinal
             ),
             None,
         )
@@ -78,7 +81,7 @@ class WorkExecutionMixin:
             )
             return True
 
-        resolved = report.resolved.capabilities.get(pin.capability_id)
+        resolved = report.resolved.capabilities.get(pin.contract_capability_ordinal or 0)
         if resolved is None:
             execution = self.store.begin_execution(
                 work_id,
@@ -106,7 +109,7 @@ class WorkExecutionMixin:
                 gated = self._gate_payload_confirmation(step, pin)
                 if gated != "proceed":
                     return True
-            return self._complete_human_step(step, pin, approved_override)
+            return self._complete_human_step(step, pin, contract, approved_override)
 
         if (
             not authority_allows(contract.authority_scope, pin.required_authority)
@@ -294,6 +297,7 @@ class WorkExecutionMixin:
         self._finish_frame(
             step,
             pin,
+            contract,
             profile,
             execution.id,
             pack.payload,
@@ -379,6 +383,7 @@ class WorkExecutionMixin:
         self,
         step: StepRecord,
         pin: ContractCapability,
+        contract: WorkContract,
         approval: object,
     ) -> bool:
         budget = pin.budget or ExecutionBudget()
@@ -421,7 +426,7 @@ class WorkExecutionMixin:
             ),
         )
         profile = execution_profile_from_pin(pin)
-        self._finish_frame(step, pin, profile, execution.id, {}, outcome)
+        self._finish_frame(step, pin, contract, profile, execution.id, {}, outcome)
         return True
 
     def _gate_payload_confirmation(self, step: StepRecord, pin: ContractCapability) -> str:

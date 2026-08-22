@@ -204,7 +204,7 @@ class ExecutionSurfaceTests(unittest.TestCase):
         )
         report = ImplementationResolver().resolve(contract, inventory, gateway)
         surface = project_surface(
-            report.resolved.capabilities["communication.email.send"],
+            report.resolved.capabilities[1],
             work_id="work_1",
             step_id="step_1",
             authority_scope="communicate",

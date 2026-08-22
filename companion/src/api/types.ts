@@ -139,6 +139,16 @@ export type TaskBrief = {
   constraints: string[]
   deliverable_kind?: string | null
   notes?: string | null
+  completion_grounding_policy?: 'none' | 'evidence_required'
+  criteria?: Array<{
+    text: string
+    satisfaction_policy: 'deliverable' | 'evidence_grounded'
+    semantic_verification: 'none' | 'required'
+  }>
+  criterion_bindings?: Array<{
+    criterion_ordinal: number
+    capability_ordinal: number
+  }>
   source?: BriefSource
 }
 

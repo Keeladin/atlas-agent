@@ -66,6 +66,9 @@ class CriterionRecord:
     status: str
     evidence_artifact_ids: tuple[str, ...]
     note: str | None
+    satisfaction_policy: str
+    semantic_verification: str
+    verification_artifact_id: str | None
     updated_at: str
 
 
@@ -77,6 +80,7 @@ class StepRecord:
     description: str
     capability: str | None
     capability_version: str | None
+    contract_capability_ordinal: int | None
     status: str
     dependencies: tuple[str, ...]
     input_artifact_ids: tuple[str, ...]
@@ -152,6 +156,23 @@ class ClaimRecord:
     value: Any
     evidence_artifact_ids: tuple[str, ...]
     confidence: float | None
+    execution_id: str | None
+    context_manifest_id: str | None
+    created_at: str
+
+
+@dataclass(frozen=True)
+class CriterionVerificationRecord:
+    id: str
+    work_id: str
+    criterion_id: str
+    contract_capability_ordinal: int
+    step_id: str
+    execution_id: str
+    evaluation_attempt: int
+    status: str
+    input_sha256: str
+    artifact_id: str
     created_at: str
 
 

@@ -1,4 +1,4 @@
-from .contract import ContractCapability, PinnedProvider, WorkContract, compile_contract
+from .contract import ContractCapability, ContractCriterion, ContractCriterionBinding, PinnedProvider, WorkContract, compile_contract
 from .engine import WorkEngine
 from .inventory import DeploymentInventory
 from .profile import CapabilityExecutionProfile
@@ -25,6 +25,8 @@ from .work import UNAVAILABLE, WorkError, WorkId, WorkRecord
 __all__ = [
     "CapabilityExecutionProfile",
     "ContractCapability",
+    "ContractCriterion",
+    "ContractCriterionBinding",
     "DeploymentInventory",
     "ExecutionSurface",
     "ImplementationResolver",

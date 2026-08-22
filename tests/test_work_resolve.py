@@ -158,7 +158,7 @@ class ImplementationResolverTests(unittest.TestCase):
         report = ImplementationResolver().resolve(contract, inventory)
         self.assertEqual(report.unarmed, ())
         self.assertEqual(report.mismatches, ())
-        bound = report.resolved.capabilities["automation.workflow.create"]
+        bound = report.resolved.capabilities[1]
         self.assertEqual(bound.pin.profile_version, "1.0.0")
         self.assertIs(bound.handler, handler_v1)
         self.assertIsNot(bound.handler, handler_v2)
@@ -214,7 +214,7 @@ class ImplementationResolverTests(unittest.TestCase):
             inventory=inventory,
         )
         report = ImplementationResolver().resolve(contract, inventory)
-        self.assertEqual(set(report.resolved.capabilities), {"automation.workflow.create"})
+        self.assertEqual(set(report.resolved.capabilities), {1})
         self.assertNotIn("reasoning.general", report.resolved.capabilities)
 
     def test_pinned_tool_uses_exact_version(self) -> None:
@@ -253,7 +253,7 @@ class ImplementationResolverTests(unittest.TestCase):
             lambda arguments: ToolResult(True, output=arguments, receipt={"ok": True}),
         )
         report = ImplementationResolver().resolve(contract, inventory, gateway)
-        bound = report.resolved.capabilities["communication.email.send"]
+        bound = report.resolved.capabilities[1]
         self.assertEqual(bound.pin.tools, ("mail.deliver@1.0.0",))
         self.assertEqual(bound.tool_specs[0].version, "1.0.0")
         self.assertIn("mail.deliver@1.0.0", bound.tool_handlers)
@@ -390,7 +390,7 @@ class ImplementationResolverTests(unittest.TestCase):
         report = ImplementationResolver().resolve(contract, restarted)
         self.assertEqual(report.mismatches, ())
         self.assertIs(
-            report.resolved.capabilities["automation.workflow.create"].handler,
+            report.resolved.capabilities[1].handler,
             other_handler,
         )
 
@@ -495,7 +495,7 @@ class WorkRuntimeResolveTests(unittest.TestCase):
         contract = runtime.contract(work_id)
         self.assertEqual(contract.allowed_tools, ("mail.deliver@1.0.0",))
         report = ImplementationResolver().resolve(contract, inventory, gateway)
-        bound = report.resolved.capabilities["communication.email.send"]
+        bound = report.resolved.capabilities[1]
         self.assertEqual(tuple(spec.id for spec in bound.tool_specs), ("mail.deliver",))
 
 

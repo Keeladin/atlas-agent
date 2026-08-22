@@ -281,6 +281,53 @@ class SemanticOutcomeVerifier:
         )
 
 
+class GroundedCriterionVerifier:
+    """Independent semantic coverage check; its verdict is not source evidence."""
+
+    _SYSTEM = (
+        "Independently verify whether the supplied grounded claims and their source "
+        "evidence are sufficient to satisfy the exact success criterion. Return only "
+        "JSON with status and summary. status must be pass, rework, abstain, or fail. "
+        "Use fail only when the evidence contradicts the criterion or proves it impossible. "
+        "A single grounded claim is not sufficient unless it actually covers the whole "
+        "criterion. The generated deliverable and producer confidence are not evidence."
+    )
+
+    def __init__(self, model_router: Any) -> None:
+        self.model_router = model_router
+
+    def verify(self, profile: CapabilityExecutionProfile, document: dict[str, Any]) -> VerificationResult:
+        from atlas_core.providers import ModelRequest, ModelRoutingError
+
+        prompt = json.dumps(document, ensure_ascii=False, sort_keys=True)
+        try:
+            route = self.model_router.select(
+                profile.capability_id,
+                context_chars=len(prompt),
+                privacy=profile.privacy,
+                eligible_providers=profile.eligible_providers,
+            )
+            response = route.provider.generate(ModelRequest(
+                profile.capability_id,
+                self._SYSTEM,
+                prompt,
+                max_output_chars=2_000,
+                metadata={"purpose": "grounded_criterion_verification"},
+            ))
+        except ModelRoutingError as exc:
+            return VerificationResult("abstain", f"criterion verifier could not be routed: {exc}")
+        except Exception as exc:
+            return VerificationResult("abstain", f"criterion verifier failed: {exc}")
+        parsed = _parse_outcome_verdict(response.text)
+        if parsed is None or parsed.get("status") not in {"pass", "rework", "abstain", "fail"}:
+            return VerificationResult("abstain", "criterion verifier returned unusable JSON")
+        return VerificationResult(
+            parsed["status"],
+            str(parsed.get("summary") or "criterion verification completed"),
+            {"criterion_ordinal": document.get("criterion", {}).get("ordinal")},
+        )
+
+
 def _parse_outcome_verdict(text: str) -> dict[str, Any] | None:
     raw = (text or "").strip()
     if not raw:
@@ -324,6 +371,27 @@ class CompletionVerifier:
             reasons.append(f"criteria not accepted: {unresolved}")
         if pending_approvals:
             reasons.append(f"pending approvals: {[item.id for item in pending_approvals]}")
+        for criterion in criteria:
+            if criterion.status != "accepted" or criterion.satisfaction_policy != "evidence_grounded":
+                continue
+            if criterion.semantic_verification == "required" and not criterion.verification_artifact_id:
+                reasons.append(f"grounded criterion lacks decisive verification: {criterion.text}")
+                continue
+            history = self.store.list_criterion_verifications(criterion.id)
+            decisive = next(
+                (item for item in history if item.artifact_id == criterion.verification_artifact_id),
+                None,
+            )
+            if decisive is None or decisive.status != "pass":
+                reasons.append(f"grounded criterion lacks a passing decisive verdict: {criterion.text}")
+            claims = self.store.criterion_claims(criterion.id)
+            source_ids = {
+                artifact_id for claim in claims
+                if claim.kind in {"observed", "retrieved", "calculated", "executed"}
+                for artifact_id in claim.evidence_artifact_ids
+            }
+            if not criterion.evidence_artifact_ids or not set(criterion.evidence_artifact_ids).issubset(source_ids):
+                reasons.append(f"grounded criterion evidence is not backed by linked claims: {criterion.text}")
         if reasons:
             return CompletionDecision(False, "incomplete", tuple(reasons))
         mismatch = self._deliverable_mismatch(work)

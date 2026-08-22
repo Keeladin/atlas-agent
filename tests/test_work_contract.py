@@ -4,7 +4,7 @@ import copy
 from pathlib import Path
 import unittest
 
-from atlas_core.advanced import TaskBrief
+from atlas_core.advanced import TaskBrief, TaskCriterion, TaskCriterionBinding
 from atlas_core.capabilities import CapabilityBinding, CapabilityOutcome
 from atlas_core.runtime_types import RuntimeBudget
 from atlas_core.work.store_common import _payload_hash
@@ -24,7 +24,7 @@ CONTRACT_SOURCE = (
 
 GOLDEN_COMPILED_AT = "2026-01-01T00:00:00Z"
 GOLDEN_WORK_ID = "work_golden_unarmed_knowledge_index"
-GOLDEN_SHA256 = "2a9e4650fc5c8d9fef112d447b76eef7eed387db09532fe0e5476dc20301c2b5"
+GOLDEN_SHA256 = "8b07a8cf12179588e15012501f1c44cfd941f383ca94697f5961653d44f531e7"
 
 
 def _brief(**overrides) -> TaskBrief:
@@ -94,6 +94,10 @@ class WorkContractCompileTests(unittest.TestCase):
             contract_id="contract_grounded",
         )
         self.assertEqual(contract.completion_grounding_policy, "evidence_required")
+        self.assertEqual(contract.criteria[0].satisfaction_policy, "evidence_grounded")
+        self.assertEqual(contract.criteria[0].semantic_verification, "required")
+        self.assertEqual(contract.capabilities[0].contract_capability_ordinal, 1)
+        self.assertEqual(contract.criterion_bindings[0].contract_capability_ordinal, 1)
         self.assertEqual(
             contract.capability("reasoning.general").model_outcome_policy,
             "claim_bearing",
@@ -106,6 +110,8 @@ class WorkContractCompileTests(unittest.TestCase):
             compiled_at=contract.compiled_at,
         )
         self.assertEqual(restored.completion_grounding_policy, "evidence_required")
+        self.assertEqual(restored.criteria, contract.criteria)
+        self.assertEqual(restored.criterion_bindings, contract.criterion_bindings)
         self.assertEqual(
             restored.capability("reasoning.general").model_outcome_policy,
             "claim_bearing",
@@ -113,6 +119,53 @@ class WorkContractCompileTests(unittest.TestCase):
 
     def test_completion_grounding_policy_defaults_to_none(self) -> None:
         self.assertEqual(_brief().completion_grounding_policy, "none")
+
+    def test_mixed_criteria_and_occurrence_bindings_are_frozen(self) -> None:
+        contract = compile_contract(
+            work_id="work_mixed",
+            brief=_brief(
+                capabilities=("automation.workflow.create", "automation.workflow.create"),
+                criteria=(
+                    TaskCriterion("Produce the workflow"),
+                    TaskCriterion("Ground the workflow rationale", "evidence_grounded", "required"),
+                ),
+                criterion_bindings=(
+                    TaskCriterionBinding(1, 1),
+                    TaskCriterionBinding(2, 2),
+                ),
+            ),
+            authority_scope="execute_external",
+            inventory=DeploymentInventory(),
+        )
+        self.assertEqual(tuple(item.satisfaction_policy for item in contract.criteria), ("deliverable", "evidence_grounded"))
+        self.assertEqual(
+            tuple((item.criterion_ordinal, item.contract_capability_ordinal) for item in contract.criterion_bindings),
+            ((1, 1), (2, 2)),
+        )
+
+    def test_legacy_capabilities_restore_ordinals_without_rehashing_payload(self) -> None:
+        contract = compile_contract(
+            work_id="work_legacy_ordinals",
+            brief=_brief(),
+            authority_scope="execute_external",
+            inventory=DeploymentInventory(),
+            compiled_at=GOLDEN_COMPILED_AT,
+        )
+        payload = copy.deepcopy(contract.as_payload())
+        payload.pop("criteria")
+        payload.pop("criterion_bindings")
+        for pin in payload["capabilities"]:
+            pin.pop("contract_capability_ordinal")
+        _encoded, digest = _payload_hash(payload)
+        restored = work_contract_from_stored(
+            work_id=contract.work_id,
+            contract_id=contract.contract_id,
+            sha256=digest,
+            payload=payload,
+            compiled_at=contract.compiled_at,
+        )
+        self.assertEqual(restored.capabilities[0].contract_capability_ordinal, 1)
+        self.assertEqual(restored.as_payload(), payload)
 
     def test_legacy_contracts_restore_with_default_policies_without_rehashing(self) -> None:
         contract = compile_contract(
@@ -420,7 +473,7 @@ class WorkContractCompileTests(unittest.TestCase):
         )
         self.assertEqual(contract.capability("automation.workflow.create").binding, binding)
 
-    def test_duplicate_brief_ids_are_an_exact_set(self) -> None:
+    def test_duplicate_brief_ids_become_distinct_contract_occurrences(self) -> None:
         contract = compile_contract(
             work_id="work_1",
             brief=_brief(
@@ -432,7 +485,11 @@ class WorkContractCompileTests(unittest.TestCase):
             authority_scope="execute_external",
             inventory=DeploymentInventory(),
         )
-        self.assertEqual(len(contract.capabilities), 1)
+        self.assertEqual(len(contract.capabilities), 2)
+        self.assertEqual(
+            tuple(item.contract_capability_ordinal for item in contract.capabilities),
+            (1, 2),
+        )
 
     def test_multi_capability_brief_preserves_order_and_unions_armed_tools(self) -> None:
         gateway = ToolGateway()

@@ -21,6 +21,9 @@ class WorkStoreRecordsMixin:
         step_id: str | None = None,
         confidence: float | None = None,
         claim_id: str | None = None,
+        execution_id: str | None = None,
+        context_manifest_id: str | None = None,
+        criterion_ids: Iterable[str] = (),
     ) -> ClaimRecord:
         self.get_work(work_id)
         if kind not in CLAIM_KINDS:
@@ -32,6 +35,14 @@ class WorkStoreRecordsMixin:
             raise ValueError("Claim confidence must be between 0 and 1.")
         if step_id is not None and self.get_step(step_id).work_id != work_id:
             raise ValueError("Claim step must belong to the same work.")
+        if execution_id is not None:
+            execution = self.get_execution(execution_id)
+            if execution.work_id != work_id or execution.step_id != step_id:
+                raise ValueError("Claim execution must belong to the same work and step.")
+        if context_manifest_id is not None:
+            manifest = self.get_context_manifest(context_manifest_id)
+            if execution_id is None or manifest.execution_id != execution_id:
+                raise ValueError("Claim context manifest must belong to its execution.")
         evidence_ids = tuple(dict.fromkeys(evidence_artifact_ids))
         self._validate_artifacts_for_work(work_id, evidence_ids)
         if kind in {"observed", "retrieved", "calculated", "executed"} and not evidence_ids:
@@ -39,9 +50,14 @@ class WorkStoreRecordsMixin:
         claim_id = claim_id or _new_id("claim")
         with self._db() as db:
             db.execute(
-                "INSERT INTO work_claims (id,work_id,step_id,kind,subject,value_json,evidence_artifact_ids_json,confidence) VALUES (?,?,?,?,?,?,?,?)",
-                (claim_id, work_id, step_id, kind, subject, _json_dump(value), _json_dump(evidence_ids), confidence),
+                "INSERT INTO work_claims (id,work_id,step_id,kind,subject,value_json,evidence_artifact_ids_json,confidence,execution_id,context_manifest_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (claim_id, work_id, step_id, kind, subject, _json_dump(value), _json_dump(evidence_ids), confidence, execution_id, context_manifest_id),
             )
+            for criterion_id in dict.fromkeys(criterion_ids):
+                criterion = db.execute("SELECT work_id FROM work_criteria WHERE id=?", (criterion_id,)).fetchone()
+                if criterion is None or criterion["work_id"] != work_id or execution_id is None:
+                    raise ValueError("Claim criterion linkage must belong to the same execution Work.")
+                db.execute("INSERT INTO work_claim_criteria (claim_id,criterion_id,execution_id) VALUES (?,?,?)", (claim_id, criterion_id, execution_id))
         return self.get_claim(claim_id)
 
     def get_claim(self, claim_id: str) -> ClaimRecord:
@@ -56,6 +72,43 @@ class WorkStoreRecordsMixin:
         with self._db() as db:
             rows = db.execute("SELECT * FROM work_claims WHERE work_id=? ORDER BY created_at,id", (work_id,)).fetchall()
         return tuple(self._claim_from_row(row) for row in rows)
+
+    def criterion_claims(self, criterion_id: str, *, execution_id: str | None = None) -> tuple[ClaimRecord, ...]:
+        sql = "SELECT c.* FROM work_claims c JOIN work_claim_criteria l ON l.claim_id=c.id WHERE l.criterion_id=?"
+        args: tuple[Any, ...] = (criterion_id,)
+        if execution_id is not None:
+            sql += " AND l.execution_id=?"
+            args += (execution_id,)
+        sql += " ORDER BY c.created_at,c.id"
+        with self._db() as db:
+            rows = db.execute(sql, args).fetchall()
+        return tuple(self._claim_from_row(row) for row in rows)
+
+    def claim_criterion_ids(self, claim_id: str) -> tuple[str, ...]:
+        with self._db() as db:
+            rows = db.execute("SELECT criterion_id FROM work_claim_criteria WHERE claim_id=? ORDER BY criterion_id", (claim_id,)).fetchall()
+        return tuple(row["criterion_id"] for row in rows)
+
+    def add_criterion_verification(self, *, work_id: str, criterion_id: str, contract_capability_ordinal: int, step_id: str, execution_id: str, status: str, input_sha256: str, artifact_id: str) -> CriterionVerificationRecord:
+        if status not in {"pass", "rework", "abstain", "fail"}:
+            raise ValueError("Unsupported criterion verification status")
+        with self._immediate() as db:
+            row = db.execute("SELECT COALESCE(MAX(evaluation_attempt),0)+1 AS attempt FROM work_criterion_verifications WHERE criterion_id=?", (criterion_id,)).fetchone()
+            record_id = _new_id("criterion_verification")
+            db.execute("INSERT INTO work_criterion_verifications (id,work_id,criterion_id,contract_capability_ordinal,step_id,execution_id,evaluation_attempt,status,input_sha256,artifact_id) VALUES (?,?,?,?,?,?,?,?,?,?)", (record_id, work_id, criterion_id, contract_capability_ordinal, step_id, execution_id, int(row["attempt"]), status, input_sha256, artifact_id))
+        return self.get_criterion_verification(record_id)
+
+    def get_criterion_verification(self, record_id: str) -> CriterionVerificationRecord:
+        with self._db() as db:
+            row = db.execute("SELECT * FROM work_criterion_verifications WHERE id=?", (record_id,)).fetchone()
+        if row is None:
+            raise UnknownRecordError(f"Unknown criterion verification: {record_id}")
+        return self._criterion_verification_from_row(row)
+
+    def list_criterion_verifications(self, criterion_id: str) -> tuple[CriterionVerificationRecord, ...]:
+        with self._db() as db:
+            rows = db.execute("SELECT * FROM work_criterion_verifications WHERE criterion_id=? ORDER BY evaluation_attempt", (criterion_id,)).fetchall()
+        return tuple(self._criterion_verification_from_row(row) for row in rows)
 
     def request_approval(
         self,
@@ -381,7 +434,15 @@ class WorkStoreRecordsMixin:
             "steps": [asdict(x) for x in self.list_steps(work_id)],
             "executions": [asdict(x) for x in self.list_executions(work_id)],
             "artifacts": artifact_rows,
-            "claims": [asdict(x) for x in self.list_claims(work_id)],
+            "claims": [
+                {**asdict(x), "criterion_ids": list(self.claim_criterion_ids(x.id))}
+                for x in self.list_claims(work_id)
+            ],
+            "criterion_verifications": [
+                asdict(item)
+                for criterion in self.list_criteria(work_id)
+                for item in self.list_criterion_verifications(criterion.id)
+            ],
             "approvals": [asdict(x) for x in self.list_approvals(work_id)],
             "confirmations": [asdict(x) for x in self.list_confirmations(work_id)],
             "context_manifests": [
@@ -413,11 +474,11 @@ class WorkStoreRecordsMixin:
 
     @staticmethod
     def _criterion_from_row(row: sqlite3.Row) -> CriterionRecord:
-        return CriterionRecord(row["id"], row["work_id"], int(row["ordinal"]), row["text"], row["status"], tuple(_json_load(row["evidence_artifact_ids_json"], [])), row["note"], row["updated_at"])
+        return CriterionRecord(row["id"], row["work_id"], int(row["ordinal"]), row["text"], row["status"], tuple(_json_load(row["evidence_artifact_ids_json"], [])), row["note"], row["satisfaction_policy"] if "satisfaction_policy" in row.keys() else "deliverable", row["semantic_verification"] if "semantic_verification" in row.keys() else "none", row["verification_artifact_id"] if "verification_artifact_id" in row.keys() else None, row["updated_at"])
 
     @staticmethod
     def _step_from_row(row: sqlite3.Row) -> StepRecord:
-        return StepRecord(row["id"], row["work_id"], int(row["ordinal"]), row["description"], row["capability"], row["capability_version"] if "capability_version" in row.keys() else None, row["status"], tuple(_json_load(row["dependencies_json"], [])), tuple(_json_load(row["input_artifact_ids_json"], [])), _json_load(row["metadata_json"], {}), row["created_at"], row["updated_at"])
+        return StepRecord(row["id"], row["work_id"], int(row["ordinal"]), row["description"], row["capability"], row["capability_version"] if "capability_version" in row.keys() else None, int(row["contract_capability_ordinal"]) if "contract_capability_ordinal" in row.keys() and row["contract_capability_ordinal"] is not None else None, row["status"], tuple(_json_load(row["dependencies_json"], [])), tuple(_json_load(row["input_artifact_ids_json"], [])), _json_load(row["metadata_json"], {}), row["created_at"], row["updated_at"])
 
     @staticmethod
     def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
@@ -439,7 +500,11 @@ class WorkStoreRecordsMixin:
 
     @staticmethod
     def _claim_from_row(row: sqlite3.Row) -> ClaimRecord:
-        return ClaimRecord(row["id"], row["work_id"], row["step_id"], row["kind"], row["subject"], _json_load(row["value_json"], None), tuple(_json_load(row["evidence_artifact_ids_json"], [])), row["confidence"], row["created_at"])
+        return ClaimRecord(row["id"], row["work_id"], row["step_id"], row["kind"], row["subject"], _json_load(row["value_json"], None), tuple(_json_load(row["evidence_artifact_ids_json"], [])), row["confidence"], row["execution_id"] if "execution_id" in row.keys() else None, row["context_manifest_id"] if "context_manifest_id" in row.keys() else None, row["created_at"])
+
+    @staticmethod
+    def _criterion_verification_from_row(row: sqlite3.Row) -> CriterionVerificationRecord:
+        return CriterionVerificationRecord(row["id"], row["work_id"], row["criterion_id"], int(row["contract_capability_ordinal"]), row["step_id"], row["execution_id"], int(row["evaluation_attempt"]), row["status"], row["input_sha256"], row["artifact_id"], row["created_at"])
 
     @staticmethod
     def _approval_from_row(row: sqlite3.Row) -> ApprovalRecord:

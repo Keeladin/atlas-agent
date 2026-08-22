@@ -28,6 +28,44 @@ _DEFAULT_UNSUPPORTED_REASON = (
 
 
 @dataclass(frozen=True)
+class TaskCriterion:
+    text: str
+    satisfaction_policy: Literal["deliverable", "evidence_grounded"] = "deliverable"
+    semantic_verification: Literal["none", "required"] = "none"
+
+    def __post_init__(self) -> None:
+        if not self.text.strip():
+            raise ValueError("Task criterion text must not be empty")
+        if self.satisfaction_policy not in {"deliverable", "evidence_grounded"}:
+            raise ValueError("Unsupported task criterion policy")
+        if self.semantic_verification not in {"none", "required"}:
+            raise ValueError("Unsupported task criterion verification policy")
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "text": self.text,
+            "satisfaction_policy": self.satisfaction_policy,
+            "semantic_verification": self.semantic_verification,
+        }
+
+
+@dataclass(frozen=True)
+class TaskCriterionBinding:
+    criterion_ordinal: int
+    capability_ordinal: int
+
+    def __post_init__(self) -> None:
+        if self.criterion_ordinal < 1 or self.capability_ordinal < 1:
+            raise ValueError("Task criterion binding ordinals must be positive")
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "criterion_ordinal": self.criterion_ordinal,
+            "capability_ordinal": self.capability_ordinal,
+        }
+
+
+@dataclass(frozen=True)
 class TaskBrief:
     """Desired Atlas work. A value object. Not a task and not an execution."""
 
@@ -39,6 +77,8 @@ class TaskBrief:
     deliverable_kind: str | None = None
     notes: str | None = None
     completion_grounding_policy: Literal["none", "evidence_required"] = "none"
+    criteria: tuple[TaskCriterion, ...] = ()
+    criterion_bindings: tuple[TaskCriterionBinding, ...] = ()
 
     def __post_init__(self) -> None:
         objective = self.objective.strip()
@@ -54,6 +94,14 @@ class TaskBrief:
         object.__setattr__(self, "expected_effect", effect)
         if self.completion_grounding_policy not in {"none", "evidence_required"}:
             raise ValueError("Unsupported completion grounding policy")
+        if self.criteria:
+            for binding in self.criterion_bindings:
+                if binding.criterion_ordinal > len(self.criteria):
+                    raise ValueError("Task criterion binding names an unknown criterion")
+                if binding.capability_ordinal > len(self.capabilities):
+                    raise ValueError("Task criterion binding names an unknown capability occurrence")
+        elif self.criterion_bindings:
+            raise ValueError("Task criterion bindings require structured criteria")
         for capability_id in self.capabilities:
             _reject_vendor_identity(capability_id)
 
@@ -67,6 +115,8 @@ class TaskBrief:
             "deliverable_kind": self.deliverable_kind,
             "notes": self.notes,
             "completion_grounding_policy": self.completion_grounding_policy,
+            "criteria": [item.as_dict() for item in self.criteria],
+            "criterion_bindings": [item.as_dict() for item in self.criterion_bindings],
         }
 
 

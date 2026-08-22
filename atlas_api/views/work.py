@@ -118,7 +118,10 @@ def build_work_detail(runtime: WorkRuntime, work_id: str) -> WorkDetailView:
         artifacts=tuple(
             _artifact_view(item) for item in store.list_artifacts(work_id)
         ),
-        claims=tuple(_claim_view(item) for item in store.list_claims(work_id)),
+        claims=tuple(
+            _claim_view(item, store.claim_criterion_ids(item.id))
+            for item in store.list_claims(work_id)
+        ),
         executions=tuple(_execution_view(item) for item in executions),
         events=tuple(_event_view(item) for item in store.list_events(work_id)),
         criteria=tuple(
@@ -129,6 +132,9 @@ def build_work_detail(runtime: WorkRuntime, work_id: str) -> WorkDetailView:
                 "status": item.status,
                 "evidence_artifact_ids": list(item.evidence_artifact_ids),
                 "note": item.note,
+                "satisfaction_policy": item.satisfaction_policy,
+                "semantic_verification": item.semantic_verification,
+                "verification_artifact_id": item.verification_artifact_id,
             }
             for item in store.list_criteria(work_id)
         ),
@@ -272,12 +278,15 @@ def _contract_summary(contract: WorkContract) -> dict[str, Any]:
         "authority_scope": contract.authority_scope,
         "allowed_tools": list(contract.allowed_tools),
         "confirmation_requirements": list(contract.confirmation_requirements),
+        "criteria": [item.as_dict() for item in contract.criteria],
+        "criterion_bindings": [item.as_dict() for item in contract.criterion_bindings],
     }
 
 
 def _capability_pin(pin: ContractCapability) -> dict[str, Any]:
     return {
         "capability_id": pin.capability_id,
+        "contract_capability_ordinal": pin.contract_capability_ordinal,
         "armed": pin.armed,
         "confirmation": pin.confirmation,
         "required_authority": pin.required_authority,
@@ -295,6 +304,7 @@ def _step_view(step: StepRecord) -> dict[str, Any]:
         "description": step.description,
         "capability": step.capability,
         "capability_version": step.capability_version,
+        "contract_capability_ordinal": step.contract_capability_ordinal,
         "status": step.status,
         "dependencies": list(step.dependencies),
         "input_artifact_ids": list(step.input_artifact_ids),
@@ -355,7 +365,7 @@ def _artifact_view(item: ArtifactRecord) -> dict[str, Any]:
     }
 
 
-def _claim_view(item: ClaimRecord) -> dict[str, Any]:
+def _claim_view(item: ClaimRecord, criterion_ids: tuple[str, ...] = ()) -> dict[str, Any]:
     return {
         "id": item.id,
         "step_id": item.step_id,
@@ -364,6 +374,9 @@ def _claim_view(item: ClaimRecord) -> dict[str, Any]:
         "value": item.value,
         "evidence_artifact_ids": list(item.evidence_artifact_ids),
         "confidence": item.confidence,
+        "execution_id": item.execution_id,
+        "context_manifest_id": item.context_manifest_id,
+        "criterion_ids": list(criterion_ids),
         "created_at": item.created_at,
     }
 

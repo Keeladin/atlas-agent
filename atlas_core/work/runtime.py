@@ -10,7 +10,7 @@ from atlas_core.runtime_types import RecoveryResult, RuntimeBudget, RuntimeResul
 from .store_common import _new_id
 from atlas_core.providers import ModelRouter
 from atlas_core.tools import ToolGateway
-from atlas_core.verification import VerifierRegistry
+from atlas_core.verification import GroundedCriterionVerifier, VerifierRegistry
 
 from .contract import (
     ContractCapability,
@@ -99,6 +99,7 @@ class WorkRuntime:
                 "contract_id": contract.contract_id,
             },
             work_id=work_id,
+            criterion_specs=contract.criteria,
         )
         try:
             store.insert_work_contract(
@@ -117,14 +118,14 @@ class WorkRuntime:
             metadata={"purpose": "accepted_brief"},
         )
         dependencies = _kind_match_dependencies(contract.capabilities)
-        step_ids: dict[str, str] = {}
+        step_ids: dict[int, str] = {}
         for pin in contract.capabilities:
             input_ids: tuple[str, ...] = ()
-            if pin.capability_id in requested:
+            if (pin.contract_capability_ordinal or 0) in requested:
                 request = store.put_artifact(
                     work_id,
                     kind=f"{pin.capability_id.replace('.', '_')}_request",
-                    payload=requested[pin.capability_id],
+                    payload=requested[pin.contract_capability_ordinal or 0],
                     metadata={
                         "purpose": "accepted_request",
                         "capability": pin.capability_id,
@@ -136,14 +137,19 @@ class WorkRuntime:
                 description=pin.definition.description,
                 capability=pin.capability_id,
                 capability_version=pin.profile_version,
-                dependencies=[step_ids[dep] for dep in dependencies[pin.capability_id]],
+                dependencies=[step_ids[dep] for dep in dependencies[pin.contract_capability_ordinal or 0]],
                 input_artifact_ids=input_ids,
                 metadata={
-                    "accept_all_criteria": True,
+                    "satisfies_criteria": [
+                        binding.criterion_ordinal
+                        for binding in contract.criterion_bindings
+                        if binding.contract_capability_ordinal == pin.contract_capability_ordinal
+                    ],
                     "allowed_tools": list(pin.tools),
                 },
+                contract_capability_ordinal=pin.contract_capability_ordinal,
             )
-            step_ids[pin.capability_id] = record.id
+            step_ids[pin.contract_capability_ordinal or 0] = record.id
         store.create_checkpoint(work_id, reason="work accepted from task brief")
         return work_id
 
@@ -292,35 +298,44 @@ class WorkRuntime:
 def _validated_inputs(
     brief: TaskBrief,
     inputs: Mapping[str, dict[str, Any]] | None,
-) -> dict[str, dict[str, Any]]:
+) -> dict[int, dict[str, Any]]:
     if inputs is None:
         return {}
-    allowed = set(brief.capabilities)
-    requested: dict[str, dict[str, Any]] = {}
+    occurrences: dict[str, list[int]] = {}
+    for ordinal, capability_id in enumerate(brief.capabilities, start=1):
+        occurrences.setdefault(capability_id, []).append(ordinal)
+    requested: dict[int, dict[str, Any]] = {}
     for raw_key, payload in inputs.items():
-        capability_id = str(raw_key)
-        if capability_id not in allowed:
-            raise WorkError(
-                f"input is not in the accepted brief: {capability_id}"
-            )
+        key = str(raw_key)
+        if key.isdecimal():
+            ordinal = int(key)
+            if ordinal < 1 or ordinal > len(brief.capabilities):
+                raise WorkError(f"input occurrence is not in the accepted brief: {key}")
+        else:
+            matches = occurrences.get(key, [])
+            if not matches:
+                raise WorkError(f"input is not in the accepted brief: {key}")
+            if len(matches) > 1:
+                raise WorkError(f"input for repeated capability {key} must use its occurrence ordinal")
+            ordinal = matches[0]
         if not isinstance(payload, dict):
-            raise WorkError(f"input for {capability_id} must be an object")
-        requested[capability_id] = payload
+            raise WorkError(f"input for {key} must be an object")
+        requested[ordinal] = payload
     return requested
 
 
 def _kind_match_dependencies(
     pins: tuple[ContractCapability, ...],
-) -> dict[str, tuple[str, ...]]:
-    dependencies: dict[str, tuple[str, ...]] = {}
+) -> dict[int, tuple[int, ...]]:
+    dependencies: dict[int, tuple[int, ...]] = {}
     for index, later in enumerate(pins):
         needed = {kind for kind in later.requires_artifact_kinds if kind}
-        matched: list[str] = []
+        matched: list[int] = []
         if needed:
             for earlier in pins[:index]:
                 if earlier.output_kind and earlier.output_kind in needed:
-                    matched.append(earlier.capability_id)
-        dependencies[later.capability_id] = tuple(matched)
+                    matched.append(earlier.contract_capability_ordinal or 0)
+        dependencies[later.contract_capability_ordinal or 0] = tuple(matched)
     return dependencies
 
 
@@ -346,6 +361,9 @@ def build_work_runtime(
         tools=gateway,
         verifiers=verifier_registry,
         model_consumer=consumer,
+        grounded_criterion_verifier=(
+            None if model_router is None else GroundedCriterionVerifier(model_router)
+        ),
     )
     return WorkRuntime(
         store=store,

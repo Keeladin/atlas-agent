@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 import tempfile
 import unittest
 from pathlib import Path
@@ -662,6 +663,84 @@ class WorkModelExecutionTests(unittest.TestCase):
                 work_id=work.id,
                 pack=before_output,
                 store=store,
+            )
+
+    def test_claim_linkage_is_authorized_by_exact_pin_and_persisted_manifest(self) -> None:
+        from atlas_core.work import WorkStore, compile_contract
+
+        store = WorkStore(self.db)
+        store.initialize()
+        inventory = DeploymentInventory()
+        inventory.register(
+            CapabilityExecutionProfile(
+                capability_id="reasoning.general",
+                executor_kind="model",
+                model_outcome_policy="claim_bearing",
+                verifier_id="core.nonempty",
+            )
+        )
+        brief = _brief(completion_grounding_policy="evidence_required")
+        contract = compile_contract(
+            work_id="work_manifest_linkage",
+            brief=brief,
+            authority_scope="interpret",
+            inventory=inventory,
+        )
+        store.create_work(
+            work_id=contract.work_id,
+            objective=brief.objective,
+            success_criteria=contract.success_criteria,
+            criterion_specs=contract.criteria,
+        )
+        step = store.add_step(
+            contract.work_id,
+            description="reason",
+            capability="reasoning.general",
+            capability_version="1.0.0",
+            contract_capability_ordinal=1,
+        )
+        source = store.put_artifact(contract.work_id, kind="source", payload="source")
+        execution = store.begin_execution(
+            contract.work_id,
+            step_id=step.id,
+            capability="reasoning.general",
+            capability_version="1.0.0",
+            input_artifact_ids=(source.id,),
+        )
+        base = _pack(
+            contract.work_id,
+            ManifestItem(source.id, "artifact", "source", 1, representation="full"),
+        )
+        manifest = replace(
+            base.manifest,
+            step_id=step.id,
+            execution_id=execution.id,
+            capability_version="1.0.0",
+        )
+        pack = replace(base, manifest=manifest)
+        store.write_context_manifest(
+            contract.work_id,
+            step_id=step.id,
+            execution_id=execution.id,
+            capability="reasoning.general",
+            capability_version="1.0.0",
+            assembler_version="test",
+            budget_tokens=128,
+            total_tokens=1,
+            manifest=manifest.as_dict(),
+            manifest_id=manifest.manifest_id,
+        )
+        envelope = json.loads(_claim_envelope_from_ids(source.id))
+        envelope["claims"][0]["criterion_ordinals"] = [1]
+        _output, claims, _limitations = _normalize_claim_bearing_output(
+            json.dumps(envelope), work_id=contract.work_id, pack=pack, store=store,
+            contract=contract, execution_id=execution.id,
+        )
+        self.assertEqual(claims[0]["criterion_ordinals"], (1,))
+        with self.assertRaisesRegex(ValueError, "not persisted for this execution"):
+            _normalize_claim_bearing_output(
+                json.dumps(envelope), work_id=contract.work_id, pack=pack, store=store,
+                contract=contract, execution_id="execution_wrong",
             )
 
     def test_claim_envelope_requires_evidence_and_preserves_optional_claims(self) -> None:

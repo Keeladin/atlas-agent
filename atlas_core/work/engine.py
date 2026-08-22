@@ -5,7 +5,7 @@ from atlas_core.events import EventBus
 from atlas_core.runtime_types import RecoveryResult, RuntimeResult
 from .store import WorkStore
 from atlas_core.tools import ToolGateway
-from atlas_core.verification import CompletionVerifier, OutcomeGate, VerifierRegistry
+from atlas_core.verification import CompletionVerifier, GroundedCriterionVerifier, OutcomeGate, VerifierRegistry
 
 from .contract import WorkContract
 from .execution import WorkExecutionMixin
@@ -33,6 +33,7 @@ class WorkEngine(WorkLifecycleMixin, WorkExecutionMixin, WorkFinishMixin):
         event_bus: EventBus | None = None,
         outcome_gate: OutcomeGate | None = None,
         model_consumer: WorkModelConsumer | None = None,
+        grounded_criterion_verifier: GroundedCriterionVerifier | None = None,
     ) -> None:
         self.store = store
         self.tools = tools
@@ -42,6 +43,7 @@ class WorkEngine(WorkLifecycleMixin, WorkExecutionMixin, WorkFinishMixin):
         self.completion = CompletionVerifier(store)
         self.outcome_gate = outcome_gate or OutcomeGate()
         self.model_consumer = model_consumer
+        self.grounded_criterion_verifier = grounded_criterion_verifier
 
     def run(self, contract: WorkContract, report: ResolveReport) -> RuntimeResult:
         return self.run_until_blocked(contract, report)

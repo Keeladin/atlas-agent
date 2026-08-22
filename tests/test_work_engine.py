@@ -165,6 +165,87 @@ class WorkEngineTests(unittest.TestCase):
         self.assertTrue(store.context_manifest_for_execution(executions[0].id))
         self.assertEqual(runtime.get(work_id).status, "completed")
 
+    def test_grounded_criterion_uses_linked_source_evidence_and_append_only_verdict(self) -> None:
+        def grounded_handler(request):
+            return CapabilityOutcome(
+                "pass",
+                output={"workflow": "generated deliverable"},
+                receipt={"ok": True},
+                claims=(
+                    {
+                        "kind": "retrieved",
+                        "subject": "workflow.requirement",
+                        "value": {"statement": "The request requires a workflow"},
+                        "evidence_artifact_ids": request.direct_input_artifact_ids,
+                        "criterion_ordinals": (1,),
+                    },
+                ),
+            )
+
+        class PassingGroundedVerifier:
+            def __init__(self):
+                self.calls = 0
+
+            def verify(self, _profile, _document):
+                self.calls += 1
+                if self.calls == 1:
+                    return VerificationResult("rework", "first attempt lacks coverage")
+                return VerificationResult("pass", "linked claims cover the criterion")
+
+        inventory = DeploymentInventory()
+        inventory.register(_profile("automation.workflow.create"), grounded_handler)
+        runtime = self._runtime(inventory)
+        runtime._engine.grounded_criterion_verifier = PassingGroundedVerifier()
+        work_id = runtime.accept(
+            TaskBrief(
+                objective="Create automation from the supplied requirement",
+                capabilities=("automation.workflow.create",),
+                required_authority="execute_external",
+                expected_effect="Create an automation workflow grounded in the supplied requirement",
+                completion_grounding_policy="evidence_required",
+            ),
+            "execute_external",
+            inputs={"automation.workflow.create": {"requirement": "archive completed jobs"}},
+        )
+        contract, report = self._resolve(runtime, work_id)
+        result = engine_run_with_confirmation(runtime, runtime._engine, contract, report)
+        store = runtime.store
+        criterion = store.list_criteria(work_id)[0]
+        claims = store.list_claims(work_id)
+        history = store.list_criterion_verifications(criterion.id)
+        claim = next(item for item in claims if item.execution_id == history[-1].execution_id)
+        executions = store.list_executions(work_id)
+        output_ids = {artifact_id for execution in executions for artifact_id in execution.output_artifact_ids}
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(criterion.status, "accepted")
+        self.assertEqual(criterion.satisfaction_policy, "evidence_grounded")
+        self.assertEqual(criterion.verification_artifact_id, history[-1].artifact_id)
+        self.assertEqual(tuple(item.status for item in history), ("rework", "pass"))
+        self.assertEqual(claim.execution_id, history[-1].execution_id)
+        self.assertIsNotNone(claim.context_manifest_id)
+        self.assertEqual(set(criterion.evidence_artifact_ids), set(claim.evidence_artifact_ids))
+        self.assertFalse(set(criterion.evidence_artifact_ids) & output_ids)
+
+    def test_repeated_capability_occurrences_compile_to_distinct_steps_and_inputs(self) -> None:
+        inventory = DeploymentInventory()
+        inventory.register(_profile("automation.workflow.create"), _pass_handler)
+        runtime = self._runtime(inventory)
+        work_id = runtime.accept(
+            TaskBrief(
+                objective="Create two automation workflows",
+                capabilities=("automation.workflow.create", "automation.workflow.create"),
+                required_authority="execute_external",
+                expected_effect="Create two automation workflows",
+            ),
+            "execute_external",
+            inputs={"1": {"name": "first"}, "2": {"name": "second"}},
+        )
+        steps = runtime.store.list_steps(work_id)
+        self.assertEqual(tuple(item.contract_capability_ordinal for item in steps), (1, 2))
+        self.assertNotEqual(steps[0].id, steps[1].id)
+        self.assertEqual(runtime.store.get_artifact(steps[0].input_artifact_ids[0]).payload, {"name": "first"})
+        self.assertEqual(runtime.store.get_artifact(steps[1].input_artifact_ids[0]).payload, {"name": "second"})
+
     def test_handler_receives_required_surface_and_cannot_use_bait(self) -> None:
         gateway = ToolGateway()
         gateway.register(

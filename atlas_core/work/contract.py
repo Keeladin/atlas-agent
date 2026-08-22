@@ -105,11 +105,17 @@ class ContractCapability:
     budget: ExecutionBudget | None = None
     retry_policy: RetryPolicy | None = None
     model_outcome_policy: ModelOutcomePolicy = "deliverable_only"
+    contract_capability_ordinal: int | None = None
+    _contract_capability_ordinal_in_payload: bool = field(
+        default=True, repr=False, compare=False
+    )
     _model_outcome_policy_in_payload: bool = field(
         default=True, repr=False, compare=False
     )
 
     def __post_init__(self) -> None:
+        if self.contract_capability_ordinal is not None and self.contract_capability_ordinal < 1:
+            raise ValueError("Contract capability ordinal must be positive")
         if self.model_outcome_policy not in {
             "deliverable_only",
             "claim_bearing",
@@ -147,7 +153,45 @@ class ContractCapability:
         }
         if self._model_outcome_policy_in_payload:
             payload["model_outcome_policy"] = self.model_outcome_policy
+        if self._contract_capability_ordinal_in_payload:
+            payload["contract_capability_ordinal"] = self.contract_capability_ordinal
         return payload
+
+
+@dataclass(frozen=True)
+class ContractCriterion:
+    ordinal: int
+    text: str
+    satisfaction_policy: str = "deliverable"
+    semantic_verification: str = "none"
+
+    def __post_init__(self) -> None:
+        if self.ordinal < 1 or not self.text.strip():
+            raise ValueError("Contract criterion must have a positive ordinal and text")
+        if self.satisfaction_policy not in {"deliverable", "evidence_grounded"}:
+            raise ValueError("Unsupported criterion satisfaction policy")
+        if self.semantic_verification not in {"none", "required"}:
+            raise ValueError("Unsupported criterion semantic verification policy")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "ordinal": self.ordinal,
+            "text": self.text,
+            "satisfaction_policy": self.satisfaction_policy,
+            "semantic_verification": self.semantic_verification,
+        }
+
+
+@dataclass(frozen=True)
+class ContractCriterionBinding:
+    criterion_ordinal: int
+    contract_capability_ordinal: int
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "criterion_ordinal": self.criterion_ordinal,
+            "contract_capability_ordinal": self.contract_capability_ordinal,
+        }
 
 
 @dataclass(frozen=True)
@@ -171,6 +215,9 @@ class WorkContract:
     work_budget: RuntimeBudget
     sha256: str
     completion_grounding_policy: CompletionGroundingPolicy = "none"
+    criteria: tuple[ContractCriterion, ...] = ()
+    criterion_bindings: tuple[ContractCriterionBinding, ...] = ()
+    _structured_criteria_in_payload: bool = field(default=True, repr=False, compare=False)
     _completion_grounding_policy_in_payload: bool = field(
         default=True, repr=False, compare=False
     )
@@ -178,11 +225,33 @@ class WorkContract:
     def __post_init__(self) -> None:
         if self.completion_grounding_policy not in {"none", "evidence_required"}:
             raise ValueError("Unsupported completion grounding policy")
+        pin_ordinals = tuple(item.contract_capability_ordinal for item in self.capabilities)
+        if any(item is None for item in pin_ordinals) or len(set(pin_ordinals)) != len(pin_ordinals):
+            raise ValueError("Contract capability ordinals must be present and unique")
+        criterion_ordinals = tuple(item.ordinal for item in self.criteria)
+        if len(set(criterion_ordinals)) != len(criterion_ordinals):
+            raise ValueError("Contract criterion ordinals must be unique")
+        if any(
+            item.criterion_ordinal not in criterion_ordinals
+            or item.contract_capability_ordinal not in pin_ordinals
+            for item in self.criterion_bindings
+        ):
+            raise ValueError("Contract criterion binding names an unknown criterion or capability")
+
+    def contract_capability(self, ordinal: int) -> ContractCapability:
+        for item in self.capabilities:
+            if item.contract_capability_ordinal == ordinal:
+                return item
+        raise WorkError(f"Contract capability ordinal {ordinal!r} is not in this contract")
 
     def capability(self, capability_id: str) -> ContractCapability:
-        for item in self.capabilities:
-            if item.capability_id == capability_id:
-                return item
+        matches = tuple(item for item in self.capabilities if item.capability_id == capability_id)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise WorkError(
+                f"Capability {capability_id!r} has multiple contract occurrences; use its ordinal"
+            )
         raise WorkError(f"Capability {capability_id!r} is not in this contract")
 
     def as_payload(self) -> dict[str, Any]:
@@ -202,6 +271,9 @@ class WorkContract:
         }
         if self._completion_grounding_policy_in_payload:
             payload["completion_grounding_policy"] = self.completion_grounding_policy
+        if self._structured_criteria_in_payload:
+            payload["criteria"] = [item.as_dict() for item in self.criteria]
+            payload["criterion_bindings"] = [item.as_dict() for item in self.criterion_bindings]
         return payload
 
 
@@ -236,13 +308,9 @@ def compile_contract(
         )
 
     slices: list[ContractCapability] = []
-    seen: set[str] = set()
     allowed: list[str] = []
     confirmations: list[str] = []
-    for capability_id in brief.capabilities:
-        if capability_id in seen:
-            continue
-        seen.add(capability_id)
+    for pin_ordinal, capability_id in enumerate(brief.capabilities, start=1):
         definition = lookup(capability_id)
         if definition is None:
             raise WorkError(f"Unknown capability: {capability_id}")
@@ -251,7 +319,10 @@ def compile_contract(
                 f"authority_scope {granted!r} does not satisfy {definition.id} "
                 f"required_authority {definition.required_authority!r}"
             )
-        pin = _compile_pin(definition, inventory, tools, providers)
+        pin = replace(
+            _compile_pin(definition, inventory, tools, providers),
+            contract_capability_ordinal=pin_ordinal,
+        )
         slices.append(pin)
         if pin.armed:
             for tool_ref in pin.tools:
@@ -260,12 +331,27 @@ def compile_contract(
         if definition.confirmation == "required":
             confirmations.append(capability_id)
 
+    criteria = tuple(
+        ContractCriterion(index, item.text, item.satisfaction_policy, item.semantic_verification)
+        for index, item in enumerate(brief.criteria, start=1)
+    ) or (ContractCriterion(
+        ordinal=1, text=brief.expected_effect,
+        satisfaction_policy="evidence_grounded" if brief.completion_grounding_policy == "evidence_required" else "deliverable",
+        semantic_verification="required" if brief.completion_grounding_policy == "evidence_required" else "none",
+    ),)
+    criterion_bindings = tuple(
+        ContractCriterionBinding(item.criterion_ordinal, item.capability_ordinal)
+        for item in brief.criterion_bindings
+    ) or tuple(
+        ContractCriterionBinding(criterion.ordinal, pin.contract_capability_ordinal or 0)
+        for criterion in criteria for pin in slices
+    )
     draft = WorkContract(
         work_id=work_id,
         contract_id="pending",
         compiled_at=compiled_at or _compiled_at_now(),
         objective=brief.objective,
-        success_criteria=(brief.expected_effect,),
+        success_criteria=tuple(item.text for item in criteria),
         constraints=brief.constraints,
         authority_scope=granted,
         capabilities=tuple(slices),
@@ -274,6 +360,8 @@ def compile_contract(
         work_budget=work_budget or RuntimeBudget(),
         sha256="pending",
         completion_grounding_policy=brief.completion_grounding_policy,
+        criteria=criteria,
+        criterion_bindings=criterion_bindings,
     )
     _encoded, digest = _payload_hash(draft.as_payload())
     return replace(
@@ -465,21 +553,52 @@ def work_contract_from_stored(
         raise WorkError("Work contract compiled_at does not match the store row")
 
     pins: list[ContractCapability] = []
-    seen: set[str] = set()
-    for item in payload.get("capabilities") or ():
+    capability_payloads = payload.get("capabilities") or ()
+    for stored_ordinal, item in enumerate(capability_payloads, start=1):
         if not isinstance(item, dict):
             raise WorkError("Work contract capability slice is not an object")
-        pin = _pin_from_payload(item)
-        if pin.capability_id in seen:
-            raise WorkError(
-                f"Work contract repeats capability {pin.capability_id!r}"
-            )
-        seen.add(pin.capability_id)
+        pin = replace(
+            _pin_from_payload(item),
+            contract_capability_ordinal=int(
+                item.get("contract_capability_ordinal") or stored_ordinal
+            ),
+            _contract_capability_ordinal_in_payload=(
+                "contract_capability_ordinal" in item
+            ),
+        )
         pins.append(pin)
 
     budget_payload = payload.get("work_budget")
     if not isinstance(budget_payload, dict):
         raise WorkError("Work contract work_budget is not an object")
+    structured = "criteria" in payload
+    criteria = tuple(
+        ContractCriterion(
+            ordinal=int(item["ordinal"]),
+            text=str(item["text"]),
+            satisfaction_policy=str(item.get("satisfaction_policy") or "deliverable"),
+            semantic_verification=str(item.get("semantic_verification") or "none"),
+        )
+        for item in (payload.get("criteria") or ())
+    ) if structured else tuple(
+        ContractCriterion(
+            index,
+            text,
+            "evidence_grounded" if payload.get("completion_grounding_policy") == "evidence_required" else "deliverable",
+            "required" if payload.get("completion_grounding_policy") == "evidence_required" else "none",
+        )
+        for index, text in enumerate(payload.get("success_criteria") or (), start=1)
+    )
+    bindings = tuple(
+        ContractCriterionBinding(
+            int(item["criterion_ordinal"]),
+            int(item["contract_capability_ordinal"]),
+        )
+        for item in (payload.get("criterion_bindings") or ())
+    ) if structured else tuple(
+        ContractCriterionBinding(criterion.ordinal, pin.contract_capability_ordinal or 0)
+        for criterion in criteria for pin in pins
+    )
     return WorkContract(
         work_id=work_id,
         contract_id=contract_id,
@@ -513,6 +632,9 @@ def work_contract_from_stored(
         _completion_grounding_policy_in_payload=(
             "completion_grounding_policy" in payload
         ),
+        criteria=criteria,
+        criterion_bindings=bindings,
+        _structured_criteria_in_payload=structured,
     )
 
 

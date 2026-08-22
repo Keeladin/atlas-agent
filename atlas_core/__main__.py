@@ -6,7 +6,7 @@ from pathlib import Path
 
 from atlas_core.advanced.brief import TaskBrief
 from atlas_core.integrations import register_morning_workflow
-from atlas_core.knowledge import KnowledgeStore, register_knowledge_capabilities, source_content_sha256
+from atlas_core.knowledge import KnowledgeStore, register_knowledge_capabilities
 from atlas_core.presentation import WorkPresenter
 from atlas_core.verification import VerifierRegistry
 from atlas_core.work import DeploymentInventory, build_work_runtime
@@ -37,9 +37,11 @@ def _parser() -> argparse.ArgumentParser:
     result = sub.add_parser("result", help="Render durable work truth as a user-facing report")
     result.add_argument("work_id")
     index_text = sub.add_parser("index-text", help="Index a UTF-8 text file into Atlas local knowledge")
-    index_text.add_argument("path")
+    index_text.add_argument("relative_path")
+    index_text.add_argument("--provider-namespace", required=True)
+    index_text.add_argument("--root-id", required=True)
+    index_text.add_argument("--configuration-revision", required=True)
     index_text.add_argument("--title")
-    index_text.add_argument("--source-uri")
     index_text.add_argument("--chunk-chars", type=int, default=4000)
     index_text.add_argument("--overlap-chars", type=int, default=400)
     search = sub.add_parser("search", help="Search Atlas local full-text knowledge")
@@ -71,13 +73,22 @@ def _print_result(result) -> None:
     )
 
 
-def _work_runtime(db_path, *, morning: bool = True, knowledge: bool = True):
+def _work_runtime(
+    db_path,
+    *,
+    morning: bool = True,
+    knowledge: bool = True,
+    local_source_registry=None,
+    local_source_kernel=None,
+):
     verifiers = VerifierRegistry()
     inventory = DeploymentInventory()
     runtime = build_work_runtime(
         db_path=db_path,
         profiles=inventory,
         verifiers=verifiers,
+        local_source_registry=local_source_registry,
+        local_source_kernel=local_source_kernel,
     )
     if morning:
         register_morning_workflow(inventory, verifiers, store=runtime.store)
@@ -96,27 +107,31 @@ def _work_runtime(db_path, *, morning: bool = True, knowledge: bool = True):
 def main() -> None:
     args = _parser().parse_args()
     if args.command == "index-text":
-        source = Path(args.path).expanduser()
-        if not source.is_file():
-            raise SystemExit(f"index-text source is missing or not a file: {source}")
-        text = source.read_text(encoding="utf-8")
-        resolved = str(source.resolve())
         runtime = _work_runtime(args.db)
+        if runtime._profiles.get("files.read") is None:
+            raise SystemExit(
+                "index-text requires a deployment-configured local source registry; "
+                "no local source roots are configured"
+            )
+        relative_path = args.relative_path
+        title = args.title or relative_path.rsplit("/", 1)[-1]
         work_id = runtime.accept(
             TaskBrief(
-                objective=f"Index local knowledge source {source.name}",
-                capabilities=("knowledge.ingest_text",),
+                objective=f"Index local knowledge source {relative_path}",
+                capabilities=("files.read", "knowledge.ingest_text"),
                 required_authority="modify_internal",
                 expected_effect="The source is durably indexed with chunk provenance.",
             ),
             "modify_internal",
             inputs={
+                "files.read": {
+                    "provider_namespace": args.provider_namespace,
+                    "root_id": args.root_id,
+                    "configuration_revision": args.configuration_revision,
+                    "relative_path": relative_path,
+                },
                 "knowledge.ingest_text": {
-                    "title": args.title or source.name,
-                    "source_path": resolved,
-                    "source_uri": args.source_uri or resolved,
-                    "content_sha256": source_content_sha256(text),
-                    "byte_size": source.stat().st_size,
+                    "title": title,
                     "chunk_chars": args.chunk_chars,
                     "overlap_chars": args.overlap_chars,
                 }

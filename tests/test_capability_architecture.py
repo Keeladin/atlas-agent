@@ -372,13 +372,19 @@ class CapabilityArchitectureTests(unittest.TestCase):
         source = (
             Path(__file__).resolve().parents[1] / "atlas_core" / "__main__.py"
         ).read_text(encoding="utf-8")
-        ids = re.findall(r'capabilities=\("([^"]+)",\)', source)
+        blocks = re.findall(r"capabilities=\(([^)]+)\)", source)
+        ids = [
+            capability_id
+            for block in blocks
+            for capability_id in re.findall(r'"([^"]+)"', block)
+        ]
         self.assertEqual(
             set(ids),
             {
                 "knowledge.ingest_text",
                 "knowledge.search",
                 "operations.morning_pack.generate",
+                "files.read",
             },
         )
         for capability_id in ids:

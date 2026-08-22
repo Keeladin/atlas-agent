@@ -14,12 +14,13 @@ from .store import (
     KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeStore,
+    KnowledgeSourceProvenance,
     SearchHit,
     chunk_text,
     content_tokens,
     hit_is_relevant,
     normalize_knowledge_text,
-    source_content_sha256,
+    normalized_text_sha256,
     token_overlap,
 )
 
@@ -28,6 +29,7 @@ __all__ = [
     "KnowledgeChunk",
     "KnowledgeDocument",
     "KnowledgeStore",
+    "KnowledgeSourceProvenance",
     "MAX_SEARCH_RESULT_CHARS",
     "SearchHit",
     "chunk_text",
@@ -43,5 +45,5 @@ __all__ = [
     "register_knowledge_capabilities",
     "resolve_knowledge_source",
     "search_query_from_task",
-    "source_content_sha256",
+    "normalized_text_sha256",
 ]

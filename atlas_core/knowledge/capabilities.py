@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from atlas_core.capabilities import (
     CapabilityExecutionProfile,
@@ -18,7 +17,6 @@ from .store import (
     KnowledgeStore,
     content_tokens,
     hit_is_relevant,
-    source_content_sha256,
     token_overlap,
 )
 
@@ -93,73 +91,67 @@ def parse_ingest_objective(objective: str) -> str | None:
             return text[len(prefix) :].strip() or None
     if lowered.startswith("index "):
         rest = text[6:].strip()
-        if rest.startswith("/") or rest.startswith("~") or Path(rest).suffix.casefold() in _INGEST_SUFFIXES:
+        if any(rest.casefold().endswith(suffix) for suffix in _INGEST_SUFFIXES):
             return rest
     return None
 
 
-def resolve_knowledge_source(label: str, *, roots: tuple[Path, ...] | None = None) -> Path | None:
-    """Resolve a source label to a readable file, or None if it is ambiguous/missing."""
+def resolve_knowledge_source(
+    label: str,
+    *,
+    provider_namespace: str | None = None,
+    root_id: str | None = None,
+    configuration_revision: str | None = None,
+) -> dict | None:
+    """Parse controlled source intent without touching the filesystem."""
     text = (label or "").strip().strip('"').strip("'")
-    if not text:
+    if not text or not provider_namespace or not root_id or not configuration_revision:
         return None
-    candidate = Path(text).expanduser()
     try:
-        if candidate.is_file():
-            return candidate.resolve()
-    except OSError:
+        from atlas_core.sources.local import validate_relative_path
+
+        relative_path = validate_relative_path(text)
+    except Exception:
         return None
-    if candidate.is_absolute():
-        return None
-    for root in roots or (Path.cwd(),):
-        try:
-            base = root.resolve()
-            direct = (base / candidate).resolve()
-            if direct.is_file() and (direct == base or base in direct.parents):
-                return direct
-        except OSError:
-            continue
-        matches: list[Path] = []
-        try:
-            for path in base.rglob(candidate.name):
-                if any(part.startswith(".") or part in {"__pycache__", "node_modules"} for part in path.parts):
-                    continue
-                if path.is_file():
-                    matches.append(path)
-                if len(matches) > 8:
-                    break
-        except OSError:
-            continue
-        if len(matches) == 1:
-            return matches[0].resolve()
-    return None
+    return {
+        "provider_namespace": provider_namespace,
+        "root_id": root_id,
+        "configuration_revision": configuration_revision,
+        "relative_path": relative_path,
+    }
 
 
 def ingest_request_from_task(
     *,
     objective: str,
     description: str | None = None,
-    roots: tuple[Path, ...] | None = None,
+    provider_namespace: str,
+    root_id: str,
+    configuration_revision: str,
 ) -> dict:
-    """Build a path/hash ingest control record from durable task text."""
+    """Build controlled source intent from durable task text without acquisition."""
     label = parse_ingest_objective(objective)
     if not label:
         label = parse_ingest_objective(description or "") or (description or "").strip() or objective.strip()
-    path = resolve_knowledge_source(label, roots=roots)
-    if path is None:
+    source = resolve_knowledge_source(
+        label,
+        provider_namespace=provider_namespace,
+        root_id=root_id,
+        configuration_revision=configuration_revision,
+    )
+    if source is None:
         raise ValueError(
-            "knowledge.ingest_text needs a readable source_path; "
-            f"could not resolve {label!r}."
+            "knowledge ingestion requires a valid configured root-relative source; "
+            f"could not parse {label!r}."
         )
-    text = path.read_text(encoding="utf-8")
+    title = source["relative_path"].rsplit("/", 1)[-1]
     return {
-        "title": path.name,
-        "source_path": str(path),
-        "source_uri": str(path),
-        "content_sha256": source_content_sha256(text),
-        "byte_size": path.stat().st_size,
-        "chunk_chars": 4000,
-        "overlap_chars": 400,
+        "files.read": source,
+        "knowledge.ingest_text": {
+            "title": title,
+            "chunk_chars": 4000,
+            "overlap_chars": 400,
+        },
     }
 
 
@@ -224,14 +216,13 @@ def grounded_answer_from_hits(query: str, results: list[dict]) -> str:
         "",
     ]
     for hit in chosen:
-        title = hit.get("title") or hit.get("source_uri") or "Untitled"
-        source = hit.get("source_uri") or ""
+        title = hit.get("title") or "Untitled"
         digest = (hit.get("sha256") or "")[:12]
         excerpt = _best_excerpt(str(hit.get("text") or ""), query_tokens)
         if not excerpt:
             continue
         lines.append(excerpt)
-        citation = title if not source or source.endswith(str(title)) else f"{title} · {source}"
+        citation = title
         if digest:
             citation += f" · hash {digest}…"
         lines.append(f"— {citation}")
@@ -250,35 +241,43 @@ def _payload(store, request):
     return value
 
 
-def _read_source_path(source_path: str) -> str:
-    path = Path(source_path).expanduser()
-    try:
-        path = path.resolve(strict=True)
-    except FileNotFoundError as exc:
-        raise ValueError(f"Knowledge source path is missing: {path}") from exc
-    if not path.is_file():
-        raise ValueError(f"Knowledge source path is not a file: {path}")
-    return path.read_text(encoding="utf-8")
-
-
-def _ingest_text(data: dict) -> str:
-    source_path = data.get("source_path")
-    inline = data.get("text")
-    if source_path:
-        text = _read_source_path(str(source_path))
-    elif isinstance(inline, str) and inline:
-        text = inline
-    else:
-        raise ValueError("Knowledge ingest requires source_path or text.")
-    expected = data.get("content_sha256")
-    if expected:
-        actual = source_content_sha256(text)
-        if actual != str(expected):
-            raise ValueError(
-                "Knowledge source hash mismatch: "
-                f"expected {expected}, got {actual}"
-            )
-    return text
+def _acquired_source(store, request):
+    observation_artifact = None
+    content_artifact = None
+    for artifact_id in request.dependency_artifact_ids:
+        artifact = store.get_artifact(artifact_id)
+        if artifact.provenance_category == "acquired_observation" and artifact.kind == "files_read_observation":
+            observation_artifact = artifact
+        elif artifact.provenance_category == "acquired_content" and artifact.kind == "files_acquired_content":
+            content_artifact = artifact
+    if observation_artifact is None and content_artifact is None:
+        return None
+    if observation_artifact is None or content_artifact is None:
+        raise ValueError("Knowledge ingest requires both acquired observation and content artifacts.")
+    observation = observation_artifact.payload.get("observation")
+    content = content_artifact.payload
+    if not isinstance(observation, dict) or not isinstance(content, dict):
+        raise ValueError("Knowledge source artifacts are malformed.")
+    if observation.get("consistency") != "stable" or observation.get("completeness") != "complete":
+        raise ValueError("Knowledge ingest requires a complete stable source observation.")
+    if content.get("source_observation_id") != observation.get("observation_id"):
+        raise ValueError("Knowledge source observation/content identity mismatch.")
+    if content.get("source_observation_payload_sha256") != observation.get("observation_payload_sha256"):
+        raise ValueError("Knowledge source observation payload mismatch.")
+    if content.get("source_ref") != observation.get("source_ref"):
+        raise ValueError("Knowledge source reference mismatch.")
+    if not isinstance(content.get("text"), str):
+        raise ValueError("Knowledge acquired content has no UTF-8 text.")
+    return {
+        "text": content["text"],
+        "source_ref": content["source_ref"],
+        "source_observation_id": observation["observation_id"],
+        "observation_payload_sha256": observation["observation_payload_sha256"],
+        "observation_artifact_id": observation_artifact.id,
+        "acquired_content_artifact_id": content_artifact.id,
+        "source_byte_sha256": content.get("source_byte_sha256"),
+        "evidence_artifact_ids": (observation_artifact.id, content_artifact.id),
+    }
 
 
 def _search_verifier(spec, output, context):
@@ -357,13 +356,19 @@ def _bounded_search_rows(query: str, hits) -> tuple[list[dict], bool]:
                 "chunk_id": hit.chunk.id,
                 "document_id": hit.chunk.document_id,
                 "title": hit.chunk.title,
-                "source_uri": hit.chunk.source_uri,
                 "ordinal": hit.chunk.ordinal,
                 "text": text,
                 "sha256": hit.chunk.sha256,
                 "score": hit.score,
                 "overlap_count": count,
                 "overlap_ratio": round(ratio, 4),
+                "source_provenance": [
+                    {
+                        "observation_artifact_id": item.observation_artifact_id,
+                        "acquired_content_artifact_id": item.acquired_content_artifact_id,
+                    }
+                    for item in hit.chunk.source_provenance
+                ],
             }
         )
         used += len(text)
@@ -383,19 +388,29 @@ def register_knowledge_capabilities(
 
     def ingest(request):
         data = _payload(store, request)
+        acquired = _acquired_source(store, request)
+        if acquired is None:
+            raise ValueError("Knowledge ingest requires controlled files.read acquisition.")
         result = knowledge_store.ingest_text(
             title=str(data.get("title") or ""),
-            text=_ingest_text(data),
-            source_uri=(str(data["source_uri"]) if data.get("source_uri") else None),
+            text=acquired["text"],
             metadata=(dict(data["metadata"]) if isinstance(data.get("metadata"), dict) else {}),
             chunk_chars=int(data.get("chunk_chars", 4000)),
             overlap_chars=int(data.get("overlap_chars", 400)),
+            source_provenance={
+                key: acquired[key]
+                for key in ("observation_artifact_id", "acquired_content_artifact_id")
+            },
         )
         output = {
             "document_id": result.document.id,
             "title": result.document.title,
-            "source_uri": result.document.source_uri,
-            "content_sha256": result.document.content_sha256,
+            "normalized_text_sha256": result.document.normalized_text_sha256,
+            "source_byte_sha256": acquired["source_byte_sha256"],
+            "source_ref": acquired["source_ref"],
+            "source_observation_id": acquired["source_observation_id"],
+            "observation_artifact_id": acquired["observation_artifact_id"],
+            "acquired_content_artifact_id": acquired["acquired_content_artifact_id"],
             "chunk_count": result.document.chunk_count,
             "created": result.created,
         }
@@ -409,6 +424,11 @@ def register_knowledge_capabilities(
                     "kind": "executed",
                     "subject": f"knowledge.document.{result.document.id}",
                     "value": output,
+                    **(
+                        {"evidence_artifact_ids": acquired["evidence_artifact_ids"]}
+                        if acquired is not None
+                        else {}
+                    ),
                 },
             ),
         )
@@ -419,6 +439,48 @@ def register_knowledge_capabilities(
         limit = int(data.get("limit", 8))
         hits = knowledge_store.search(query, limit=limit)
         rows, truncated = _bounded_search_rows(query, hits)
+        copied: dict[str, str] = {}
+
+        def materialize(origin_id: str) -> str | None:
+            if origin_id in copied:
+                return copied[origin_id]
+            try:
+                origin = store.get_artifact(origin_id)
+            except Exception:
+                return None
+            if origin.provenance_category not in {"acquired_observation", "acquired_content"}:
+                return None
+            if origin.work_id == request.work_id:
+                copied[origin_id] = origin.id
+                return origin.id
+            replica = store.put_artifact(
+                request.work_id,
+                step_id=request.step_id,
+                kind=origin.kind,
+                payload=origin.payload,
+                metadata={
+                    **origin.metadata,
+                    "origin_artifact_id": origin.id,
+                    "origin_artifact_sha256": origin.sha256,
+                    "execution_id": request.execution_id,
+                    "purpose": "knowledge_source_evidence",
+                },
+                provenance_category=origin.provenance_category,
+            )
+            if replica.sha256 != origin.sha256:
+                raise ValueError("Knowledge source evidence replica hash mismatch.")
+            copied[origin_id] = replica.id
+            return replica.id
+
+        claim_rows: list[tuple[dict, tuple[str, ...]]] = []
+        for row in rows:
+            evidence: list[str] = []
+            for provenance in row.get("source_provenance", []):
+                for key in ("observation_artifact_id", "acquired_content_artifact_id"):
+                    artifact_id = materialize(str(provenance.get(key) or ""))
+                    if artifact_id:
+                        evidence.append(artifact_id)
+            claim_rows.append((row, tuple(dict.fromkeys(evidence))))
         status = "ok" if rows else "no_relevant_results"
         return CapabilityOutcome(
             "pass",
@@ -437,15 +499,17 @@ def register_knowledge_capabilities(
                         "chunk_id": row["chunk_id"],
                         "document_id": row["document_id"],
                         "title": row["title"],
-                        "source_uri": row["source_uri"],
                         "ordinal": row["ordinal"],
                         "sha256": row["sha256"],
                         "score": row["score"],
                         "overlap_count": row["overlap_count"],
                         "overlap_ratio": row["overlap_ratio"],
+                        "source_provenance": row["source_provenance"],
                     },
+                    "evidence_artifact_ids": evidence_ids,
                 }
-                for row in rows
+                for row, evidence_ids in claim_rows
+                if evidence_ids
             ),
         )
 
@@ -478,18 +542,13 @@ def register_knowledge_capabilities(
     inventory.register(
         CapabilityExecutionProfile(
             capability_id="knowledge.ingest_text",
-            version="1.1.0",
+            version="2.0.0",
             executor_kind="deterministic",
             input_schema={
                 "type": "object",
                 "required": ["title"],
                 "properties": {
                     "title": {"type": "string", "minLength": 1},
-                    "source_path": {"type": "string", "minLength": 1},
-                    "text": {"type": "string", "minLength": 1},
-                    "source_uri": {"type": ["string", "null"]},
-                    "content_sha256": {"type": "string", "minLength": 1},
-                    "byte_size": {"type": "integer", "minimum": 0},
                     "metadata": {"type": "object"},
                     "chunk_chars": {"type": "integer", "minimum": 1},
                     "overlap_chars": {"type": "integer", "minimum": 0},
@@ -498,18 +557,23 @@ def register_knowledge_capabilities(
             },
             output_schema={
                 "type": "object",
-                "required": ["document_id", "title", "content_sha256", "chunk_count", "created"],
+                "required": ["document_id", "title", "normalized_text_sha256", "chunk_count", "created"],
                 "properties": {
                     "document_id": {"type": "string"},
                     "title": {"type": "string"},
-                    "source_uri": {"type": ["string", "null"]},
-                    "content_sha256": {"type": "string"},
+                    "normalized_text_sha256": {"type": "string"},
+                    "source_byte_sha256": {"type": ["string", "null"]},
+                    "source_ref": {"type": "object"},
+                    "source_observation_id": {"type": "string"},
+                    "observation_artifact_id": {"type": "string"},
+                    "acquired_content_artifact_id": {"type": ["string", "null"]},
                     "chunk_count": {"type": "integer", "minimum": 1},
                     "created": {"type": "boolean"},
                 },
                 "additionalProperties": False,
             },
             output_kind="knowledge_ingest_result",
+            requires_artifact_kinds=("files_acquired_content",),
             side_effects=("internal_knowledge_store",),
             verifier_id="core.receipt",
             idempotent=True,

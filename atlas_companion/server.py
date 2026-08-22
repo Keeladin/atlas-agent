@@ -28,10 +28,8 @@ from atlas_companion.credentials import CredentialStore
 from atlas_companion.intent import preview_intent
 from atlas_companion.telemetry import TelemetryCollector
 from atlas_core.context import ASSEMBLER_VERSION
-from atlas_core.knowledge import (
-    KnowledgeStore,
-    source_content_sha256,
-)
+from atlas_core.advanced.brief import TaskBrief
+from atlas_core.knowledge import KnowledgeStore
 
 
 
@@ -46,11 +44,19 @@ class CompanionDisconnectedError(RuntimeError):
 class CompanionService:
     """HTTP adapter. Work execution is disconnected until a Work client exists."""
 
-    def __init__(self, *, db_path: str | Path, provider_config: str | Path | None = None, companion_bind: str | None = None):
+    def __init__(
+        self,
+        *,
+        db_path: str | Path,
+        provider_config: str | Path | None = None,
+        companion_bind: str | None = None,
+        work_runtime=None,
+    ):
         self.db_path = Path(db_path)
         self.provider_config = Path(provider_config).expanduser() if provider_config else None
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.pid = os.getpid()
+        self.work_runtime = work_runtime
         self._router_lock = threading.Lock()
         self.credentials = CredentialStore(self.db_path.parent)
         self.provider_state = ProviderStateStore(self.db_path.parent)
@@ -77,6 +83,13 @@ class CompanionService:
         raise CompanionDisconnectedError(
             "Companion is disconnected from Work execution"
         )
+
+    def _require_files_work(self):
+        if self.work_runtime is None or self.work_runtime._profiles.get("files.stat") is None:
+            raise CompanionDisconnectedError(
+                "Companion source stat is disconnected from controlled Files Work execution"
+            )
+        return self.work_runtime
 
     def tasks(self):
         return []
@@ -387,7 +400,6 @@ class CompanionService:
                     "chunk_id": hit.chunk.id,
                     "document_id": hit.chunk.document_id,
                     "title": hit.chunk.title,
-                    "source_uri": hit.chunk.source_uri,
                     "ordinal": hit.chunk.ordinal,
                     "text": hit.chunk.text,
                     "sha256": hit.chunk.sha256,
@@ -397,20 +409,47 @@ class CompanionService:
             ],
         }
 
-    def stat_source(self, source_path: str):
-        path = Path(str(source_path or "").strip()).expanduser()
-        try:
-            path = path.resolve(strict=True)
-        except FileNotFoundError as exc:
-            raise ValueError(f"Knowledge source path is missing: {path}") from exc
-        if not path.is_file():
-            raise ValueError(f"Knowledge source path is not a file: {path}")
-        text = path.read_text(encoding="utf-8")
+    def stat_source(
+        self,
+        *,
+        provider_namespace: str,
+        root_id: str,
+        relative_path: str,
+        configuration_revision: str,
+    ):
+        runtime = self._require_files_work()
+        work_id = runtime.accept(
+            TaskBrief(
+                objective=f"Stat configured local source {root_id}/{relative_path}",
+                capabilities=("files.stat",),
+                required_authority="read",
+                expected_effect="A controlled source metadata observation is persisted.",
+            ),
+            "read",
+            inputs={
+                "files.stat": {
+                    "provider_namespace": provider_namespace,
+                    "root_id": root_id,
+                    "relative_path": relative_path,
+                    "configuration_revision": configuration_revision,
+                }
+            },
+        )
+        result = runtime.run(work_id)
+        if result.status != "completed":
+            raise ValueError(result.reason or "Controlled source stat did not complete.")
+        artifacts = [
+            artifact
+            for artifact in runtime.store.list_artifacts(work_id)
+            if artifact.kind == "files_stat_observation"
+            and artifact.provenance_category == "acquired_observation"
+        ]
+        if not artifacts:
+            raise RuntimeError("Controlled source stat produced no observation artifact.")
         return {
-            "path": str(path),
-            "title": path.name,
-            "byte_size": path.stat().st_size,
-            "content_sha256": source_content_sha256(text),
+            "work_id": work_id,
+            "observation_artifact_id": artifacts[-1].id,
+            "observation": artifacts[-1].payload["observation"],
         }
 
     def ingest(self, body: dict[str, Any]):
@@ -459,7 +498,16 @@ class CompanionApp:
                     self.service.search_knowledge(query.get("q", ""), int(query.get("limit") or 8)),
                 )
             if method == "GET" and path == "/api/knowledge/stat":
-                return self._json(start_response, HTTPStatus.OK, self.service.stat_source(query.get("path", "")))
+                return self._json(
+                    start_response,
+                    HTTPStatus.OK,
+                    self.service.stat_source(
+                        provider_namespace=query.get("provider_namespace", ""),
+                        root_id=query.get("root_id", ""),
+                        relative_path=query.get("relative_path", ""),
+                        configuration_revision=query.get("configuration_revision", ""),
+                    ),
+                )
             if method == "POST" and path == "/api/tasks/preview":
                 return self._json(start_response, HTTPStatus.OK, self.service.preview_task(self._body(environ)))
             if method == "POST" and path == "/api/ask":

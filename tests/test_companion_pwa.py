@@ -23,6 +23,8 @@ from atlas_companion.intent import preview_intent
 from atlas_companion.local_models import LocalModelError, LocalModelManager
 from atlas_companion.server import CompanionApp, CompanionDisconnectedError, CompanionService
 from atlas_companion import telemetry
+from atlas_core.sources import LocalRootConfig, LocalRootRegistry
+from atlas_core.work import build_work_runtime
 
 
 class FakeService:
@@ -61,7 +63,7 @@ class FakeService:
     def approvals(self): return [{"id": "approval_one", "task_id": "task_one", "requested_action": "ingest"}]
     def documents(self): return [{"id": "doc_one", "title": "README.md", "chunk_count": 2}]
     def search_knowledge(self, query, limit=8): return {"query": query, "results": [{"title": "README.md", "text": query}]}
-    def stat_source(self, path): return {"path": path, "title": "README.md", "byte_size": 12, "content_sha256": "abc"}
+    def stat_source(self, **source): return {"observation": {"source_ref": source, "byte_size": 12}}
     def ingest(self, body): return self.detail("task_ingest")
     def search_task(self, body): return self.detail("task_search")
 
@@ -116,8 +118,8 @@ class CompanionPwaTests(unittest.TestCase):
         self.assertEqual(status, "200 OK"); self.assertEqual(json.loads(body)[0]["title"], "README.md")
         status, body = self.call("GET", "/api/knowledge/search?q=ContextBuilder")
         self.assertEqual(status, "200 OK"); self.assertEqual(json.loads(body)["query"], "ContextBuilder")
-        status, body = self.call("GET", "/api/knowledge/stat?path=/tmp/readme.md")
-        self.assertEqual(status, "200 OK"); self.assertEqual(json.loads(body)["byte_size"], 12)
+        status, body = self.call("GET", "/api/knowledge/stat?provider_namespace=local&root_id=docs&configuration_revision=1&relative_path=readme.md")
+        self.assertEqual(status, "200 OK"); self.assertEqual(json.loads(body)["observation"]["byte_size"], 12)
         status, body = self.call("POST", "/api/knowledge/ingest", b'{"source_path":"/tmp/readme.md"}')
         self.assertEqual(status, "201 Created"); self.assertEqual(json.loads(body)["presentation"]["task_id"], "task_ingest")
 
@@ -128,17 +130,28 @@ class CompanionKnowledgeServiceTests(unittest.TestCase):
         self.db = Path(self.tmp.name) / "atlas.db"
         self.source = Path(self.tmp.name) / "note.md"
         self.source.write_text("ContextBuilder assembles a bounded execution projection.\n", encoding="utf-8")
-        self.service = CompanionService(db_path=self.db)
+        self.registry = LocalRootRegistry()
+        self.registry.register(LocalRootConfig(
+            root_id="docs", provider_namespace="local", host_path=self.tmp.name,
+            configuration_revision="1",
+        ))
+        self.runtime = build_work_runtime(
+            db_path=self.db, local_source_registry=self.registry,
+        )
+        self.service = CompanionService(db_path=self.db, work_runtime=self.runtime)
 
     def tearDown(self):
+        self.registry.close()
         self.tmp.cleanup()
 
-    def test_path_stat_works_while_ingest_is_disconnected(self):
-        stat = self.service.stat_source(str(self.source))
-        self.assertEqual(stat["title"], "note.md")
-        self.assertGreater(stat["byte_size"], 0)
-        with self.assertRaises(CompanionDisconnectedError):
-            self.service.ingest({"source_path": str(self.source)})
+    def test_stat_source_runs_through_controlled_files_work(self):
+        stat = self.service.stat_source(
+            provider_namespace="local", root_id="docs", relative_path="note.md",
+            configuration_revision="1",
+        )
+        self.assertEqual(stat["observation"]["source_ref"]["relative_path"], "note.md")
+        self.assertGreater(stat["observation"]["byte_size"], 0)
+        self.assertNotIn(str(Path(self.tmp.name).resolve()), json.dumps(stat))
 
     def test_cancel_and_run_are_disconnected(self):
         with self.assertRaises(CompanionDisconnectedError):

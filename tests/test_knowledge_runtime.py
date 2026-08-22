@@ -15,10 +15,11 @@ from atlas_core.knowledge import (
     chunk_text,
     grounded_answer_from_hits,
     is_knowledge_question,
-    source_content_sha256,
+    normalized_text_sha256,
 )
 from atlas_core.knowledge.capabilities import _search_verifier
 from atlas_core.presentation import WorkPresenter
+from atlas_core.sources import LocalRootConfig, LocalRootRegistry
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -29,12 +30,25 @@ class KnowledgeRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = Path(self.tmp.name) / "atlas.db"
+        self.registry = LocalRootRegistry()
+        self.registry.register(LocalRootConfig(
+            root_id="repo", provider_namespace="local", host_path=str(REPO_ROOT),
+            display_name="Repository", configuration_revision="repo-1",
+        ))
+        self.registry.register(LocalRootConfig(
+            root_id="scratch", provider_namespace="local", host_path=self.tmp.name,
+            display_name="Scratch", configuration_revision="scratch-1",
+        ))
 
     def tearDown(self):
+        self.registry.close()
         self.tmp.cleanup()
 
     def _runtime(self):
-        return _work_runtime(self.db, morning=False, knowledge=True)
+        return _work_runtime(
+            self.db, morning=False, knowledge=True,
+            local_source_registry=self.registry,
+        )
 
     def _ingest_via_path(
         self,
@@ -42,42 +56,44 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         source: Path,
         *,
         title: str | None = None,
-        content_sha256: str | None = None,
-        source_path: str | None = None,
-        include_hash: bool = True,
+        relative_path_override: str | None = None,
     ):
-        if source_path is None:
-            source_path = str(source.resolve()) if source.exists() else str(source)
+        if relative_path_override is not None:
+            relative_path = relative_path_override
+            root_id, revision = "scratch", "scratch-1"
+        elif source.is_relative_to(REPO_ROOT):
+            relative_path = source.relative_to(REPO_ROOT).as_posix()
+            root_id, revision = "repo", "repo-1"
+        else:
+            relative_path = source.relative_to(Path(self.tmp.name)).as_posix()
+            root_id, revision = "scratch", "scratch-1"
         payload = {
             "title": title or source.name,
-            "source_path": source_path,
-            "source_uri": source_path,
             "chunk_chars": 4000,
             "overlap_chars": 400,
         }
-        if include_hash:
-            if content_sha256 is not None:
-                payload["content_sha256"] = content_sha256
-            elif source.is_file():
-                payload["content_sha256"] = source_content_sha256(
-                    source.read_text(encoding="utf-8")
-                )
-                payload["byte_size"] = source.stat().st_size
         work_id = runtime.accept(
             TaskBrief(
                 objective=f"Index local knowledge source {payload['title']}",
-                capabilities=("knowledge.ingest_text",),
+                capabilities=("files.read", "knowledge.ingest_text"),
                 required_authority="modify_internal",
                 expected_effect="The source is durably indexed with chunk provenance.",
             ),
             "modify_internal",
-            inputs={"knowledge.ingest_text": payload},
+            inputs={
+                "files.read": {
+                    "provider_namespace": "local", "root_id": root_id,
+                    "configuration_revision": revision,
+                    "relative_path": relative_path,
+                },
+                "knowledge.ingest_text": payload,
+            },
         )
         result = runtime.run(work_id)
         request = next(
             artifact
             for artifact in runtime.store.list_artifacts(work_id)
-            if artifact.kind != "task_brief" and artifact.kind.endswith("_request")
+            if artifact.kind == "knowledge_ingest_text_request"
         )
         return runtime.store.get_work(work_id), request, result
 
@@ -116,7 +132,7 @@ class KnowledgeRuntimeTests(unittest.TestCase):
             if artifact.kind != "task_brief" and artifact.kind.endswith("_request")
         )
         self.assertNotIn("text", request.payload)
-        self.assertIn("source_path", request.payload)
+        self.assertNotIn("source_path", request.payload)
 
     def test_chunking_is_deterministic_and_overlapping(self):
         text = "\n\n".join(f"section {i} " + ("pump failure " * 50) for i in range(20))
@@ -130,8 +146,8 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         store = KnowledgeStore(self.db)
         store.initialize()
         text = "RLH5 hydraulic pump failure. Replace the suction hose and inspect cavitation.\n\nBrake test procedure is separate."
-        first = store.ingest_text(title="RLH5 manual", text=text, source_uri="manual://rlh5")
-        second = store.ingest_text(title="duplicate title", text=text, source_uri="other://copy")
+        first = store.ingest_text(title="RLH5 manual", text=text)
+        second = store.ingest_text(title="duplicate title", text=text)
         self.assertTrue(first.created)
         self.assertFalse(second.created)
         self.assertEqual(first.document.id, second.document.id)
@@ -145,25 +161,9 @@ class KnowledgeRuntimeTests(unittest.TestCase):
 
     def test_ingest_and_retrieve_execute_through_work_runtime(self):
         runtime = self._runtime()
-        ingest_id = runtime.accept(
-            TaskBrief(
-                objective="Index a technical note",
-                capabilities=("knowledge.ingest_text",),
-                required_authority="modify_internal",
-                expected_effect="Relevant technical evidence is retrievable",
-            ),
-            "modify_internal",
-            inputs={
-                "knowledge.ingest_text": {
-                    "title": "Pump note",
-                    "source_uri": "note://pump",
-                    "text": "A cavitating hydraulic pump may show noise and unstable pressure. Inspect suction restrictions.",
-                    "chunk_chars": 512,
-                    "overlap_chars": 64,
-                }
-            },
-        )
-        self.assertEqual(runtime.run(ingest_id).status, "completed")
+        source = Path(self.tmp.name) / "pump.txt"
+        source.write_text("A cavitating hydraulic pump may show noise and unstable pressure. Inspect suction restrictions.", encoding="utf-8")
+        self.assertEqual(self._ingest_via_path(runtime, source)[2].status, "completed")
         search_task, result = self._search(runtime, "cavitating hydraulic pump")
         self.assertEqual(result.status, "completed")
         outputs = [
@@ -190,8 +190,8 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         self.assertEqual(len(outputs), 1)
         self.assertGreaterEqual(outputs[0].payload["chunk_count"], 1)
         self.assertEqual(
-            outputs[0].payload["content_sha256"],
-            source_content_sha256(README_PATH.read_text(encoding="utf-8")),
+            outputs[0].payload["normalized_text_sha256"],
+            normalized_text_sha256(README_PATH.read_text(encoding="utf-8")),
         )
         search_task, search_result = self._search(runtime, "ContextBuilder")
         self.assertEqual(search_result.status, "completed")
@@ -202,7 +202,7 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         ]
         self.assertTrue(hits[0].payload["results"])
         self.assertIn("ContextBuilder", hits[0].payload["results"][0]["text"])
-        self.assertEqual(request.payload["source_path"], str(README_PATH.resolve()))
+        self.assertNotIn("source_uri", request.payload)
         presentation = WorkPresenter(runtime.store).build(search_task.id)
         markdown = presentation.render_markdown()
         self.assertIn("## Retrieved sources", markdown)
@@ -272,34 +272,10 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         self.assertTrue(hits[0].payload["results"])
         self.assertIn(planted, hits[0].payload["results"][0]["text"])
 
-    def test_path_ingest_hash_mismatch_fails_closed(self):
-        source = Path(self.tmp.name) / "hashed.txt"
-        source.write_text("original source bytes for hash check\n", encoding="utf-8")
-        runtime = self._runtime()
-        task, _, result = self._ingest_via_path(
-            runtime,
-            source,
-            content_sha256="0" * 64,
-        )
-        self.assertEqual(result.status, "failed")
-        execution = runtime.store.list_executions(task.id)[0]
-        self.assertEqual(execution.status, "fail")
-        self.assertIn("hash mismatch", execution.error or "")
-        self.assertFalse(
-            any(
-                artifact.kind == "knowledge_ingest_result"
-                for artifact in runtime.store.list_artifacts(task.id)
-            )
-        )
-
     def test_path_ingest_missing_file_fails_closed(self):
         missing = Path(self.tmp.name) / "does-not-exist.txt"
         runtime = self._runtime()
-        task, _, result = self._ingest_via_path(
-            runtime,
-            missing,
-            include_hash=False,
-        )
+        task, _, result = self._ingest_via_path(runtime, missing)
         self.assertEqual(result.status, "failed")
         execution = runtime.store.list_executions(task.id)[0]
         self.assertEqual(execution.status, "fail")
@@ -332,7 +308,7 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         self.assertTrue(first.payload["created"])
         self.assertFalse(second.payload["created"])
         self.assertEqual(first.payload["document_id"], second.payload["document_id"])
-        self.assertEqual(first.payload["content_sha256"], second.payload["content_sha256"])
+        self.assertEqual(first.payload["normalized_text_sha256"], second.payload["normalized_text_sha256"])
 
     def test_extra_invocation_fields_do_not_fail_search_schema(self):
         runtime = self._runtime()
@@ -370,17 +346,26 @@ class KnowledgeRuntimeTests(unittest.TestCase):
             parse_ingest_objective("Index local knowledge source README.md"),
             "README.md",
         )
-        self.assertEqual(resolve_knowledge_source("README.md", roots=(REPO_ROOT,)), README_PATH.resolve())
+        self.assertEqual(
+            resolve_knowledge_source(
+                "README.md", provider_namespace="local", root_id="repo",
+                configuration_revision="repo-1",
+            ),
+            {
+                "provider_namespace": "local", "root_id": "repo",
+                "configuration_revision": "repo-1", "relative_path": "README.md",
+            },
+        )
+        self.assertIsNone(resolve_knowledge_source(str(README_PATH)))
 
     def test_off_topic_riddle_is_an_honest_search_miss(self):
         store = KnowledgeStore(self.db)
         store.initialize()
         constitution = (REPO_ROOT / "Atlas Constitution.md").read_text(encoding="utf-8")
-        store.ingest_text(title="Atlas Constitution.md", text=constitution, source_uri="constitution")
+        store.ingest_text(title="Atlas Constitution.md", text=constitution)
         store.ingest_text(
             title="README.md",
             text=(REPO_ROOT / "README.md").read_text(encoding="utf-8"),
-            source_uri="readme",
         )
         riddle = (
             "fictional character breaks fourth wall selfless ascetics humor "
@@ -409,7 +394,6 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         store.ingest_text(
             title="Atlas Constitution.md",
             text=(REPO_ROOT / "Atlas Constitution.md").read_text(encoding="utf-8"),
-            source_uri="constitution",
         )
         hits = store.search("verification precedes completion", limit=8)
         self.assertTrue(hits)

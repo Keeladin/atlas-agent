@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -14,10 +14,17 @@ from typing import Any
 class KnowledgeDocument:
     id: str
     title: str
-    source_uri: str | None
-    content_sha256: str
+    normalized_text_sha256: str
     chunk_count: int
     metadata: dict[str, Any]
+    created_at: str
+
+
+@dataclass(frozen=True)
+class KnowledgeSourceProvenance:
+    document_id: str
+    observation_artifact_id: str
+    acquired_content_artifact_id: str
     created_at: str
 
 
@@ -28,9 +35,9 @@ class KnowledgeChunk:
     ordinal: int
     text: str
     sha256: str
-    source_uri: str | None
     title: str
     metadata: dict[str, Any]
+    source_provenance: tuple[KnowledgeSourceProvenance, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -98,7 +105,7 @@ def normalize_knowledge_text(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
-def source_content_sha256(text: str) -> str:
+def normalized_text_sha256(text: str) -> str:
     return hashlib.sha256(normalize_knowledge_text(text).encode("utf-8")).hexdigest()
 
 
@@ -180,8 +187,7 @@ class KnowledgeStore:
                 CREATE TABLE IF NOT EXISTS knowledge_documents (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
-                    source_uri TEXT,
-                    content_sha256 TEXT NOT NULL UNIQUE,
+                    normalized_text_sha256 TEXT NOT NULL UNIQUE,
                     chunk_count INTEGER NOT NULL,
                     metadata_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -198,6 +204,16 @@ class KnowledgeStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document
                     ON knowledge_chunks(document_id, ordinal);
+                CREATE TABLE IF NOT EXISTS knowledge_document_sources (
+                    document_id TEXT NOT NULL,
+                    observation_artifact_id TEXT NOT NULL,
+                    acquired_content_artifact_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (document_id) REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+                    UNIQUE(document_id, observation_artifact_id, acquired_content_artifact_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_knowledge_document_sources_document
+                    ON knowledge_document_sources(document_id, created_at, observation_artifact_id);
                 """
             )
             try:
@@ -225,10 +241,10 @@ class KnowledgeStore:
         *,
         title: str,
         text: str,
-        source_uri: str | None = None,
         metadata: dict[str, Any] | None = None,
         chunk_chars: int = 4000,
         overlap_chars: int = 400,
+        source_provenance: dict[str, Any] | None = None,
     ) -> IngestResult:
         title = title.strip()
         if not title:
@@ -240,25 +256,27 @@ class KnowledgeStore:
         )
         if not chunks:
             raise ValueError("Knowledge document text must not be empty.")
-        content_hash = source_content_sha256(text)
+        content_hash = normalized_text_sha256(text)
         document_id = f"doc_{content_hash[:24]}"
 
         with self._db() as db:
             existing = db.execute(
-                "SELECT * FROM knowledge_documents WHERE content_sha256=?",
+                "SELECT * FROM knowledge_documents WHERE normalized_text_sha256=?",
                 (content_hash,),
             ).fetchone()
             if existing is not None:
+                self._insert_source_provenance(
+                    db, existing["id"], source_provenance
+                )
                 return IngestResult(self._document_from_row(existing), False)
 
             db.execute(
                 "INSERT INTO knowledge_documents "
-                "(id,title,source_uri,content_sha256,chunk_count,metadata_json) "
-                "VALUES (?,?,?,?,?,?)",
+                "(id,title,normalized_text_sha256,chunk_count,metadata_json) "
+                "VALUES (?,?,?,?,?)",
                 (
                     document_id,
                     title,
-                    source_uri,
                     content_hash,
                     len(chunks),
                     _json(metadata or {}),
@@ -277,7 +295,7 @@ class KnowledgeStore:
                         ordinal,
                         chunk,
                         digest,
-                        _json({"source_uri": source_uri}),
+                        _json({}),
                     ),
                 )
                 if self._has_fts():
@@ -290,7 +308,39 @@ class KnowledgeStore:
                 "SELECT * FROM knowledge_documents WHERE id=?",
                 (document_id,),
             ).fetchone()
+            self._insert_source_provenance(db, document_id, source_provenance)
         return IngestResult(self._document_from_row(row), True)
+
+    @staticmethod
+    def _insert_source_provenance(
+        db: sqlite3.Connection,
+        document_id: str,
+        provenance: dict[str, Any] | None,
+    ) -> None:
+        if provenance is None:
+            return
+        db.execute(
+            "INSERT OR IGNORE INTO knowledge_document_sources "
+            "(document_id,observation_artifact_id,acquired_content_artifact_id) "
+            "VALUES (?,?,?)",
+            (
+                document_id,
+                str(provenance["observation_artifact_id"]),
+                str(provenance["acquired_content_artifact_id"]),
+            ),
+        )
+
+    def list_document_sources(
+        self, document_id: str
+    ) -> tuple[KnowledgeSourceProvenance, ...]:
+        self.get_document(document_id)
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT * FROM knowledge_document_sources WHERE document_id=? "
+                "ORDER BY created_at,observation_artifact_id",
+                (document_id,),
+            ).fetchall()
+        return tuple(self._source_from_row(row) for row in rows)
 
     def get_document(self, document_id: str) -> KnowledgeDocument:
         with self._db() as db:
@@ -315,14 +365,18 @@ class KnowledgeStore:
     def get_chunk(self, chunk_id: str) -> KnowledgeChunk:
         with self._db() as db:
             row = db.execute(
-                "SELECT c.*,d.title,d.source_uri FROM knowledge_chunks c "
+                "SELECT c.*,d.title FROM knowledge_chunks c "
                 "JOIN knowledge_documents d ON d.id=c.document_id "
                 "WHERE c.id=?",
                 (chunk_id,),
             ).fetchone()
         if row is None:
             raise KeyError(f"Unknown knowledge chunk: {chunk_id}")
-        return self._chunk_from_row(row)
+        chunk = self._chunk_from_row(row)
+        return replace(
+            chunk,
+            source_provenance=self.list_document_sources(chunk.document_id),
+        )
 
     def search(self, query: str, *, limit: int = 8) -> tuple[SearchHit, ...]:
         query = query.strip()
@@ -340,7 +394,7 @@ class KnowledgeStore:
             if self._has_fts():
                 fts_query = " OR ".join(f'"{token.replace(chr(34), "")}"' for token in tokens)
                 rows = db.execute(
-                    "SELECT c.*,d.title,d.source_uri,bm25(knowledge_fts) AS rank "
+                    "SELECT c.*,d.title,bm25(knowledge_fts) AS rank "
                     "FROM knowledge_fts "
                     "JOIN knowledge_chunks c ON c.id=knowledge_fts.chunk_id "
                     "JOIN knowledge_documents d ON d.id=c.document_id "
@@ -356,7 +410,7 @@ class KnowledgeStore:
                 clauses = " OR ".join("lower(c.text) LIKE ?" for _ in tokens)
                 params = [f"%{token}%" for token in tokens]
                 rows = db.execute(
-                    "SELECT c.*,d.title,d.source_uri FROM knowledge_chunks c "
+                    "SELECT c.*,d.title FROM knowledge_chunks c "
                     "JOIN knowledge_documents d ON d.id=c.document_id "
                     f"WHERE {clauses} ORDER BY c.document_id,c.ordinal LIMIT ?",
                     (*params, candidate_limit),
@@ -370,7 +424,13 @@ class KnowledgeStore:
         for chunk, (_count, ratio) in ranked:
             if not hit_is_relevant(tokens, chunk.text):
                 continue
-            relevant.append(SearchHit(chunk, ratio))
+            relevant.append(SearchHit(
+                replace(
+                    chunk,
+                    source_provenance=self.list_document_sources(chunk.document_id),
+                ),
+                ratio,
+            ))
             if len(relevant) >= limit:
                 break
         return tuple(relevant)
@@ -380,8 +440,7 @@ class KnowledgeStore:
         return KnowledgeDocument(
             id=row["id"],
             title=row["title"],
-            source_uri=row["source_uri"],
-            content_sha256=row["content_sha256"],
+            normalized_text_sha256=row["normalized_text_sha256"],
             chunk_count=int(row["chunk_count"]),
             metadata=_load(row["metadata_json"]),
             created_at=row["created_at"],
@@ -395,7 +454,15 @@ class KnowledgeStore:
             ordinal=int(row["ordinal"]),
             text=row["text"],
             sha256=row["sha256"],
-            source_uri=row["source_uri"],
             title=row["title"],
             metadata=_load(row["metadata_json"]),
+        )
+
+    @staticmethod
+    def _source_from_row(row: sqlite3.Row) -> KnowledgeSourceProvenance:
+        return KnowledgeSourceProvenance(
+            document_id=row["document_id"],
+            observation_artifact_id=row["observation_artifact_id"],
+            acquired_content_artifact_id=row["acquired_content_artifact_id"],
+            created_at=row["created_at"],
         )

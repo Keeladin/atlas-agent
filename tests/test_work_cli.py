@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from atlas_core.__main__ import _work_runtime, main
 from atlas_core.advanced.brief import TaskBrief
-from atlas_core.knowledge import source_content_sha256
+from atlas_core.sources import LocalRootConfig, LocalRootRegistry
 from atlas_core.work import (
     CapabilityExecutionProfile,
     DeploymentInventory,
@@ -30,8 +30,14 @@ class WorkCliTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.db = Path(self.tmp.name) / "atlas-work.db"
+        self.registry = LocalRootRegistry()
+        self.registry.register(LocalRootConfig(
+            root_id="repo", provider_namespace="local", host_path=str(ROOT),
+            display_name="Repository", configuration_revision="repo-1",
+        ))
 
     def tearDown(self) -> None:
+        self.registry.close()
         self.tmp.cleanup()
 
     def _main(self, *argv: str) -> str:
@@ -39,6 +45,12 @@ class WorkCliTests(unittest.TestCase):
         with (
             patch("sys.argv", ["atlas_core", "--db", str(self.db), *argv]),
             patch("sys.stdout", buf),
+            patch(
+                "atlas_core.__main__._work_runtime",
+                side_effect=lambda db_path, **kwargs: _work_runtime(
+                    db_path, local_source_registry=self.registry, **kwargs
+                ),
+            ),
         ):
             main()
         return buf.getvalue()
@@ -52,7 +64,7 @@ class WorkCliTests(unittest.TestCase):
 
     def test_work_commands_do_not_use_legacy_engine(self) -> None:
         self.assertIn("build_work_runtime", MAIN_SOURCE)
-        self.assertIn('capabilities=("knowledge.ingest_text",)', MAIN_SOURCE)
+        self.assertIn('capabilities=("files.read", "knowledge.ingest_text")', MAIN_SOURCE)
         self.assertIn('capabilities=("knowledge.search",)', MAIN_SOURCE)
         self.assertIn('capabilities=("operations.morning_pack.generate",)', MAIN_SOURCE)
         self.assertNotIn("build_runtime", MAIN_SOURCE)
@@ -64,7 +76,7 @@ class WorkCliTests(unittest.TestCase):
         self.assertNotIn("--providers", MAIN_SOURCE)
 
     def test_index_text_and_search_run_through_work_runtime(self) -> None:
-        ingest_out = self._main("index-text", str(README_PATH), "--title", "README")
+        ingest_out = self._main("index-text", "README.md", "--provider-namespace", "local", "--root-id", "repo", "--configuration-revision", "repo-1", "--title", "README")
         ingest = self._first_json_object(ingest_out)
         self.assertEqual(ingest["status"], "completed")
         self.assertGreaterEqual(ingest["executions"], 1)
@@ -72,7 +84,7 @@ class WorkCliTests(unittest.TestCase):
         search = self._first_json_object(search_out)
         self.assertEqual(search["status"], "completed")
         self.assertIn("## Retrieved sources", search_out)
-        runtime = _work_runtime(self.db, knowledge=True)
+        runtime = _work_runtime(self.db, knowledge=True, local_source_registry=self.registry)
         self.assertIsInstance(runtime, WorkRuntime)
         self.assertIsInstance(runtime._engine, WorkEngine)
         hits = [
@@ -109,8 +121,8 @@ class WorkCliTests(unittest.TestCase):
         self.assertEqual(runtime.get(result["work_id"]).status, "completed")
 
     def test_search_then_answer_kind_match_on_work_runtime(self) -> None:
-        self._main("index-text", str(README_PATH), "--title", "README")
-        runtime = _work_runtime(self.db, knowledge=True)
+        self._main("index-text", "README.md", "--provider-namespace", "local", "--root-id", "repo", "--configuration-revision", "repo-1", "--title", "README")
+        runtime = _work_runtime(self.db, knowledge=True, local_source_registry=self.registry)
         work_id = runtime.accept(
             TaskBrief(
                 objective="Search then answer",
@@ -152,7 +164,7 @@ class WorkCliTests(unittest.TestCase):
 
     def test_status_tasks_result_run_and_cancel_use_work_persistence(self) -> None:
         ingest = self._first_json_object(
-            self._main("index-text", str(README_PATH), "--title", "README")
+            self._main("index-text", "README.md", "--provider-namespace", "local", "--root-id", "repo", "--configuration-revision", "repo-1", "--title", "README")
         )
         self.assertEqual(ingest["status"], "completed")
         listed = self._main("work")
@@ -162,7 +174,7 @@ class WorkCliTests(unittest.TestCase):
         self.assertEqual(status["work"]["status"], "completed")
         report = self._main("result", ingest["work_id"])
         self.assertIn(ingest["work_id"], report)
-        runtime = _work_runtime(self.db, knowledge=True)
+        runtime = _work_runtime(self.db, knowledge=True, local_source_registry=self.registry)
         work_id = runtime.accept(
             TaskBrief(
                 objective="Search Atlas knowledge for: ContextBuilder",
@@ -191,30 +203,30 @@ class WorkCliTests(unittest.TestCase):
         self.assertEqual(runtime.get(pending_id).status, "cancelled")
 
     def test_recover_approve_and_deny_use_work_runtime(self) -> None:
-        runtime = _work_runtime(self.db, knowledge=True)
-        text = README_PATH.read_text(encoding="utf-8")
+        runtime = _work_runtime(
+            self.db, knowledge=True, local_source_registry=self.registry
+        )
         work_id = runtime.accept(
             TaskBrief(
-                objective=f"Index local knowledge source {README_PATH.name}",
-                capabilities=("knowledge.ingest_text",),
+                objective="Index local knowledge source README.md",
+                capabilities=("files.read", "knowledge.ingest_text"),
                 required_authority="modify_internal",
-                expected_effect="The source is durably indexed with chunk provenance.",
+                expected_effect="Knowledge ingestion is recoverable.",
             ),
             "modify_internal",
             inputs={
-                "knowledge.ingest_text": {
-                    "title": "README",
-                    "source_path": str(README_PATH.resolve()),
-                    "source_uri": str(README_PATH.resolve()),
-                    "content_sha256": source_content_sha256(text),
-                    "byte_size": README_PATH.stat().st_size,
-                    "chunk_chars": 4000,
-                    "overlap_chars": 400,
-                }
+                "files.read": {
+                    "provider_namespace": "local", "root_id": "repo",
+                    "configuration_revision": "repo-1", "relative_path": "README.md",
+                },
+                "knowledge.ingest_text": {"title": "README"},
             },
         )
         store = runtime.store
-        step = store.list_steps(work_id)[0]
+        step = next(
+            item for item in store.list_steps(work_id)
+            if item.capability == "knowledge.ingest_text"
+        )
         store.set_work_status(work_id, "active")
         store.begin_execution(
             work_id,

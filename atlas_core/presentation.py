@@ -134,12 +134,9 @@ def _format_search_results(payload: Any) -> str:
     for index, hit in enumerate(results, start=1):
         if not isinstance(hit, dict):
             continue
-        title = hit.get("title") or hit.get("source_uri") or "Untitled"
-        source = hit.get("source_uri") or ""
+        title = hit.get("title") or "Untitled"
         digest = (hit.get("sha256") or "")[:12]
         lines.append(f"{index}. {title}")
-        if source and source != title:
-            lines.append(f"   {source}")
         lines.append(f"   {_clip(str(hit.get('text') or ''), 360)}")
         if digest:
             lines.append(f"   hash {digest}…")
@@ -149,7 +146,7 @@ def _format_search_results(payload: Any) -> str:
 
 def _format_claim_value(kind: str, value: Any) -> str:
     if kind == "retrieved" and isinstance(value, dict):
-        title = value.get("title") or value.get("source_uri") or "retrieved chunk"
+        title = value.get("title") or "retrieved chunk"
         return f"{title}: {_clip(str(value.get('text') or ''), 220)}"
     return _preview(value)
 

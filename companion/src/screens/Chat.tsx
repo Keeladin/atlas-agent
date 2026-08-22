@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, MouseEvent, PointerEvent, UIEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import type { Conversation } from '../api/types'
@@ -569,6 +570,10 @@ function RecentRow({
   )
 }
 
+function stopMenuEvent(event: { stopPropagation: () => void; preventDefault?: () => void }) {
+  event.stopPropagation()
+}
+
 function ConversationMenu({
   item,
   x,
@@ -589,37 +594,63 @@ function ConversationMenu({
   onDelete: () => void
 }) {
   if (!item) return null
-  return (
-    <div className="menu-layer" role="presentation" onClick={onClose}>
+  function runAction(
+    event: MouseEvent<HTMLButtonElement>,
+    action: () => void,
+  ) {
+    event.preventDefault()
+    event.stopPropagation()
+    action()
+  }
+  return createPortal(
+    <div className="menu-root">
+      <div
+        className="menu-layer"
+        role="presentation"
+        onPointerDown={onClose}
+      />
       <div
         className="menu"
         role="menu"
         style={{ top: y, left: x }}
-        onClick={(event) => event.stopPropagation()}
+        onPointerDown={stopMenuEvent}
+        onClick={stopMenuEvent}
       >
-        <button type="button" role="menuitem" onClick={onRename}>
+        <button
+          type="button"
+          role="menuitem"
+          onPointerDown={stopMenuEvent}
+          onClick={(event) => runAction(event, onRename)}
+        >
           Rename
         </button>
-        <button type="button" role="menuitem" onClick={onPin}>
+        <button
+          type="button"
+          role="menuitem"
+          onPointerDown={stopMenuEvent}
+          onClick={(event) => runAction(event, onPin)}
+        >
           {item.pinned ? 'Unpin' : 'Pin'}
         </button>
-        <button type="button" role="menuitem" onClick={onArchive}>
+        <button
+          type="button"
+          role="menuitem"
+          onPointerDown={stopMenuEvent}
+          onClick={(event) => runAction(event, onArchive)}
+        >
           {item.archived ? 'Restore' : 'Archive'}
         </button>
         <button
           className="danger"
           type="button"
           role="menuitem"
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-            onDelete()
-          }}
+          onPointerDown={stopMenuEvent}
+          onClick={(event) => runAction(event, onDelete)}
         >
           Delete
         </button>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

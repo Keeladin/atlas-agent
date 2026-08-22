@@ -1206,15 +1206,23 @@ a.card:hover {
   overflow: hidden;
 }
 
-.menu-layer {
+.menu-root {
   position: fixed;
   inset: 0;
   z-index: 50;
+  pointer-events: none;
+}
+
+.menu-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: auto;
 }
 
 .menu {
-  position: fixed;
-  z-index: 51;
+  position: absolute;
+  z-index: 1;
   min-width: 180px;
   display: grid;
   gap: 0.2rem;
@@ -1223,12 +1231,14 @@ a.card:hover {
   border: 1px solid var(--atlas-border);
   background: var(--atlas-surface-2);
   box-shadow: var(--shadow);
+  pointer-events: auto;
 }
 
 .menu button {
   width: 100%;
   justify-content: flex-start;
   border-radius: 10px;
+  pointer-events: auto;
 }
 
 .menu-confirm {

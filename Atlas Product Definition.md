@@ -131,7 +131,7 @@ All interfaces must enter the same durable Atlas runtime rather than create sepa
 Implemented on `main`:
 
 - durable WorkRuntime / WorkEngine;
-- SQLite task / step / execution / artifact / claim / approval / checkpoint / event state;
+- SQLite work / step / execution / artifact / claim / approval / checkpoint / event state;
 - CapabilityDefinition catalog, versioned execution profiles, and Work registrations;
 - bounded ContextBuilder and immutable ContextManifest;
 - verification and completion gates;
@@ -141,13 +141,12 @@ Implemented on `main`:
 - SQLite/FTS knowledge plane;
 - Morning Workflow integration;
 - offline-first Mobile Capture surface with phone-offline acceptance;
-- LAN-local Companion PWA, disconnected from Work execution until rebuilt;
-- inferred Ask criteria/authority, persisted Ask conversations, and exclusive cloud/local model activation;
+- Companion owner UI (`companion/`) and Companion API (`atlas_api`) with Chat, Advanced, and Work live;
+- signed Companion session cookie + CSRF; Caddy as public TLS edge with API on loopback;
 - intent-based presentation profiles separate from capability defaults.
 
 Not yet implemented as canonical production surfaces:
 
-- authenticated remote Companion access;
 - authenticated Mobile Capture server synchronization;
 - production always-on server packaging;
 - resource-management capabilities for shared host workloads;

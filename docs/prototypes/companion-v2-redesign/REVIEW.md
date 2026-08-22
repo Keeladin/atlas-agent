@@ -1,7 +1,8 @@
 # Companion v2 visual reset — review package
 
-**Status:** proposal only · **not implemented** in `companion/src`  
-**Preserved plumbing:** API client, auth/session, SSE, routing, Chat/Advanced/Work integration, semantic DTOs
+**Status:** visual prototype only — not the running Companion  
+**Running product:** `companion/src` served by `atlas_api`  
+**This folder:** design explorations and stills under `docs/prototypes/`. Do not treat screenshots or HTML mocks as current implementation.
 
 ## Open the proposals
 

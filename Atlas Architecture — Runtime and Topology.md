@@ -5,7 +5,7 @@
 
 This document defines the current Atlas 2.0 runtime architecture.
 
-It is governed by the Atlas Constitution and implemented by the `atlas_core/` runtime. Domain responsibilities such as Morning Workflow and Mobile Capture retain their own behavioural contracts but integrate through Atlas capability/interface boundaries. Companion remains a LAN-local client package, disconnected from Work execution until rebuilt against the current roots.
+It is governed by the Atlas Constitution and implemented by the `atlas_core/` runtime with `atlas_api` as the Companion composition root and `companion/` as the owner UI. Domain responsibilities such as Morning Workflow and Mobile Capture retain their own behavioural contracts but integrate through Atlas capability/interface boundaries.
 
 ---
 
@@ -49,7 +49,7 @@ flowchart TB
     I[User / Event / Schedule / File / API]
     CLI[CLI\nimplemented]
     MOBILE[Supervisor Mobile Capture\nimplemented offline]
-    WEB[Atlas Companion PWA\nLAN-local, disconnected]
+    WEB[Atlas Companion\ncompanion/ + atlas_api]
     SYNC[Authenticated Mobile Sync API\nplanned]
 
     I --> CLI
@@ -57,7 +57,7 @@ flowchart TB
     MOBILE -. future sync .-> SYNC
 
     CLI --> TP
-    WEB -. disconnected until rebuilt .-> TP
+    WEB --> TP
     SYNC -.-> TP
 
     subgraph CORE[Atlas 2.0 Core]
@@ -126,7 +126,7 @@ flowchart TB
 - The **ContextBuilder owns model/capability context assembly**.
 - Durable Work state is not stored in a conversation or model context.
 - Mobile Capture is an offline interface/domain surface, not a second Atlas agent.
-- Companion remains a LAN-local client package. It is disconnected/dark until rebuilt against Chat, Advanced, or Work. It is not reconnected here.
+- Companion is `companion/` + `atlas_api`. Chat, Advanced, and Work are live through that API. Caddy is the public edge; the API stays on loopback.
 - MCP is an adapter protocol at the tool edge, not Atlas's internal ontology.
 
 ---
@@ -528,11 +528,10 @@ Audit, notifications, cost accounting and future telemetry may consume these eve
 
 ```text
 atlas_core/
-├── tasks/                 durable runtime records and SQLite stores
-├── capabilities/          CapabilityDefinition catalog, profiles, Work registry
+├── work/                  WorkRuntime, WorkEngine, contracts, store
 ├── chat/                  ChatRuntime composition root
 ├── advanced/              AdvancedRuntime composition root
-├── work/                  WorkRuntime composition root
+├── capabilities/          CapabilityDefinition catalog, profiles, Work registry
 ├── providers/             provider contracts, routing, adapters, eval scores
 ├── knowledge/             SQLite/FTS ingestion and retrieval
 ├── integrations/          domain capability adapters
@@ -548,7 +547,9 @@ atlas_core/
 ├── schema_validation.py   contract schema enforcement
 └── __main__.py            Work CLI
 
-atlas_companion/           LAN-local Companion PWA (disconnected from Work)
+atlas_api/                 Companion API: auth, Chat, Advanced, Work, SPA
+companion/                 Canonical owner UI
+atlas_companion/           Legacy HTTP adapter (non-canonical)
 atlas_morning/             deterministic Morning Workflow
 atlas_mobile/              offline-first Mobile Capture PWA
 ```
@@ -581,9 +582,11 @@ Atlas `WorkRuntime` / `WorkEngine` own the task/execution/evidence shell for Wor
 
 Authenticated server sync is not yet implemented.
 
-### Companion PWA
+### Companion
 
-`atlas_companion/` is the implemented LAN-local owner/admin interface. Models, Settings, knowledge library/search, and Ask conversation storage remain. Work execution, ingest-as-work, and approvals are disconnected/dark until Companion is rebuilt against WorkRuntime. The adapter is unauthenticated and must stay on localhost or a trusted LAN.
+Canonical Companion is `companion/` (owner UI) served by `atlas_api` on loopback. ChatRuntime, AdvancedRuntime, and WorkRuntime are live through that API. Authentication is a signed session cookie plus CSRF. Caddy is the public TLS edge; the API does not bind a public interface.
+
+`atlas_companion/` is a legacy HTTP adapter retained for migration/tests. It is not the owner UI and is not an equally legitimate entrypoint.
 
 ---
 
@@ -593,8 +596,7 @@ The core runtime is implemented without pretending every external surface is alr
 
 Still edge/future work:
 
-- production always-on server packaging;
-- authentication/authorization for remote Companion access;
+- production always-on server packaging beyond Caddy + loopback `atlas_api`;
 - authenticated Mobile Capture synchronization;
 - server-to-phone bootstrap state;
 - host-resource management capabilities;

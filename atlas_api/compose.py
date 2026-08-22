@@ -4,10 +4,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from atlas_companion.cloud_providers import ProviderStateStore, build_registry
+from atlas_companion.credentials import CredentialStore
 from atlas_core.advanced import AdvancedRuntime, build_advanced_runtime
 from atlas_core.capabilities import CapabilityBinding, CapabilityOutcome
-from atlas_core.chat import ChatRuntime, build_chat_runtime
+from atlas_core.chat import ChatError, ChatRuntime, build_chat_runtime
 from atlas_core.knowledge import KnowledgeStore, register_knowledge_capabilities
+from atlas_core.providers import ModelProvider, ProviderRegistry
 from atlas_core.verification import VerifierRegistry
 from atlas_core.work import (
     CapabilityExecutionProfile,
@@ -117,18 +120,22 @@ def compose_services(
     """
 
     auth_service = auth if auth is not None else auth_from_env()
+    provider = None
+    if chat is None or advanced is None:
+        if provider_config is None:
+            raise ValueError("provider_config or chat/advanced runtime is required")
+        provider = _select_conversational_provider(
+            _host_provider_registry(
+                provider_config,
+                instance_root=Path(chat_db).expanduser().resolve().parent,
+            )
+        )
     chat_runtime = chat
     if chat_runtime is None:
-        if provider_config is None:
-            raise ValueError("provider_config or chat runtime is required")
-        chat_runtime = build_chat_runtime(
-            db_path=chat_db, provider_config=provider_config
-        )
+        chat_runtime = build_chat_runtime(db_path=chat_db, provider=provider)
     advanced_runtime = advanced
     if advanced_runtime is None:
-        if provider_config is None:
-            raise ValueError("provider_config or advanced runtime is required")
-        advanced_runtime = build_advanced_runtime(provider_config=provider_config)
+        advanced_runtime = build_advanced_runtime(provider=provider)
     work_runtime = work
     if work_runtime is None:
         work_runtime = build_default_work_runtime(db_path=work_db, **work_kwargs)
@@ -140,3 +147,30 @@ def compose_services(
         host=host,
         port=port,
     )
+
+
+def _host_provider_registry(
+    provider_config: str | Path,
+    *,
+    instance_root: Path,
+) -> ProviderRegistry:
+    """Load overlay + ProviderStateStore + CredentialStore once.
+
+    Chat/Advanced pick one enabled conversational provider from this
+    registry. API keys stay in CredentialStore, not JSON.
+    """
+
+    credentials = CredentialStore(instance_root)
+    state = ProviderStateStore(instance_root)
+    return build_registry(
+        provider_config,
+        credentials=credentials,
+        state=state,
+    )
+
+
+def _select_conversational_provider(registry: ProviderRegistry) -> ModelProvider:
+    enabled = [item for item in registry.providers() if item.spec.enabled]
+    if not enabled:
+        raise ChatError("ChatRuntime requires an enabled model provider.")
+    return max(enabled, key=lambda item: (item.spec.priority, -item.spec.latency_rank))

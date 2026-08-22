@@ -331,26 +331,16 @@ Its local IndexedDB state is necessary for disconnected operation but is not a s
 
 ```text
 atlas_core/
-├── tasks/
-│   └── durable task/step/execution/artifact/claim/approval/checkpoint/event state
-├── capabilities/
-│   └── CapabilityDefinition catalog, execution profiles, Work registry
-├── chat/
-│   └── ChatRuntime composition root
-├── advanced/
-│   └── AdvancedRuntime composition root
-├── work/
-│   └── WorkRuntime composition root
-├── providers/
-│   └── provider contracts, routing, HTTP adapters and eval scores
-├── knowledge/
-│   └── SQLite/FTS ingestion and retrieval
-├── integrations/
-│   └── adapters around domain responsibilities
+├── work/          WorkRuntime, WorkEngine, contracts, store
+├── chat/          ChatRuntime composition root
+├── advanced/      AdvancedRuntime composition root
+├── capabilities/  catalog, execution profiles, Work registry
+├── providers/     provider contracts, routing, HTTP adapters and eval scores
+├── knowledge/     SQLite/FTS ingestion and retrieval
+├── integrations/  adapters around domain responsibilities
 ├── authority.py
 ├── context.py
 ├── deliverable.py
-│   └── deliverable contract + presentation profile
 ├── runtime_types.py
 ├── verification.py
 ├── presentation.py
@@ -360,9 +350,11 @@ atlas_core/
 ├── schema_validation.py
 └── __main__.py
 
-atlas_companion/ LAN-local Companion PWA (disconnected from Work)
-atlas_morning/   frozen Morning Workflow implementation
-atlas_mobile/    offline-first Mobile Capture surface
+atlas_api/         Companion API: auth, Chat, Advanced, Work, SPA
+companion/         Canonical owner UI
+atlas_companion/   Legacy HTTP adapter (non-canonical)
+atlas_morning/     frozen Morning Workflow implementation
+atlas_mobile/      offline-first Mobile Capture surface
 ```
 
 ---

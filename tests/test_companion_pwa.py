@@ -1,3 +1,9 @@
+"""Legacy atlas_companion HTTP adapter tests.
+
+Not the canonical Companion UI (companion/ + atlas_api).
+Kept until CredentialStore / ProviderStateStore move or this adapter is retired.
+"""
+
 from __future__ import annotations
 
 import io

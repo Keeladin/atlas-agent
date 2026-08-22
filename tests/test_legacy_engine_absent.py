@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_ROOTS = (
     ROOT / "atlas_core",
+    ROOT / "atlas_api",
     ROOT / "atlas_companion",
     ROOT / "atlas_morning",
 )

@@ -28,8 +28,10 @@ Atlas 2.0 is under active development. The durable runtime and core governance c
 | SQLite / FTS knowledge plane | **Implemented** |
 | Morning Workflow runtime integration | **Implemented** |
 | Offline-first Mobile Capture PWA | **Implemented and phone-offline tested** |
-| Atlas Companion PWA | **Implemented (LAN-local; Work execution disconnected)** |
-| Companion authentication / public bind | **Not yet implemented** |
+| Atlas Companion owner UI | **Implemented (`companion/`)** |
+| Companion API (`atlas_api`) | **Implemented (Chat, Advanced, Work; loopback)** |
+| Companion authentication | **Implemented (signed session cookie + CSRF)** |
+| Public HTTPS edge | **Caddy terminates TLS; API stays on loopback** |
 | Mobile report server sync + authentication | **Not yet implemented** |
 | Production always-on server packaging | **Not yet canonicalized** |
 | Host resource-management capability | **Direction only** |
@@ -81,7 +83,7 @@ flowchart TB
     U[User / Event / Schedule / File / API]
     CLI[CLI\nimplemented]
     MPWA[Supervisor Mobile Capture PWA\noffline-first, implemented]
-    WEB[Atlas Companion PWA\nLAN-local, disconnected]
+    WEB[Atlas Companion PWA\ncompanion/ + atlas_api]
     SYNC[Authenticated Mobile Sync API\nplanned]
 
     U --> CLI
@@ -89,7 +91,7 @@ flowchart TB
     MPWA -. sync when coverage returns .-> SYNC
 
     CLI --> TP
-    WEB -. disconnected until rebuilt .-> TP
+    WEB --> TP
     SYNC -.-> TP
 
     subgraph CORE[Atlas 2.0 Core]
@@ -156,7 +158,7 @@ flowchart TB
 - **Capability meaning is independent of deployment.** A catalog capability may have no profile on this host.
 - **The model router sits below capabilities.** A capability may be satisfied by different providers without changing the definition.
 - **State is structural and durable.** The context window is a workspace, not a database.
-- **Mobile and Companion are interfaces, not other agents.** Companion remains a LAN-local client, disconnected from Work until rebuilt. Mobile Capture is bounded supervisor reporting.
+- **Mobile and Companion are interfaces, not other agents.** Companion is `companion/` served by `atlas_api` on loopback (Caddy at the public edge). Mobile Capture is bounded supervisor reporting.
 - **MCP is an edge protocol, not Atlas's internal ontology.** Discovery does not create catalog identity.
 
 ---
@@ -423,34 +425,36 @@ Authenticated server synchronization is **not yet implemented**.
 
 See [Mobile Capture V1 — Behavioural Contract](./Mobile%20Capture%20V1%20%E2%80%94%20Behavioural%20Contract.md) and [`atlas_mobile/PHONE-OFFLINE-ACCEPTANCE.md`](./atlas_mobile/PHONE-OFFLINE-ACCEPTANCE.md).
 
-## Companion PWA
+## Companion
 
-`atlas_companion/` is the LAN-local owner/admin interface. It is one persistent agent with spaces of responsibility, not extra personalities. Work execution is disconnected/dark until Companion is rebuilt against WorkRuntime.
+Canonical Companion is two packages:
 
-| Space | What it is |
+| Package | Role |
 |---|---|
-| **Ask** | Conversational front door and transcript storage. Intent preview remains. Work execution is disconnected. |
-| **Work** | Overview UI remains. Run / create / approve / cancel are disconnected. |
-| **Personal** | Stub command center (email/calendar/reminders not connected) |
-| **Knowledge** | Library and search remain. Indexing-as-work is disconnected. |
-| **Models** | Local sequential load/unload/activate; xAI credentials, model select, exclusive enable |
-| **Settings** | Host health and runtime identity (assembler, pid, enabled providers; no secrets) |
+| `companion/` | Owner UI (Chat, Work, Knowledge placeholders, Settings) |
+| `atlas_api` | Composition root: ChatRuntime, AdvancedRuntime, WorkRuntime; signed session cookie + CSRF |
 
-The browser talks only to Companion. Companion does not construct WorkRuntime. The browser does not call model-provider endpoints.
+The browser talks only to `atlas_api` (`/api/chat`, `/api/advanced`, `/api/work`, `/api/auth`). It does not call model-provider endpoints and does not hold API keys. Secrets stay on the host via `CredentialStore` (`instance/secrets/providers/<provider-key>.key`, mode `0600`).
 
-This surface is **not authenticated**. Bind it to localhost or a trusted LAN only. It is not a public internet service.
+Public TLS terminates at Caddy. `atlas_api` binds loopback only (`127.0.0.1:8080`).
 
-### Run Companion
+`atlas_companion/` is **legacy**. It is not the owner UI. Do not run `python -m atlas_companion.server` as the product. See [`atlas_companion/LEGACY.md`](./atlas_companion/LEGACY.md).
+
+### Run Companion (canonical)
+
+See [Quick start](#quick-start) below. Short form after setup:
 
 ```bash
-uv run python -m atlas_companion.server \
-  --db instance/atlas.db \
-  --providers config/runtime-providers.local.json \
+cd companion && npm ci && npm run build && cd ..
+uv run python -m atlas_api \
   --host 127.0.0.1 \
-  --port 8787
+  --port 8080 \
+  --work-db instance/atlas-work.db \
+  --chat-db instance/atlas-chat.db \
+  --provider-config instance/runtime-providers.json
 ```
 
-Then open `http://127.0.0.1:8787`. Use a LAN `--host` only on a trusted network.
+Then open `http://127.0.0.1:8080` and sign in.
 
 ---
 
@@ -458,33 +462,15 @@ Then open `http://127.0.0.1:8787`. Use a LAN `--host` only on a trusted network.
 
 ```text
 atlas-agent/
-├── atlas_core/
-│   ├── tasks/                durable runtime records and SQLite stores
-│   ├── capabilities/         CapabilityDefinition catalog, profiles, Work registry
-│   ├── chat/                 ChatRuntime composition root
-│   ├── advanced/             AdvancedRuntime composition root
-│   ├── work/                 WorkRuntime composition root
-│   ├── providers/            provider contracts, routing, adapters, eval scores
-│   ├── knowledge/            SQLite / FTS ingestion and retrieval
-│   ├── integrations/         domain responsibility adapters
-│   ├── authority.py
-│   ├── context.py
-│   ├── deliverable.py        deliverable contract + presentation profile
-│   ├── runtime_types.py
-│   ├── verification.py
-│   ├── presentation.py
-│   ├── tools.py
-│   ├── evals.py
-│   ├── events.py
-│   ├── schema_validation.py
-│   └── __main__.py
-│
-├── atlas_companion/          LAN-local Companion PWA (disconnected from Work)
+├── atlas_core/               Work, Chat, Advanced runtimes and capability catalog
+├── atlas_api/                Companion API (auth, Chat, Advanced, Work, SPA)
+├── companion/                Canonical owner UI
+├── atlas_companion/          Legacy HTTP adapter (non-canonical; tests/migration)
 ├── atlas_morning/            frozen Morning Workflow implementation
 ├── atlas_mobile/             offline-first Mobile Capture PWA
-├── config/                   runtime/provider configuration examples
+├── config/                   provider overlay examples (no secrets)
 ├── docs/architecture/        current runtime governance
-├── docs/prototypes/          Companion design prototype
+├── docs/prototypes/          design prototypes, not the running UI
 ├── tests/                    runtime + behavioural regressions
 └── .github/workflows/        CI
 ```
@@ -498,8 +484,8 @@ atlas-agent/
 - [uv](https://docs.astral.sh/uv/)
 - Python **3.12**, installed and used through uv (`requires-python = ">=3.12,<3.13"`)
 - Git
-- Node.js if running the Mobile fixture suite
-- Optional OpenAI-compatible local model endpoint for planning/model capabilities
+- Node.js (Companion UI build, and Mobile fixture suite)
+- Optional OpenAI-compatible local model endpoint or a configured cloud provider (keys in `instance/secrets/providers/`, not in JSON)
 
 ## Clone
 
@@ -521,24 +507,68 @@ uv sync --frozen
 
 ```bash
 uv run python -W error::ResourceWarning -m unittest discover -s tests -q
-uv run python -m compileall -q atlas_core atlas_morning tests
+uv run python -m compileall -q atlas_api atlas_core atlas_morning tests
 node atlas_mobile/run_fixtures.js
+cd companion && npm ci && npm run build
 ```
 
 These are the same classes of checks run by GitHub Actions.
 
-## Initialize a runtime database
+## Provider overlay
+
+Copy the example overlay into `instance/` (gitignored host overlay). Enable whichever providers this host actually has. Do not put API keys in the JSON.
 
 ```bash
-mkdir -p instance
-uv run python -m atlas_core --db instance/atlas.db tasks
+mkdir -p instance/secrets/providers
+cp config/runtime-providers.example.json instance/runtime-providers.json
 ```
+
+Host-local credentials use the existing `CredentialStore` files:
+
+```text
+instance/secrets/providers/<provider-key>.key
+```
+
+Example: `instance/secrets/providers/xai:expert.key` for overlay key `xai:expert` with `api_key_env: "XAI_API_KEY"`. Files must be mode `0600`. Environment variables remain a fallback if the file is absent.
+
+Optional `instance/provider-state.json` overlays enabled/model/base_url chosen on this host. `atlas_api` consumes it the same way the legacy adapter did.
+
+An existing host overlay named `instance/runtime-providers.companion.json` is valid; pass it as `--provider-config`.
+
+## Auth
+
+```bash
+cat > instance/companion-auth.env <<'EOF'
+ATLAS_COMPANION_PASSWORD=choose-a-password
+ATLAS_SESSION_SECRET=choose-a-long-random-secret
+ATLAS_ENV=development
+EOF
+chmod 600 instance/companion-auth.env
+```
+
+`ATLAS_ENV=development` is required for HTTP-only cookies on localhost. Production cookies stay Secure; Caddy terminates TLS in front of loopback.
+
+Work and chat SQLite files are created on first API start (`instance/atlas-work.db`, `instance/atlas-chat.db`).
+
+## Run the canonical Companion
+
+```bash
+cd companion && npm ci && npm run build && cd ..
+uv run python -m atlas_api \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --work-db instance/atlas-work.db \
+  --chat-db instance/atlas-chat.db \
+  --provider-config instance/runtime-providers.json
+```
+
+Open `http://127.0.0.1:8080` and sign in. Chat, plan/accept Work, and Work controls all go through this process.
 
 ---
 
 # CLI
 
-The CLI is the canonical engineering and recovery interface into WorkRuntime. Companion is the general LAN-local browser interface and is disconnected from Work execution.
+The CLI is the engineering and recovery interface into WorkRuntime. Companion (`companion/` + `atlas_api`) is the owner browser interface and is live against the same WorkRuntime.
 
 ```text
 uv run python -m atlas_core [--db PATH] COMMAND
@@ -619,8 +649,9 @@ GitHub Actions currently runs:
 ```bash
 uv sync --frozen
 uv run python -W error::ResourceWarning -m unittest discover -s tests -q
-uv run python -m compileall -q atlas_core atlas_morning tests
+uv run python -m compileall -q atlas_api atlas_core atlas_morning tests
 node atlas_mobile/run_fixtures.js
+cd companion && npm ci && npm run build
 ```
 
 Architectural regression requirements include:
@@ -640,7 +671,7 @@ Architectural regression requirements include:
 - planning uses ContextBuilder;
 - provider routing respects privacy and eval score;
 - presentation profile follows intent rather than capability default;
-- tasks can execute beyond shallow conversational tool-round ceilings;
+- work can execute beyond shallow conversational tool-round ceilings;
 - Morning, Mobile, and Companion behavioural suites remain green.
 
 ---
@@ -667,30 +698,27 @@ The project prefers the smallest system that reliably owns a real responsibility
 
 # Near-term deployment direction
 
-The runtime is interface-agnostic. Companion remains a LAN-local shell, disconnected from Work until rebuilt. Always-on packaging, authentication, and public HTTPS remain deployment work.
-
-**Companion is present and dark for Work execution. Authenticated remote access and production supervision are not implemented.**
+The runtime is interface-agnostic. Companion is the owner UI on `atlas_api`. Public HTTPS is Caddy in front of loopback. Always-on host packaging beyond that remains deployment work.
 
 ```mermaid
 flowchart TB
-    PHONE[Personal Companion PWA\nLAN-local, implemented]
+    PHONE[Personal Companion PWA\ncompanion/]
     REPORT[Supervisor Mobile PWA\nimplemented offline / sync planned]
     DEV[Developer workstation\nVS Code / Git / SSH]
-
-    EDGE[Authenticated HTTPS edge\nplanned]
+    EDGE[Caddy\nTLS edge]
 
     subgraph HOST[Always-on Atlas host]
-        API[Companion HTTP adapter\nLAN-local, Work disconnected]
-        CORE[Atlas runtime\nWorkRuntime / WorkEngine]
+        API[atlas_api\nloopback Chat/Advanced/Work + auth]
+        CORE[WorkRuntime / WorkEngine]
         DATA[(Persistent SQLite + artifacts + knowledge)]
-        MODEL[Local OpenAI-compatible model service]
+        MODEL[Configured model providers]
         GPU[Optional GPU acceleration]
     end
 
-    PHONE -->|trusted LAN HTTP| API
+    PHONE -->|HTTPS / localhost| EDGE
+    EDGE --> API
     REPORT -. HTTPS sync .-> EDGE
-    EDGE -.-> API
-    API -. disconnected from Work .-> CORE
+    API --> CORE
     DEV -->|Git / SSH| HOST
     CORE <--> DATA
     CORE --> MODEL

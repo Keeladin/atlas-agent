@@ -397,6 +397,6 @@ Not yet implemented:
 - server-to-phone unresolved-thread/bootstrap state;
 - device/user auth integration.
 
-The owner/admin Companion PWA is a separate implemented surface (`atlas_companion/`). It must not inherit supervisor reporting authority, and Mobile Capture must not inherit Companion model/credential controls.
+The owner/admin Companion (`companion/` + `atlas_api`) is a separate implemented surface. It must not inherit supervisor reporting authority, and Mobile Capture must not inherit Companion model/credential controls.
 
 These future surfaces must integrate through Atlas 2.0 runtime boundaries rather than turning Mobile Capture into a separate agent or source of server truth.

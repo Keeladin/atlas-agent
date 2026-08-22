@@ -93,36 +93,34 @@ The offline app must remain useful when the server cannot be reached.
 
 ## 5. Atlas Companion PWA
 
-The personal **Atlas Companion PWA** is implemented as a LAN-local owner/admin interface in `atlas_companion/`.
+The personal **Atlas Companion** is `companion/` served by `atlas_api`. Chat, Advanced, and Work are live. There is still one Atlas.
 
-It remains a LAN-local owner/admin client. Work execution is disconnected/dark until Companion is rebuilt against WorkRuntime. There is still one Atlas.
+`atlas_companion/` is a legacy HTTP adapter, not the owner UI.
 
 Implemented:
 
-- conversational Ask intent preview and persisted transcript storage;
-- Work UI shell (create/run/approve/cancel disconnected);
-- Knowledge library / search (indexing-as-work disconnected);
-- Models: sequential local GPU load/unload/activate; xAI credential file, model select, exclusive enable;
-- Settings/health identity without secrets;
-- Personal stub (connectors not connected).
+- Chat through ChatRuntime;
+- Plan/accept Work through AdvancedRuntime and WorkRuntime;
+- Work list, detail, confirmations, approvals, and owner controls;
+- signed session cookie + CSRF;
+- host-local provider credentials (not JSON);
+- Knowledge/Files screens as placeholders (indexing remains Work).
 
 ```text
 Phone / browser
-   ↓ trusted LAN HTTP
-Atlas Companion PWA
+   ↓ Caddy TLS or localhost
+atlas_api (loopback)
    ↓
-knowledge / models / settings (live)
-Work execution (disconnected / dark until rebuilt)
+Chat / Advanced / Work
 ```
 
-The browser must not communicate directly with model-provider endpoints. Companion is unauthenticated; do not bind it to a public address.
+The browser must not communicate directly with model-provider endpoints. `atlas_api` binds loopback; Caddy is the public edge.
 
 Remaining Companion work is explicitly future:
 
-- authentication for remote access;
-- async Ask so long tasks do not block HTTP;
+- async long Chat so long work does not block HTTP;
 - Personal email/calendar/storage connectors;
-- additional cloud vendor adapters;
+- additional vendor adapters in the owner UI;
 - notifications.
 
 ## 6. One backend, different authority surfaces

@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--provider-config",
         default=os.environ.get(
-            "ATLAS_PROVIDER_CONFIG", "config/runtime-providers.local.json"
+            "ATLAS_PROVIDER_CONFIG", "instance/runtime-providers.json"
         ),
     )
     args = parser.parse_args(argv)

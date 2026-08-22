@@ -13,18 +13,26 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
           enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: companion/package-lock.json
       - name: Install Python dependencies
         run: uv sync --frozen
       - name: Python regression suite
         run: uv run python -W error::ResourceWarning -m unittest discover -s tests -q
-      - name: Compile runtime and workflow packages
-        run: uv run python -m compileall -q atlas_core atlas_morning tests
+      - name: Compile runtime, API, and workflow packages
+        run: uv run python -m compileall -q atlas_api atlas_core atlas_morning tests
       - name: Mobile fixture suite
         run: node atlas_mobile/run_fixtures.js
+      - name: Companion production build
+        run: npm ci && npm run build
+        working-directory: companion

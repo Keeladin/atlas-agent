@@ -41,7 +41,7 @@ WorkEngine
 | `WorkRuntime` | Work lifecycle: accept, run, pause, complete | Capability identity |
 | `WorkEngine` | Step execution mechanics | Accept, catalog, live re-resolution |
 
-`catalog()` / `lookup()` are the product identity surface. Chat and Advanced read meaning only. Work.accept reads `catalog()`. Work.run requires an available profile (and a handler for deterministic/tool/composite kinds) before `WorkEngine` is reached. Companion is disconnected from this topology until rebuilt.
+`catalog()` / `lookup()` are the product identity surface. Chat and Advanced read meaning only. Work.accept reads `catalog()`. Work.run requires an available profile (and a handler for deterministic/tool/composite kinds) before `WorkEngine` is reached. Companion reaches this topology through `atlas_api`.
 
 `CapabilityAwareness` is an alias of `CapabilityDefinition`. It is not a second ontology.
 

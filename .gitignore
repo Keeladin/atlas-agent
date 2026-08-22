@@ -8,8 +8,13 @@ secrets*
 WhatsApp*.txt
 WhatsApp*.zip
 
-# Generated replay output
+# Generated replay / experiment output
 output/replay/
+output/experiment*
+output/experiment-baseline-pre-hardening/
+
+# Host-local provider overlay (keep config/runtime-providers.example.json tracked)
+config/runtime-providers.local.json
 
 # Python
 __pycache__/

@@ -150,6 +150,34 @@ def catalog() -> tuple[CapabilityDefinition, ...]:
             side_effect_class="none",
         ),
         CapabilityDefinition(
+            id="files.list",
+            description="List one bounded page of a configured local directory.",
+            required_authority="read",
+            confirmation="none",
+            side_effect_class="none",
+        ),
+        CapabilityDefinition(
+            id="files.stat",
+            description="Observe metadata for a configured local source without following symlinks.",
+            required_authority="read",
+            confirmation="none",
+            side_effect_class="none",
+        ),
+        CapabilityDefinition(
+            id="files.hash",
+            description="Compute a stable exact-byte SHA-256 for a configured local regular file.",
+            required_authority="read",
+            confirmation="none",
+            side_effect_class="none",
+        ),
+        CapabilityDefinition(
+            id="files.read",
+            description="Acquire complete bounded UTF-8 text from a configured local regular file.",
+            required_authority="read",
+            confirmation="none",
+            side_effect_class="none",
+        ),
+        CapabilityDefinition(
             id="knowledge.answer",
             description=(
                 "Compose a source-grounded answer from a knowledge_search_results artifact "

@@ -8,6 +8,13 @@ ModelOutcomePolicy = Literal["deliverable_only", "claim_bearing"]
 CompletionGroundingPolicy = Literal["none", "evidence_required"]
 PrivacyRoute = Literal["local_only", "cloud_allowed", "cloud_preferred"]
 DataClassification = Literal["public", "internal", "sensitive"]
+ArtifactProvenance = Literal[
+    "acquired_observation",
+    "acquired_content",
+    "generated_deliverable",
+    "execution_receipt",
+    "verifier_result",
+]
 ConfirmationRequirement = Literal["none", "required"]
 CapabilitySideEffectClass = Literal["none", "reversible", "irreversible", "external_effect"]
 
@@ -146,6 +153,17 @@ class CapabilityRequest:
     dependency_artifact_ids: tuple[str, ...] = ()
     idempotency_key: str | None = None
     surface: ToolSurface | None = None
+    execution_id: str | None = None
+    criterion_ordinals: tuple[int, ...] = ()
+    execution_policy: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CapabilityArtifact:
+    kind: str
+    payload: Any
+    provenance_category: ArtifactProvenance
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -157,3 +175,5 @@ class CapabilityOutcome:
     metrics: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     claims: tuple[dict[str, Any], ...] = ()
+    output_provenance_category: ArtifactProvenance = "generated_deliverable"
+    artifacts: tuple[CapabilityArtifact, ...] = ()

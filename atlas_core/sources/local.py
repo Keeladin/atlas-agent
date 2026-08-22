@@ -201,6 +201,25 @@ class LocalRootRegistry:
             raise LocalSourceError("root_revision_unavailable", "Requested root configuration revision is unavailable.", root_id=root_id)
         return root
 
+    def execution_policies(self) -> tuple[dict[str, Any], ...]:
+        """Safe root identities/policies for deployment-time capability pinning."""
+
+        with self._lock:
+            roots = tuple(self._roots.values())
+        return tuple(
+            {
+                "provider_namespace": root.config.provider_namespace,
+                "root_id": root.config.root_id,
+                "configuration_revision": root.config.configuration_revision,
+                "read_allowed": root.config.read_allowed,
+                "display_name": root.config.display_name,
+            }
+            for root in sorted(
+                roots,
+                key=lambda item: (item.config.provider_namespace, item.config.root_id),
+            )
+        )
+
     def close(self) -> None:
         with self._lock:
             roots, self._roots = self._roots, {}
@@ -565,6 +584,11 @@ class LocalSourceKernel:
             "configuration_revision": root.config.configuration_revision,
             "operation": operation,
             "filesystem_policy_version": FILESYSTEM_POLICY_VERSION,
+            "backend": (
+                "linux_openat2"
+                if self._openat2_available
+                else "linux_openat_fallback"
+            ),
         }
 
     def _deadline(self, timeout_seconds: float, kernel_maximum: float) -> float:

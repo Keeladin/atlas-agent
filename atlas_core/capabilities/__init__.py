@@ -2,6 +2,8 @@ from .awareness import CapabilityAwareness, brief_catalog, catalog
 from .bindings import CapabilityBinding, CapabilityBindingIndex
 from .builtin import register_intelligence_capabilities
 from .contracts import (
+    ArtifactProvenance,
+    CapabilityArtifact,
     CapabilityOutcome,
     CapabilityRequest,
     CapabilitySideEffectClass,
@@ -29,6 +31,8 @@ from .registry import (
 
 __all__ = [
     "CapabilityAwareness",
+    "ArtifactProvenance",
+    "CapabilityArtifact",
     "CapabilityBinding",
     "CapabilityBindingIndex",
     "CapabilityDefinition",

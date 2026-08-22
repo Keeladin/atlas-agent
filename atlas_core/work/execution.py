@@ -373,6 +373,15 @@ class WorkExecutionMixin:
             dependency_artifact_ids=dependency_ids,
             idempotency_key=f"{step.work_id}:{step.id}:{pin.capability_id}",
             surface=surface,
+            execution_id=execution.id,
+            criterion_ordinals=tuple(
+                int(item) for item in step.metadata.get("satisfies_criteria", ())
+            ),
+            execution_policy={
+                "root_bindings": list(
+                    (pin.input_schema or {}).get("x-atlas-root-bindings", ())
+                )
+            },
         )
         try:
             return resolved.handler(request)

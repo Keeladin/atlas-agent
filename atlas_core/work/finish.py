@@ -11,6 +11,7 @@ from .records import StepRecord
 from atlas_core.verification import VerificationResult
 
 from .contract import ContractCapability, WorkContract
+from atlas_core.evidence import qualifies_as_source_evidence
 
 
 class WorkFinishMixin:
@@ -36,6 +37,8 @@ class WorkFinishMixin:
                     metrics=outcome.metrics,
                     error=f"output schema validation failed: {exc}",
                     claims=outcome.claims,
+                    output_provenance_category=outcome.output_provenance_category,
+                    artifacts=outcome.artifacts,
                 )
                 self._emit(
                     step.work_id,
@@ -65,6 +68,8 @@ class WorkFinishMixin:
                 metrics=outcome.metrics,
                 error="side-effecting capability returned no successful receipt",
                 claims=outcome.claims,
+                output_provenance_category=outcome.output_provenance_category,
+                artifacts=outcome.artifacts,
             )
             self._emit(
                 step.work_id,
@@ -98,6 +103,8 @@ class WorkFinishMixin:
                         f"{size}>{budget.max_output_chars}"
                     ),
                     claims=outcome.claims,
+                    output_provenance_category=outcome.output_provenance_category,
+                    artifacts=outcome.artifacts,
                 )
             else:
                 artifact = self.store.put_artifact(
@@ -110,20 +117,49 @@ class WorkFinishMixin:
                         "execution_id": execution_id,
                         "outcome_status": outcome.status,
                     },
+                    provenance_category=outcome.output_provenance_category,
                 )
                 output_ids.append(artifact.id)
 
+        for declared in outcome.artifacts:
+            artifact = self.store.put_artifact(
+                step.work_id,
+                step_id=step.id,
+                kind=declared.kind,
+                payload=declared.payload,
+                metadata={
+                    **declared.metadata,
+                    "capability": pin.capability_id,
+                    "execution_id": execution_id,
+                    "outcome_status": outcome.status,
+                },
+                provenance_category=declared.provenance_category,
+            )
+            output_ids.append(artifact.id)
+
+        receipt_payload = dict(outcome.receipt)
+        if receipt_payload:
+            receipt_payload.update({
+                "work_id": step.work_id,
+                "step_id": step.id,
+                "execution_id": execution_id,
+                "capability_id": pin.capability_id,
+                "artifact_ids": list(output_ids),
+                "mapped_outcome": outcome.status,
+            })
+
         receipt_artifact_id: str | None = None
-        if outcome.receipt:
+        if receipt_payload:
             receipt_artifact = self.store.put_artifact(
                 step.work_id,
                 step_id=step.id,
                 kind="execution_receipt",
-                payload=outcome.receipt,
+                payload=receipt_payload,
                 metadata={
                     "capability": pin.capability_id,
                     "execution_id": execution_id,
                 },
+                provenance_category="execution_receipt",
             )
             receipt_artifact_id = receipt_artifact.id
 
@@ -131,7 +167,7 @@ class WorkFinishMixin:
         verification: VerificationResult | None = None
         final_status = outcome.status
         verification_context = dict(context)
-        verification_context["execution_receipt"] = outcome.receipt
+        verification_context["execution_receipt"] = receipt_payload
         details: dict[str, Any] = {}
         gate: VerificationResult | None = None
         if outcome.status == "pass" and pin.verification_required:
@@ -198,6 +234,7 @@ class WorkFinishMixin:
                     "execution_id": execution_id,
                     "outcome_gate": True,
                 },
+                provenance_category="verifier_result",
             )
             verifier_artifact_id = verifier.id
             self._emit(
@@ -268,9 +305,15 @@ class WorkFinishMixin:
                     if claim.kind in {"observed", "retrieved", "calculated", "executed"}
                     and claim.evidence_artifact_ids
                 )
-                source_ids = tuple(artifact_id for artifact_id in dict.fromkeys(
-                    artifact_id for claim in qualifying for artifact_id in claim.evidence_artifact_ids
-                ) if artifact_id not in set(output_ids))
+                source_ids = tuple(
+                    artifact_id
+                    for artifact_id in dict.fromkeys(
+                        artifact_id
+                        for claim in qualifying
+                        for artifact_id in claim.evidence_artifact_ids
+                    )
+                    if qualifies_as_source_evidence(self.store.get_artifact(artifact_id))
+                )
                 qualifying = tuple(
                     claim for claim in qualifying
                     if any(artifact_id in source_ids for artifact_id in claim.evidence_artifact_ids)
@@ -308,6 +351,7 @@ class WorkFinishMixin:
                              "evaluated_claim_ids": [claim.id for claim in qualifying],
                              "details": criterion_result.details},
                     metadata={"execution_id": execution_id, "criterion_id": criterion.id},
+                    provenance_category="verifier_result",
                 )
                 self.store.add_criterion_verification(
                     work_id=step.work_id, criterion_id=criterion.id,
@@ -334,7 +378,7 @@ class WorkFinishMixin:
             status=final_status,
             output_artifact_ids=output_ids,
             verifier_artifact_id=verifier_artifact_id,
-            receipt=outcome.receipt,
+            receipt=receipt_payload,
             metrics=outcome.metrics,
             error=execution_error,
         )

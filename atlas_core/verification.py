@@ -17,6 +17,7 @@ from atlas_core.deliverable import (
     output_text,
 )
 from atlas_core.context import WorkPersistence
+from atlas_core.evidence import qualifies_as_source_evidence
 
 
 VerificationStatus = Literal["pass", "rework", "abstain", "fail", "blocked"]
@@ -389,6 +390,7 @@ class CompletionVerifier:
                 artifact_id for claim in claims
                 if claim.kind in {"observed", "retrieved", "calculated", "executed"}
                 for artifact_id in claim.evidence_artifact_ids
+                if qualifies_as_source_evidence(self.store.get_artifact(artifact_id))
             }
             if not criterion.evidence_artifact_ids or not set(criterion.evidence_artifact_ids).issubset(source_ids):
                 reasons.append(f"grounded criterion evidence is not backed by linked claims: {criterion.text}")

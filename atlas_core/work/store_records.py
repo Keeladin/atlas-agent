@@ -482,7 +482,13 @@ class WorkStoreRecordsMixin:
 
     @staticmethod
     def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
-        return ArtifactRecord(row["id"], row["work_id"], row["step_id"], row["kind"], _json_load(row["payload_json"], None), row["sha256"], _json_load(row["metadata_json"], {}), row["created_at"])
+        return ArtifactRecord(
+            row["id"], row["work_id"], row["step_id"], row["kind"],
+            _json_load(row["payload_json"], None), row["sha256"],
+            _json_load(row["metadata_json"], {}),
+            row["provenance_category"] if "provenance_category" in row.keys() else "generated_deliverable",
+            row["created_at"],
+        )
 
     @staticmethod
     def _execution_from_row(row: sqlite3.Row) -> ExecutionRecord:

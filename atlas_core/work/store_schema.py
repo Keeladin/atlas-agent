@@ -132,6 +132,10 @@ class WorkStoreSchemaMixin:
                     payload_json TEXT NOT NULL,
                     sha256 TEXT NOT NULL,
                     metadata_json TEXT NOT NULL,
+                    provenance_category TEXT NOT NULL DEFAULT 'generated_deliverable'
+                        CHECK (provenance_category IN
+                            ('acquired_observation','acquired_content','generated_deliverable',
+                             'execution_receipt','verifier_result')),
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (work_id) REFERENCES work(id) ON DELETE CASCADE,
                     FOREIGN KEY (step_id) REFERENCES work_steps(id) ON DELETE SET NULL
@@ -338,6 +342,22 @@ class WorkStoreSchemaMixin:
                 db.execute("ALTER TABLE work_claims ADD COLUMN execution_id TEXT")
             if "context_manifest_id" not in claim_columns:
                 db.execute("ALTER TABLE work_claims ADD COLUMN context_manifest_id TEXT")
+            artifact_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(work_artifacts)")
+            }
+            if "provenance_category" not in artifact_columns:
+                db.execute(
+                    "ALTER TABLE work_artifacts ADD COLUMN provenance_category "
+                    "TEXT NOT NULL DEFAULT 'generated_deliverable'"
+                )
+                db.execute(
+                    "UPDATE work_artifacts SET provenance_category='execution_receipt' "
+                    "WHERE kind='execution_receipt'"
+                )
+                db.execute(
+                    "UPDATE work_artifacts SET provenance_category='verifier_result' "
+                    "WHERE kind IN ('verification_result','criterion_verification_result')"
+                )
             if existing_version is not None and existing_version < 3:
                 # Phase A contracts already froze the global policy. Materialize
                 # that policy onto their legacy criterion rows during migration.

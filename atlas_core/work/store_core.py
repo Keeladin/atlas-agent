@@ -379,6 +379,7 @@ class WorkStoreCoreMixin:
         step_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         artifact_id: str | None = None,
+        provenance_category: str = "generated_deliverable",
     ) -> ArtifactRecord:
         self.get_work(work_id)
         if step_id is not None and self.get_step(step_id).work_id != work_id:
@@ -386,12 +387,20 @@ class WorkStoreCoreMixin:
         kind = kind.strip()
         if not kind:
             raise ValueError("Artifact kind must not be empty.")
+        if provenance_category not in {
+            "acquired_observation",
+            "acquired_content",
+            "generated_deliverable",
+            "execution_receipt",
+            "verifier_result",
+        }:
+            raise ValueError(f"Unsupported artifact provenance category: {provenance_category}")
         encoded, digest = _payload_hash(payload)
         artifact_id = artifact_id or _new_id("artifact")
         with self._db() as db:
             db.execute(
-                "INSERT INTO work_artifacts (id,work_id,step_id,kind,payload_json,sha256,metadata_json) VALUES (?,?,?,?,?,?,?)",
-                (artifact_id, work_id, step_id, kind, encoded, digest, _json_dump(metadata or {})),
+                "INSERT INTO work_artifacts (id,work_id,step_id,kind,payload_json,sha256,metadata_json,provenance_category) VALUES (?,?,?,?,?,?,?,?)",
+                (artifact_id, work_id, step_id, kind, encoded, digest, _json_dump(metadata or {}), provenance_category),
             )
         return self.get_artifact(artifact_id)
 

@@ -42,12 +42,14 @@ class WorkPhaseBSchemaTests(unittest.TestCase):
                 criterion_columns = {row[1] for row in db.execute("PRAGMA table_info(work_criteria)")}
                 step_columns = {row[1] for row in db.execute("PRAGMA table_info(work_steps)")}
                 claim_columns = {row[1] for row in db.execute("PRAGMA table_info(work_claims)")}
+                artifact_columns = {row[1] for row in db.execute("PRAGMA table_info(work_artifacts)")}
                 tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 version = db.execute("SELECT version FROM atlas_schema_meta WHERE component='work'").fetchone()[0]
             self.assertEqual(version, WORK_SCHEMA_VERSION)
             self.assertTrue({"satisfaction_policy", "semantic_verification", "verification_artifact_id"} <= criterion_columns)
             self.assertIn("contract_capability_ordinal", step_columns)
             self.assertTrue({"execution_id", "context_manifest_id"} <= claim_columns)
+            self.assertIn("provenance_category", artifact_columns)
             self.assertTrue({"work_claim_criteria", "work_criterion_verifications"} <= tables)
 
 

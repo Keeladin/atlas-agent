@@ -98,6 +98,7 @@ class ArtifactRecord:
     payload: Any
     sha256: str
     metadata: dict[str, Any]
+    provenance_category: str
     created_at: str
 
 

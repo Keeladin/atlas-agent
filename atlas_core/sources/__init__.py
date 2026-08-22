@@ -1,6 +1,7 @@
 """Secure, provider-owned source acquisition primitives."""
 
 from .contracts import SourceObservation, SourceRef
+from .capabilities import register_files_capabilities
 from .errors import LocalSourceError
 from .local import (
     CancellationToken,
@@ -21,4 +22,5 @@ __all__ = [
     "SourceObservation",
     "SourceReadResult",
     "SourceRef",
+    "register_files_capabilities",
 ]

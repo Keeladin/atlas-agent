@@ -390,6 +390,7 @@ class ContextBuilder:
                 "id": artifact.id,
                 "kind": artifact.kind,
                 "sha256": artifact.sha256,
+                "provenance_category": artifact.provenance_category,
                 "metadata": artifact.metadata,
             }
             full_view = {**metadata_view, "payload": artifact.payload}

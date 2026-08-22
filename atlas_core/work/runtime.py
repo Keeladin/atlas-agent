@@ -10,6 +10,7 @@ from atlas_core.runtime_types import RecoveryResult, RuntimeBudget, RuntimeResul
 from .store_common import _new_id
 from atlas_core.providers import ModelRouter
 from atlas_core.tools import ToolGateway
+from atlas_core.sources import LocalRootRegistry, LocalSourceKernel, register_files_capabilities
 from atlas_core.verification import GroundedCriterionVerifier, VerifierRegistry
 
 from .contract import (
@@ -51,6 +52,7 @@ class WorkRuntime:
         verifiers: VerifierRegistry | None = None,
         definitions: tuple[CapabilityDefinition, ...] | None = None,
         providers=None,
+        local_source_registry: LocalRootRegistry | None = None,
     ) -> None:
         self.store = store
         self._profiles = inventory
@@ -62,6 +64,7 @@ class WorkRuntime:
         self._definitions = {
             item.id: item for item in (definitions if definitions is not None else catalog())
         }
+        self.local_source_registry = local_source_registry
 
     def accept(
         self,
@@ -129,7 +132,9 @@ class WorkRuntime:
                     metadata={
                         "purpose": "accepted_request",
                         "capability": pin.capability_id,
+                        "source_consistency": "stable",
                     },
+                    provenance_category="acquired_observation",
                 )
                 input_ids = (request.id,)
             record = store.add_step(
@@ -347,6 +352,8 @@ def build_work_runtime(
     budget: RuntimeBudget | None = None,
     verifiers: VerifierRegistry | None = None,
     model_router: ModelRouter | None = None,
+    local_source_registry: LocalRootRegistry | None = None,
+    local_source_kernel: LocalSourceKernel | None = None,
 ) -> WorkRuntime:
     """Only composition root for WorkRuntime."""
 
@@ -355,6 +362,13 @@ def build_work_runtime(
     profile_index = profiles if profiles is not None else DeploymentInventory()
     gateway = tool_gateway if tool_gateway is not None else ToolGateway()
     verifier_registry = verifiers if verifiers is not None else VerifierRegistry()
+    if local_source_registry is not None:
+        register_files_capabilities(
+            profile_index,
+            registry=local_source_registry,
+            kernel=local_source_kernel,
+            gateway=gateway,
+        )
     consumer = None if model_router is None else WorkModelConsumer(model_router, store)
     engine = WorkEngine(
         store=store,
@@ -374,4 +388,5 @@ def build_work_runtime(
         verifiers=verifier_registry,
         definitions=catalog(),
         providers=None if model_router is None else model_router.registry,
+        local_source_registry=local_source_registry,
     )

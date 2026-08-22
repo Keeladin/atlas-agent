@@ -941,6 +941,154 @@ a.card:hover {
   max-height: min(70vh, 640px);
 }
 
+/* —— Work operator view —— */
+.work-operator-stack {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.work-state-panel {
+  border-color: var(--atlas-border-strong);
+}
+
+.work-state-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.work-state-head h2 {
+  margin: 0.2rem 0 0;
+  font-size: 1.12rem;
+}
+
+.eyebrow {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.work-state-message {
+  margin: 0.8rem 0 0;
+  max-width: 72ch;
+}
+
+.work-current-fact {
+  display: grid;
+  gap: 0.18rem;
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.work-current-fact span,
+.work-fact-list span,
+.work-claim span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.work-current-fact small,
+.work-fact-list small {
+  color: var(--muted);
+}
+
+.work-runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.work-fact-list {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.work-fact-list > div {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.work-step-progress {
+  margin-top: 0.9rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.work-decision {
+  box-shadow: var(--shadow);
+}
+
+.work-payload-preview {
+  margin: 0.75rem 0 1rem;
+  padding: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: calc(var(--radius) - 3px);
+  background: var(--atlas-bg);
+}
+
+.work-activity {
+  display: grid;
+}
+
+.work-activity-row {
+  display: grid;
+  grid-template-columns: minmax(10rem, auto) 1fr;
+  gap: 0.8rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.work-activity-row time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.work-artifact-list,
+.work-claims {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.work-artifact {
+  padding: 0.65rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.work-artifact summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  cursor: pointer;
+}
+
+.work-artifact summary span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.work-claims {
+  margin-top: 0.8rem;
+}
+
+.work-claims h3 {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.work-claim {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.empty.compact {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
 /* —— Shared workspace anatomy —— */
 .workspace {
   display: flex;
@@ -1156,6 +1304,7 @@ a.card:hover {
   .chat-layout,
   .grid-2,
   .grid-3,
+  .work-runtime-grid,
   .workspace-body.has-rail.has-context,
   .workspace-body.has-rail:not(.has-context),
   .workspace-body.has-context:not(.has-rail) {

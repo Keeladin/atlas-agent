@@ -31,6 +31,72 @@ export type PendingConfirmation = {
   created_at: string
 }
 
+export type WorkStep = {
+  id: string
+  ordinal: number
+  description: string
+  capability: string | null
+  capability_version: string | null
+  status: string
+  dependencies: string[]
+  input_artifact_ids: string[]
+}
+
+export type WorkArtifact = {
+  id: string
+  step_id: string | null
+  kind: string
+  sha256: string
+  metadata: Record<string, unknown>
+  created_at: string
+  payload: unknown
+}
+
+export type WorkClaim = {
+  id: string
+  step_id: string | null
+  kind: string
+  subject: string
+  value: unknown
+  evidence_artifact_ids: string[]
+  confidence: number | null
+  created_at: string
+}
+
+export type WorkExecution = {
+  id: string
+  step_id: string
+  capability: string
+  capability_version: string
+  provider: string | null
+  attempt: number
+  status: string
+  error: string | null
+  receipt: Record<string, unknown>
+  started_at: string
+  ended_at: string | null
+  input_artifact_ids: string[]
+  output_artifact_ids: string[]
+}
+
+export type WorkEvent = {
+  id: number
+  name: string
+  step_id: string | null
+  execution_id: string | null
+  payload: Record<string, unknown>
+  created_at: string
+}
+
+export type WorkCriterion = {
+  id: string
+  ordinal: number
+  text: string
+  status: string
+  evidence_artifact_ids: string[]
+  note: string | null
+}
+
 export type WorkDetail = {
   work_id: string
   objective: string
@@ -48,23 +114,14 @@ export type WorkDetail = {
   } | null
   contract: Record<string, unknown>
   capabilities: Array<Record<string, unknown>>
-  steps: Array<{
-    id: string
-    ordinal: number
-    description: string
-    capability: string | null
-    capability_version: string | null
-    status: string
-    dependencies: string[]
-    input_artifact_ids: string[]
-  }>
+  steps: WorkStep[]
   pending_approvals: PendingApproval[]
   pending_confirmations: PendingConfirmation[]
-  artifacts: Array<Record<string, unknown>>
-  claims: Array<Record<string, unknown>>
-  executions: Array<Record<string, unknown>>
-  events: Array<Record<string, unknown>>
-  criteria: Array<Record<string, unknown>>
+  artifacts: WorkArtifact[]
+  claims: WorkClaim[]
+  executions: WorkExecution[]
+  events: WorkEvent[]
+  criteria: WorkCriterion[]
   actions: string[]
 }
 

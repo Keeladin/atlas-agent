@@ -1,11 +1,61 @@
 from __future__ import annotations
 
 import sqlite3
-import json
 from contextlib import contextmanager
 from pathlib import Path
 
 from .store_common import WORK_SCHEMA_VERSION, WorkStoreError
+
+
+_CURRENT_WORK_TABLE_COLUMNS = {
+    "work": {"id", "objective", "success_criteria_json", "constraints_json", "authority_scope", "status", "metadata_json", "created_at", "updated_at"},
+    "work_criteria": {"id", "work_id", "ordinal", "text", "status", "evidence_artifact_ids_json", "note", "satisfaction_policy", "semantic_verification", "verification_artifact_id", "updated_at"},
+    "work_steps": {"id", "work_id", "ordinal", "description", "capability", "capability_version", "contract_capability_ordinal", "status", "dependencies_json", "input_artifact_ids_json", "metadata_json", "created_at", "updated_at"},
+    "work_artifacts": {"id", "work_id", "step_id", "kind", "payload_json", "sha256", "metadata_json", "provenance_category", "created_at"},
+    "work_executions": {"id", "work_id", "step_id", "capability", "capability_version", "provider", "attempt", "status", "input_artifact_ids_json", "output_artifact_ids_json", "verifier_artifact_id", "receipt_json", "metrics_json", "error", "started_at", "ended_at"},
+    "work_context_manifests": {"id", "work_id", "step_id", "execution_id", "capability", "capability_version", "assembler_version", "budget_tokens", "total_tokens", "manifest_json", "sha256", "created_at"},
+    "work_checkpoints": {"id", "work_id", "reason", "snapshot_json", "created_at"},
+    "work_claims": {"id", "work_id", "step_id", "kind", "subject", "value_json", "evidence_artifact_ids_json", "confidence", "execution_id", "context_manifest_id", "created_at"},
+    "work_claim_criteria": {"claim_id", "criterion_id", "execution_id", "created_at"},
+    "work_criterion_verifications": {"id", "work_id", "criterion_id", "contract_capability_ordinal", "step_id", "execution_id", "evaluation_attempt", "status", "input_sha256", "artifact_id", "created_at"},
+    "work_approvals": {"id", "work_id", "step_id", "required_authority", "requested_action", "status", "decision_note", "created_at", "decided_at"},
+    "work_confirmations": {"id", "work_id", "step_id", "capability_id", "payload_sha256", "payload_json", "summary", "status", "created_at", "decided_at"},
+    "work_events": {"id", "work_id", "step_id", "execution_id", "name", "payload_json", "created_at"},
+    "work_contracts": {"work_id", "contract_id", "sha256", "payload_json", "compiled_at"},
+}
+
+
+def _validate_current_schema(db: sqlite3.Connection) -> None:
+    tables = {
+        row["name"]
+        for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    missing_tables = set(_CURRENT_WORK_TABLE_COLUMNS) - tables
+    if missing_tables:
+        raise WorkStoreError(
+            "Current Work schema is incomplete; reset development data (missing: "
+            + ", ".join(sorted(missing_tables)) + ")"
+        )
+    for table, required in _CURRENT_WORK_TABLE_COLUMNS.items():
+        columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+        missing = required - columns
+        if missing:
+            raise WorkStoreError(
+                f"Current Work schema table {table!r} is missing required columns; "
+                "reset development data: " + ", ".join(sorted(missing))
+            )
+    artifact_sql = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='work_artifacts'"
+    ).fetchone()["sql"]
+    for category in (
+        "invocation_input", "acquired_observation", "acquired_content",
+        "generated_deliverable", "execution_receipt", "verifier_result",
+    ):
+        if category not in str(artifact_sql or ""):
+            raise WorkStoreError(
+                "Current Work artifact provenance constraint is incomplete; "
+                "reset development data"
+            )
 
 
 class WorkStoreSchemaMixin:
@@ -52,6 +102,17 @@ class WorkStoreSchemaMixin:
     def initialize(self) -> None:
         with self._db() as db:
             db.execute("PRAGMA journal_mode = WAL")
+            existing_tables = {
+                row["name"]
+                for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            meta_exists = "atlas_schema_meta" in existing_tables
+            if not meta_exists and any(
+                name == "work" or name.startswith("work_") for name in existing_tables
+            ):
+                raise WorkStoreError(
+                    "Unversioned Work schema is obsolete; reset development data"
+                )
             db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS atlas_schema_meta (
@@ -65,10 +126,13 @@ class WorkStoreSchemaMixin:
                 "SELECT version FROM atlas_schema_meta WHERE component='work'"
             ).fetchone()
             existing_version = int(row["version"]) if row is not None else None
-            if existing_version is not None and existing_version > WORK_SCHEMA_VERSION:
+            if meta_exists and existing_version != WORK_SCHEMA_VERSION:
                 raise WorkStoreError(
-                    "Work database was created by a newer Atlas work schema."
+                    f"Unsupported Work schema version {existing_version!r}; "
+                    f"current version is {WORK_SCHEMA_VERSION}. Reset development data."
                 )
+            if meta_exists:
+                _validate_current_schema(db)
 
             db.executescript(
                 """
@@ -309,133 +373,8 @@ class WorkStoreSchemaMixin:
                 """
             )
 
-            artifact_columns = {
-                row["name"] for row in db.execute("PRAGMA table_info(work_artifacts)")
-            }
-            if "provenance_category" not in artifact_columns:
-                db.execute(
-                    "ALTER TABLE work_artifacts ADD COLUMN provenance_category "
-                    "TEXT NOT NULL DEFAULT 'generated_deliverable'"
-                )
-                db.execute(
-                    "UPDATE work_artifacts SET provenance_category='execution_receipt' "
-                    "WHERE kind='execution_receipt'"
-                )
-                db.execute(
-                    "UPDATE work_artifacts SET provenance_category='verifier_result' "
-                    "WHERE kind IN ('verification_result','criterion_verification_result')"
-                )
-
-            artifact_sql_row = db.execute(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name='work_artifacts'"
-            ).fetchone()
-            artifact_sql = "" if artifact_sql_row is None else str(artifact_sql_row["sql"] or "")
-            if "invocation_input" not in artifact_sql:
-                db.commit()
-                db.execute("PRAGMA foreign_keys = OFF")
-                db.executescript(
-                    """
-                    CREATE TABLE work_artifacts_v5 (
-                        id TEXT PRIMARY KEY,
-                        work_id TEXT NOT NULL,
-                        step_id TEXT,
-                        kind TEXT NOT NULL,
-                        payload_json TEXT NOT NULL,
-                        sha256 TEXT NOT NULL,
-                        metadata_json TEXT NOT NULL,
-                        provenance_category TEXT NOT NULL DEFAULT 'generated_deliverable'
-                            CHECK (provenance_category IN
-                                ('invocation_input','acquired_observation','acquired_content',
-                                 'generated_deliverable','execution_receipt','verifier_result')),
-                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                        FOREIGN KEY (work_id) REFERENCES work(id) ON DELETE CASCADE,
-                        FOREIGN KEY (step_id) REFERENCES work_steps(id) ON DELETE SET NULL
-                    );
-                    INSERT INTO work_artifacts_v5
-                        (id,work_id,step_id,kind,payload_json,sha256,metadata_json,
-                         provenance_category,created_at)
-                    SELECT id,work_id,step_id,kind,payload_json,sha256,metadata_json,
-                           provenance_category,created_at
-                    FROM work_artifacts;
-                    DROP TABLE work_artifacts;
-                    ALTER TABLE work_artifacts_v5 RENAME TO work_artifacts;
-                    CREATE INDEX idx_work_artifacts_work
-                        ON work_artifacts(work_id, created_at, id);
-                    """
-                )
-                db.execute("PRAGMA foreign_keys = ON")
-
-            # Version 3 adds policy/provenance columns to existing durable rows.
-            # CREATE TABLE IF NOT EXISTS does not evolve pre-existing tables.
-            criterion_columns = {
-                row["name"] for row in db.execute("PRAGMA table_info(work_criteria)")
-            }
-            if "satisfaction_policy" not in criterion_columns:
-                db.execute(
-                    "ALTER TABLE work_criteria ADD COLUMN satisfaction_policy "
-                    "TEXT NOT NULL DEFAULT 'deliverable'"
-                )
-            if "semantic_verification" not in criterion_columns:
-                db.execute(
-                    "ALTER TABLE work_criteria ADD COLUMN semantic_verification "
-                    "TEXT NOT NULL DEFAULT 'none'"
-                )
-            if "verification_artifact_id" not in criterion_columns:
-                db.execute(
-                    "ALTER TABLE work_criteria ADD COLUMN verification_artifact_id TEXT"
-                )
-            step_columns = {
-                row["name"] for row in db.execute("PRAGMA table_info(work_steps)")
-            }
-            if "contract_capability_ordinal" not in step_columns:
-                db.execute(
-                    "ALTER TABLE work_steps ADD COLUMN contract_capability_ordinal INTEGER"
-                )
-            claim_columns = {
-                row["name"] for row in db.execute("PRAGMA table_info(work_claims)")
-            }
-            if "execution_id" not in claim_columns:
-                db.execute("ALTER TABLE work_claims ADD COLUMN execution_id TEXT")
-            if "context_manifest_id" not in claim_columns:
-                db.execute("ALTER TABLE work_claims ADD COLUMN context_manifest_id TEXT")
-            artifact_columns = {
-                row["name"] for row in db.execute("PRAGMA table_info(work_artifacts)")
-            }
-            if "provenance_category" not in artifact_columns:
-                db.execute(
-                    "ALTER TABLE work_artifacts ADD COLUMN provenance_category "
-                    "TEXT NOT NULL DEFAULT 'generated_deliverable'"
-                )
-                db.execute(
-                    "UPDATE work_artifacts SET provenance_category='execution_receipt' "
-                    "WHERE kind='execution_receipt'"
-                )
-                db.execute(
-                    "UPDATE work_artifacts SET provenance_category='verifier_result' "
-                    "WHERE kind IN ('verification_result','criterion_verification_result')"
-                )
-            if existing_version is not None and existing_version < 3:
-                # Phase A contracts already froze the global policy. Materialize
-                # that policy onto their legacy criterion rows during migration.
-                for row in db.execute("SELECT work_id,payload_json FROM work_contracts"):
-                    try:
-                        payload = json.loads(row["payload_json"])
-                    except (TypeError, json.JSONDecodeError):
-                        continue
-                    if payload.get("completion_grounding_policy") == "evidence_required":
-                        db.execute(
-                            "UPDATE work_criteria SET satisfaction_policy='evidence_grounded', "
-                            "semantic_verification='required' WHERE work_id=?",
-                            (row["work_id"],),
-                        )
-
             if existing_version is None:
                 db.execute(
                     "INSERT INTO atlas_schema_meta (component,version) VALUES ('work',?)",
-                    (WORK_SCHEMA_VERSION,),
-                )
-            elif existing_version != WORK_SCHEMA_VERSION:
-                db.execute(
-                    "UPDATE atlas_schema_meta SET version=?,updated_at=CURRENT_TIMESTAMP WHERE component='work'",
                     (WORK_SCHEMA_VERSION,),
                 )

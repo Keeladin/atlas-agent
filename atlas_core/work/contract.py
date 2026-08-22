@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -31,6 +31,7 @@ from .work import WorkError
 
 _DETERMINISTIC_KINDS = frozenset({"deterministic", "tool", "composite"})
 _HANDLERLESS_KINDS = frozenset({"model", "human"})
+WORK_CONTRACT_PAYLOAD_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -106,12 +107,6 @@ class ContractCapability:
     retry_policy: RetryPolicy | None = None
     model_outcome_policy: ModelOutcomePolicy = "deliverable_only"
     contract_capability_ordinal: int | None = None
-    _contract_capability_ordinal_in_payload: bool = field(
-        default=True, repr=False, compare=False
-    )
-    _model_outcome_policy_in_payload: bool = field(
-        default=True, repr=False, compare=False
-    )
 
     def __post_init__(self) -> None:
         if self.contract_capability_ordinal is not None and self.contract_capability_ordinal < 1:
@@ -151,10 +146,8 @@ class ContractCapability:
             "confirmation": self.confirmation,
             "required_authority": self.required_authority,
         }
-        if self._model_outcome_policy_in_payload:
-            payload["model_outcome_policy"] = self.model_outcome_policy
-        if self._contract_capability_ordinal_in_payload:
-            payload["contract_capability_ordinal"] = self.contract_capability_ordinal
+        payload["model_outcome_policy"] = self.model_outcome_policy
+        payload["contract_capability_ordinal"] = self.contract_capability_ordinal
         return payload
 
 
@@ -217,10 +210,6 @@ class WorkContract:
     completion_grounding_policy: CompletionGroundingPolicy = "none"
     criteria: tuple[ContractCriterion, ...] = ()
     criterion_bindings: tuple[ContractCriterionBinding, ...] = ()
-    _structured_criteria_in_payload: bool = field(default=True, repr=False, compare=False)
-    _completion_grounding_policy_in_payload: bool = field(
-        default=True, repr=False, compare=False
-    )
 
     def __post_init__(self) -> None:
         if self.completion_grounding_policy not in {"none", "evidence_required"}:
@@ -258,6 +247,7 @@ class WorkContract:
         """Canonical dict for hashing. Excludes ``contract_id`` and ``sha256``."""
 
         payload = {
+            "contract_payload_version": WORK_CONTRACT_PAYLOAD_VERSION,
             "work_id": self.work_id,
             "compiled_at": self.compiled_at,
             "objective": self.objective,
@@ -269,11 +259,9 @@ class WorkContract:
             "confirmation_requirements": list(self.confirmation_requirements),
             "work_budget": _runtime_budget_dict(self.work_budget),
         }
-        if self._completion_grounding_policy_in_payload:
-            payload["completion_grounding_policy"] = self.completion_grounding_policy
-        if self._structured_criteria_in_payload:
-            payload["criteria"] = [item.as_dict() for item in self.criteria]
-            payload["criterion_bindings"] = [item.as_dict() for item in self.criterion_bindings]
+        payload["completion_grounding_policy"] = self.completion_grounding_policy
+        payload["criteria"] = [item.as_dict() for item in self.criteria]
+        payload["criterion_bindings"] = [item.as_dict() for item in self.criterion_bindings]
         return payload
 
 
@@ -547,6 +535,22 @@ def work_contract_from_stored(
     _encoded, digest = _payload_hash(payload)
     if digest != sha256:
         raise WorkError("Work contract digest mismatch")
+    if payload.get("contract_payload_version") != WORK_CONTRACT_PAYLOAD_VERSION:
+        raise WorkError(
+            "Unsupported Work contract payload version; reset obsolete development data"
+        )
+    required_fields = {
+        "contract_payload_version", "work_id", "compiled_at", "objective",
+        "success_criteria", "constraints", "authority_scope", "capabilities",
+        "allowed_tools", "confirmation_requirements", "work_budget",
+        "completion_grounding_policy", "criteria", "criterion_bindings",
+    }
+    missing = required_fields - set(payload)
+    if missing:
+        raise WorkError(
+            "Current Work contract payload is missing required fields: "
+            + ", ".join(sorted(missing))
+        )
     if str(payload.get("work_id") or "") != work_id:
         raise WorkError("Work contract work_id does not match the store row")
     if str(payload.get("compiled_at") or "") != compiled_at:
@@ -554,50 +558,49 @@ def work_contract_from_stored(
 
     pins: list[ContractCapability] = []
     capability_payloads = payload.get("capabilities") or ()
-    for stored_ordinal, item in enumerate(capability_payloads, start=1):
+    for item in capability_payloads:
         if not isinstance(item, dict):
             raise WorkError("Work contract capability slice is not an object")
+        required_capability_fields = {
+            "capability_id", "definition", "armed", "profile_version",
+            "executor_kind", "binding", "tools", "verifier_id",
+            "verification_required", "input_schema", "output_schema", "output_kind",
+            "requires_artifact_kinds", "eligible_providers", "provider_snapshots",
+            "side_effects", "idempotent", "parallel_safe", "privacy",
+            "data_classification", "context_policy", "context_profile", "budget",
+            "retry_policy", "confirmation", "required_authority",
+            "model_outcome_policy", "contract_capability_ordinal",
+        }
+        missing_capability_fields = required_capability_fields - set(item)
+        if missing_capability_fields:
+            raise WorkError(
+                "Current Work contract capability is missing required fields: "
+                + ", ".join(sorted(missing_capability_fields))
+            )
         pin = replace(
             _pin_from_payload(item),
-            contract_capability_ordinal=int(
-                item.get("contract_capability_ordinal") or stored_ordinal
-            ),
-            _contract_capability_ordinal_in_payload=(
-                "contract_capability_ordinal" in item
-            ),
+            contract_capability_ordinal=int(item["contract_capability_ordinal"]),
         )
         pins.append(pin)
 
     budget_payload = payload.get("work_budget")
     if not isinstance(budget_payload, dict):
         raise WorkError("Work contract work_budget is not an object")
-    structured = "criteria" in payload
     criteria = tuple(
         ContractCriterion(
             ordinal=int(item["ordinal"]),
             text=str(item["text"]),
-            satisfaction_policy=str(item.get("satisfaction_policy") or "deliverable"),
-            semantic_verification=str(item.get("semantic_verification") or "none"),
+            satisfaction_policy=str(item["satisfaction_policy"]),
+            semantic_verification=str(item["semantic_verification"]),
         )
-        for item in (payload.get("criteria") or ())
-    ) if structured else tuple(
-        ContractCriterion(
-            index,
-            text,
-            "evidence_grounded" if payload.get("completion_grounding_policy") == "evidence_required" else "deliverable",
-            "required" if payload.get("completion_grounding_policy") == "evidence_required" else "none",
-        )
-        for index, text in enumerate(payload.get("success_criteria") or (), start=1)
+        for item in payload["criteria"]
     )
     bindings = tuple(
         ContractCriterionBinding(
             int(item["criterion_ordinal"]),
             int(item["contract_capability_ordinal"]),
         )
-        for item in (payload.get("criterion_bindings") or ())
-    ) if structured else tuple(
-        ContractCriterionBinding(criterion.ordinal, pin.contract_capability_ordinal or 0)
-        for criterion in criteria for pin in pins
+        for item in payload["criterion_bindings"]
     )
     return WorkContract(
         work_id=work_id,
@@ -627,14 +630,10 @@ def work_contract_from_stored(
         ),
         sha256=sha256,
         completion_grounding_policy=str(
-            payload.get("completion_grounding_policy") or "none"
-        ),
-        _completion_grounding_policy_in_payload=(
-            "completion_grounding_policy" in payload
+            payload["completion_grounding_policy"]
         ),
         criteria=criteria,
         criterion_bindings=bindings,
-        _structured_criteria_in_payload=structured,
     )
 
 
@@ -653,6 +652,8 @@ def _pin_from_payload(item: dict[str, Any]) -> ContractCapability:
         definition = require(capability_id)
     except ValueError as exc:
         raise WorkError(str(exc)) from exc
+    if "model_outcome_policy" not in item:
+        raise WorkError("Current Work contract capability is missing model outcome policy")
     armed = bool(item.get("armed"))
     if not armed:
         return ContractCapability(
@@ -661,10 +662,7 @@ def _pin_from_payload(item: dict[str, Any]) -> ContractCapability:
             armed=False,
             confirmation=definition.confirmation,
             required_authority=definition.required_authority,
-            model_outcome_policy=str(
-                item.get("model_outcome_policy") or "deliverable_only"
-            ),
-            _model_outcome_policy_in_payload="model_outcome_policy" in item,
+            model_outcome_policy=str(item["model_outcome_policy"]),
         )
     binding_payload = item.get("binding")
     binding = None
@@ -718,10 +716,7 @@ def _pin_from_payload(item: dict[str, Any]) -> ContractCapability:
         ),
         budget=_execution_budget_from_dict(item.get("budget")),
         retry_policy=_retry_policy_from_dict(item.get("retry_policy")),
-        model_outcome_policy=str(
-            item.get("model_outcome_policy") or "deliverable_only"
-        ),
-        _model_outcome_policy_in_payload="model_outcome_policy" in item,
+        model_outcome_policy=str(item["model_outcome_policy"]),
     )
 
 

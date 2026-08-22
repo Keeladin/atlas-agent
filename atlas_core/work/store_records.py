@@ -474,11 +474,11 @@ class WorkStoreRecordsMixin:
 
     @staticmethod
     def _criterion_from_row(row: sqlite3.Row) -> CriterionRecord:
-        return CriterionRecord(row["id"], row["work_id"], int(row["ordinal"]), row["text"], row["status"], tuple(_json_load(row["evidence_artifact_ids_json"], [])), row["note"], row["satisfaction_policy"] if "satisfaction_policy" in row.keys() else "deliverable", row["semantic_verification"] if "semantic_verification" in row.keys() else "none", row["verification_artifact_id"] if "verification_artifact_id" in row.keys() else None, row["updated_at"])
+        return CriterionRecord(row["id"], row["work_id"], int(row["ordinal"]), row["text"], row["status"], tuple(_json_load(row["evidence_artifact_ids_json"], [])), row["note"], row["satisfaction_policy"], row["semantic_verification"], row["verification_artifact_id"], row["updated_at"])
 
     @staticmethod
     def _step_from_row(row: sqlite3.Row) -> StepRecord:
-        return StepRecord(row["id"], row["work_id"], int(row["ordinal"]), row["description"], row["capability"], row["capability_version"] if "capability_version" in row.keys() else None, int(row["contract_capability_ordinal"]) if "contract_capability_ordinal" in row.keys() and row["contract_capability_ordinal"] is not None else None, row["status"], tuple(_json_load(row["dependencies_json"], [])), tuple(_json_load(row["input_artifact_ids_json"], [])), _json_load(row["metadata_json"], {}), row["created_at"], row["updated_at"])
+        return StepRecord(row["id"], row["work_id"], int(row["ordinal"]), row["description"], row["capability"], row["capability_version"], int(row["contract_capability_ordinal"]) if row["contract_capability_ordinal"] is not None else None, row["status"], tuple(_json_load(row["dependencies_json"], [])), tuple(_json_load(row["input_artifact_ids_json"], [])), _json_load(row["metadata_json"], {}), row["created_at"], row["updated_at"])
 
     @staticmethod
     def _artifact_from_row(row: sqlite3.Row) -> ArtifactRecord:
@@ -486,13 +486,13 @@ class WorkStoreRecordsMixin:
             row["id"], row["work_id"], row["step_id"], row["kind"],
             _json_load(row["payload_json"], None), row["sha256"],
             _json_load(row["metadata_json"], {}),
-            row["provenance_category"] if "provenance_category" in row.keys() else "generated_deliverable",
+            row["provenance_category"],
             row["created_at"],
         )
 
     @staticmethod
     def _execution_from_row(row: sqlite3.Row) -> ExecutionRecord:
-        version = row["capability_version"] if "capability_version" in row.keys() and row["capability_version"] else "1.0.0"
+        version = row["capability_version"]
         return ExecutionRecord(row["id"], row["work_id"], row["step_id"], row["capability"], version, row["provider"], int(row["attempt"]), row["status"], tuple(_json_load(row["input_artifact_ids_json"], [])), tuple(_json_load(row["output_artifact_ids_json"], [])), row["verifier_artifact_id"], _json_load(row["receipt_json"], {}), _json_load(row["metrics_json"], {}), row["error"], row["started_at"], row["ended_at"])
 
     @staticmethod
@@ -506,7 +506,7 @@ class WorkStoreRecordsMixin:
 
     @staticmethod
     def _claim_from_row(row: sqlite3.Row) -> ClaimRecord:
-        return ClaimRecord(row["id"], row["work_id"], row["step_id"], row["kind"], row["subject"], _json_load(row["value_json"], None), tuple(_json_load(row["evidence_artifact_ids_json"], [])), row["confidence"], row["execution_id"] if "execution_id" in row.keys() else None, row["context_manifest_id"] if "context_manifest_id" in row.keys() else None, row["created_at"])
+        return ClaimRecord(row["id"], row["work_id"], row["step_id"], row["kind"], row["subject"], _json_load(row["value_json"], None), tuple(_json_load(row["evidence_artifact_ids_json"], [])), row["confidence"], row["execution_id"], row["context_manifest_id"], row["created_at"])
 
     @staticmethod
     def _criterion_verification_from_row(row: sqlite3.Row) -> CriterionVerificationRecord:

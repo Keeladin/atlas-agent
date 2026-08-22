@@ -15,7 +15,7 @@ from atlas_core.work import (
     WorkError,
     compile_contract,
 )
-from atlas_core.work.contract import work_contract_from_stored
+from atlas_core.work.contract import WORK_CONTRACT_PAYLOAD_VERSION, work_contract_from_stored
 
 
 CONTRACT_SOURCE = (
@@ -24,7 +24,7 @@ CONTRACT_SOURCE = (
 
 GOLDEN_COMPILED_AT = "2026-01-01T00:00:00Z"
 GOLDEN_WORK_ID = "work_golden_unarmed_knowledge_index"
-GOLDEN_SHA256 = "24cf910cf4f2a53e78de81355f0882fac7464a6a8dc2ec4c42916a0b4fef3f49"
+GOLDEN_SHA256 = "6aad1ccb2dd3ad15f89b0cf88cd5715a9fabf47327b4aa1b493cb786a5bfcf23"
 
 
 def _brief(**overrides) -> TaskBrief:
@@ -116,6 +116,11 @@ class WorkContractCompileTests(unittest.TestCase):
             restored.capability("reasoning.general").model_outcome_policy,
             "claim_bearing",
         )
+        self.assertEqual(restored.as_payload(), contract.as_payload())
+        self.assertEqual(
+            restored.as_payload()["contract_payload_version"],
+            WORK_CONTRACT_PAYLOAD_VERSION,
+        )
 
     def test_completion_grounding_policy_defaults_to_none(self) -> None:
         self.assertEqual(_brief().completion_grounding_policy, "none")
@@ -143,53 +148,40 @@ class WorkContractCompileTests(unittest.TestCase):
             ((1, 1), (2, 2)),
         )
 
-    def test_legacy_capabilities_restore_ordinals_without_rehashing_payload(self) -> None:
+    def test_obsolete_contract_payload_version_fails_explicitly(self) -> None:
         contract = compile_contract(
-            work_id="work_legacy_ordinals",
+            work_id="work_obsolete",
             brief=_brief(),
             authority_scope="execute_external",
             inventory=DeploymentInventory(),
             compiled_at=GOLDEN_COMPILED_AT,
         )
         payload = copy.deepcopy(contract.as_payload())
-        payload.pop("criteria")
-        payload.pop("criterion_bindings")
-        for pin in payload["capabilities"]:
-            pin.pop("contract_capability_ordinal")
+        payload.pop("contract_payload_version")
         _encoded, digest = _payload_hash(payload)
-        restored = work_contract_from_stored(
-            work_id=contract.work_id,
-            contract_id=contract.contract_id,
-            sha256=digest,
-            payload=payload,
-            compiled_at=contract.compiled_at,
-        )
-        self.assertEqual(restored.capabilities[0].contract_capability_ordinal, 1)
-        self.assertEqual(restored.as_payload(), payload)
+        with self.assertRaisesRegex(WorkError, "payload version"):
+            work_contract_from_stored(
+                work_id=contract.work_id, contract_id=contract.contract_id,
+                sha256=digest, payload=payload, compiled_at=contract.compiled_at,
+            )
 
-    def test_legacy_contracts_restore_with_default_policies_without_rehashing(self) -> None:
+    def test_current_contract_missing_required_semantics_fails(self) -> None:
         contract = compile_contract(
-            work_id="work_legacy",
+            work_id="work_incomplete",
             brief=_brief(),
             authority_scope="execute_external",
             inventory=DeploymentInventory(),
             compiled_at=GOLDEN_COMPILED_AT,
-            contract_id="contract_legacy",
+            contract_id="contract_incomplete",
         )
-        legacy_payload = copy.deepcopy(contract.as_payload())
-        legacy_payload.pop("completion_grounding_policy")
-        for capability in legacy_payload["capabilities"]:
-            capability.pop("model_outcome_policy")
-        _encoded, legacy_sha = _payload_hash(legacy_payload)
-        restored = work_contract_from_stored(
-            work_id=contract.work_id,
-            contract_id=contract.contract_id,
-            sha256=legacy_sha,
-            payload=legacy_payload,
-            compiled_at=contract.compiled_at,
-        )
-        self.assertEqual(restored.completion_grounding_policy, "none")
-        self.assertEqual(restored.as_payload(), legacy_payload)
+        payload = copy.deepcopy(contract.as_payload())
+        payload["capabilities"][0].pop("model_outcome_policy")
+        _encoded, digest = _payload_hash(payload)
+        with self.assertRaisesRegex(WorkError, "missing required fields"):
+            work_contract_from_stored(
+                work_id=contract.work_id, contract_id=contract.contract_id,
+                sha256=digest, payload=payload, compiled_at=contract.compiled_at,
+            )
 
     def test_unarmed_catalog_capability_stays_in_contract(self) -> None:
         contract = compile_contract(

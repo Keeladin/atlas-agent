@@ -6,36 +6,14 @@ import tempfile
 import unittest
 
 from atlas_core.work import WorkStore
+from atlas_core.work.store_common import WorkStoreError
 from atlas_core.work.store_common import WORK_SCHEMA_VERSION
 
 
 class WorkPhaseBSchemaTests(unittest.TestCase):
-    def test_version_two_store_adds_phase_b_columns_and_history_tables(self) -> None:
+    def test_fresh_store_initializes_current_phase_b_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "work.db"
-            with sqlite3.connect(path) as db:
-                db.executescript(
-                    """
-                    CREATE TABLE atlas_schema_meta (component TEXT PRIMARY KEY, version INTEGER NOT NULL, updated_at TEXT);
-                    INSERT INTO atlas_schema_meta(component,version) VALUES ('work',2);
-                    CREATE TABLE work_criteria (
-                        id TEXT PRIMARY KEY, work_id TEXT, ordinal INTEGER, text TEXT,
-                        status TEXT, evidence_artifact_ids_json TEXT DEFAULT '[]', note TEXT,
-                        updated_at TEXT
-                    );
-                    CREATE TABLE work_steps (
-                        id TEXT PRIMARY KEY, work_id TEXT, ordinal INTEGER, description TEXT,
-                        capability TEXT, capability_version TEXT, status TEXT,
-                        dependencies_json TEXT, input_artifact_ids_json TEXT, metadata_json TEXT,
-                        created_at TEXT, updated_at TEXT
-                    );
-                    CREATE TABLE work_claims (
-                        id TEXT PRIMARY KEY, work_id TEXT, step_id TEXT, kind TEXT, subject TEXT,
-                        value_json TEXT, evidence_artifact_ids_json TEXT, confidence REAL,
-                        created_at TEXT
-                    );
-                    """
-                )
             store = WorkStore(path)
             store.initialize()
             with sqlite3.connect(path) as db:
@@ -51,6 +29,31 @@ class WorkPhaseBSchemaTests(unittest.TestCase):
             self.assertTrue({"execution_id", "context_manifest_id"} <= claim_columns)
             self.assertIn("provenance_category", artifact_columns)
             self.assertTrue({"work_claim_criteria", "work_criterion_verifications"} <= tables)
+
+    def test_obsolete_schema_version_requires_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "work.db"
+            with sqlite3.connect(path) as db:
+                db.executescript(
+                    """
+                    CREATE TABLE atlas_schema_meta (
+                        component TEXT PRIMARY KEY, version INTEGER NOT NULL,
+                        updated_at TEXT
+                    );
+                    INSERT INTO atlas_schema_meta(component,version) VALUES ('work',4);
+                    CREATE TABLE work (id TEXT PRIMARY KEY);
+                    """
+                )
+            with self.assertRaisesRegex(WorkStoreError, "Unsupported Work schema version"):
+                WorkStore(path).initialize()
+
+    def test_unversioned_work_schema_requires_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "work.db"
+            with sqlite3.connect(path) as db:
+                db.execute("CREATE TABLE work (id TEXT PRIMARY KEY)")
+            with self.assertRaisesRegex(WorkStoreError, "Unversioned Work schema"):
+                WorkStore(path).initialize()
 
 
 if __name__ == "__main__":

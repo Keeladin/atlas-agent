@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from contextlib import asynccontextmanager
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -34,6 +35,13 @@ def create_app(
     """ASGI application. Production bind target is 127.0.0.1:8080 behind Caddy."""
 
     api_services = services if services is not None else compose_services(**compose_kwargs)
+
+    @asynccontextmanager
+    async def lifespan(_app: Starlette):
+        try:
+            yield
+        finally:
+            api_services.close()
     async def api_not_found(_request: Request) -> JSONResponse:
         return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -62,6 +70,7 @@ def create_app(
 
     app = Starlette(
         routes=routes,
+        lifespan=lifespan,
         middleware=[
             Middleware(
                 CORSMiddleware,

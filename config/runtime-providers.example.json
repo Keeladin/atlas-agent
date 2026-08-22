@@ -1,4 +1,5 @@
 {
+  "local_source_roots": [],
   "providers": {
     "local:resident": {
       "kind": "openai_compatible_chat",

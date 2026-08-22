@@ -11,6 +11,7 @@ from .local import (
     SourceListResult,
     SourceReadResult,
 )
+from .config import LocalSourceDeployment, load_local_source_deployment
 
 __all__ = [
     "CancellationToken",
@@ -18,6 +19,8 @@ __all__ = [
     "LocalRootRegistry",
     "LocalSourceError",
     "LocalSourceKernel",
+    "LocalSourceDeployment",
+    "load_local_source_deployment",
     "SourceListResult",
     "SourceObservation",
     "SourceReadResult",

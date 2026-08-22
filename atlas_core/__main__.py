@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
+import os
 from pathlib import Path
 
 from atlas_core.advanced.brief import TaskBrief
 from atlas_core.integrations import register_morning_workflow
 from atlas_core.knowledge import KnowledgeStore, register_knowledge_capabilities
 from atlas_core.presentation import WorkPresenter
+from atlas_core.sources import load_local_source_deployment
 from atlas_core.verification import VerifierRegistry
 from atlas_core.work import DeploymentInventory, build_work_runtime
 
@@ -15,6 +18,11 @@ from atlas_core.work import DeploymentInventory, build_work_runtime
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Atlas 2.0 Work runtime")
     parser.add_argument("--db", default="atlas-agent.db", help="SQLite Work database")
+    parser.add_argument(
+        "--provider-config",
+        default=os.environ.get("ATLAS_PROVIDER_CONFIG", "instance/runtime-providers.json"),
+        help="Deployment configuration containing providers and local_source_roots",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     morning = sub.add_parser("morning", help="Run the existing Morning Workflow through WorkRuntime")
@@ -83,16 +91,30 @@ def _work_runtime(
     knowledge: bool = True,
     local_source_registry=None,
     local_source_kernel=None,
+    deployment_config: str | Path | None = None,
 ):
+    deployment = None
+    if local_source_registry is None and deployment_config is not None:
+        deployment = load_local_source_deployment(deployment_config)
+        local_source_registry = deployment.registry
+        local_source_kernel = deployment.kernel
     verifiers = VerifierRegistry()
     inventory = DeploymentInventory()
-    runtime = build_work_runtime(
-        db_path=db_path,
-        profiles=inventory,
-        verifiers=verifiers,
-        local_source_registry=local_source_registry,
-        local_source_kernel=local_source_kernel,
-    )
+    try:
+        runtime = build_work_runtime(
+            db_path=db_path,
+            profiles=inventory,
+            verifiers=verifiers,
+            local_source_registry=local_source_registry,
+            local_source_kernel=local_source_kernel,
+        )
+    except BaseException:
+        if deployment is not None:
+            deployment.close()
+        raise
+    if deployment is not None:
+        runtime._owned_local_source_deployment = deployment
+        atexit.register(deployment.close)
     if morning:
         register_morning_workflow(inventory, verifiers, store=runtime.store)
     if knowledge:
@@ -110,7 +132,7 @@ def _work_runtime(
 def main() -> None:
     args = _parser().parse_args()
     if args.command == "index-text":
-        runtime = _work_runtime(args.db)
+        runtime = _work_runtime(args.db, deployment_config=args.provider_config)
         if runtime._profiles.get("files.read") is None:
             raise SystemExit(
                 "index-text requires a deployment-configured local source registry; "
@@ -143,7 +165,7 @@ def main() -> None:
         _print_result(runtime.run(work_id))
         return
     if args.command == "search":
-        runtime = _work_runtime(args.db)
+        runtime = _work_runtime(args.db, deployment_config=args.provider_config)
         work_id = runtime.accept(
             TaskBrief(
                 objective=f"Search Atlas knowledge for: {args.query}",
@@ -158,7 +180,7 @@ def main() -> None:
         print(WorkPresenter(runtime.store).build(work_id).render_markdown())
         return
     if args.command == "morning":
-        runtime = _work_runtime(args.db)
+        runtime = _work_runtime(args.db, deployment_config=args.provider_config)
         work_id = runtime.accept(
             TaskBrief(
                 objective="Generate the TMM morning operational pack.",
@@ -191,7 +213,7 @@ def main() -> None:
             print(packs[-1].payload["markdown"])
         return
 
-    runtime = _work_runtime(args.db)
+    runtime = _work_runtime(args.db, deployment_config=args.provider_config)
     store = runtime.store
     if args.command == "result":
         print(WorkPresenter(store).build(args.work_id).render_markdown())

@@ -16,6 +16,11 @@ async def health(request: Request) -> JSONResponse:
             "listen": {"host": services.host, "port": services.port},
             "defaults": {"host": DEFAULT_HOST, "port": DEFAULT_PORT},
             "runtimes": ["chat", "advanced", "work"],
+            "local_source_roots": (
+                []
+                if services.local_sources is None
+                else list(services.local_sources.public_state())
+            ),
         }
     )
 

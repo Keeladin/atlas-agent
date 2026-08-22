@@ -15,6 +15,7 @@ from atlas_core.capabilities import (
 from atlas_core.chat import ChatError, ChatRuntime, build_chat_runtime
 from atlas_core.knowledge import KnowledgeStore, register_knowledge_capabilities
 from atlas_core.providers import ModelProvider, ModelRouter, ProviderRegistry
+from atlas_core.sources import LocalSourceDeployment, load_local_source_deployment
 from atlas_core.verification import VerifierRegistry
 from atlas_core.work import (
     CapabilityExecutionProfile,
@@ -38,8 +39,13 @@ class ApiServices:
     advanced: AdvancedRuntime
     work: WorkRuntime
     auth: AuthService
+    local_sources: LocalSourceDeployment | None = None
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+
+    def close(self) -> None:
+        if self.local_sources is not None:
+            self.local_sources.close()
 
 
 def _local_email_recorder(request) -> CapabilityOutcome:
@@ -145,16 +151,27 @@ def compose_services(
     if advanced_runtime is None:
         advanced_runtime = build_advanced_runtime(provider=provider)
     work_runtime = work
+    local_sources = None
     if work_runtime is None:
         kwargs = dict(work_kwargs)
+        if provider_config is not None and "local_source_registry" not in kwargs:
+            local_sources = load_local_source_deployment(provider_config)
+            kwargs["local_source_registry"] = local_sources.registry
+            kwargs["local_source_kernel"] = local_sources.kernel
         if registry is not None:
             kwargs.setdefault("model_router", ModelRouter(registry))
-        work_runtime = build_default_work_runtime(db_path=work_db, **kwargs)
+        try:
+            work_runtime = build_default_work_runtime(db_path=work_db, **kwargs)
+        except BaseException:
+            if local_sources is not None:
+                local_sources.close()
+            raise
     return ApiServices(
         chat=chat_runtime,
         advanced=advanced_runtime,
         work=work_runtime,
         auth=auth_service,
+        local_sources=local_sources,
         host=host,
         port=port,
     )

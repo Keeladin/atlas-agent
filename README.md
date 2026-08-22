@@ -616,6 +616,37 @@ uv run python -m atlas_core \
   search "What is Atlas?"
 ```
 
+### Configure controlled local source roots
+
+The API and CLI load Files roots from the same deployment-owned provider
+configuration file. Add a top-level list; no roots are inferred from the
+working directory or home directory:
+
+```json
+{
+  "local_source_roots": [
+    {
+      "provider_namespace": "local",
+      "root_id": "documents",
+      "host_path": "/srv/atlas/documents",
+      "display_name": "Documents",
+      "read_allowed": true,
+      "mutation_allowed": false,
+      "allow_cross_mounts": false
+    }
+  ],
+  "providers": {}
+}
+```
+
+Atlas validates and opens every configured root at startup. It derives
+`configuration_revision` as a deterministic `local-root-v1-…` digest of the
+canonical host target identity and security policy. Operators discover that
+revision through `/api/health` and supply it explicitly to Files Work or
+`index-text`. Absolute `host_path` values remain deployment-only and are never
+returned through Work or health output. Invalid roots fail startup; an empty
+list leaves every `files.*` capability unavailable.
+
 ### Configure a local model provider
 
 ```bash

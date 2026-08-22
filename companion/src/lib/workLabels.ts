@@ -70,7 +70,6 @@ const CAPABILITY_LABELS: Record<string, string> = {
   'knowledge.ingest_text': 'Index local knowledge',
   'knowledge.search': 'Search local knowledge',
   'knowledge.answer': 'Answer from local knowledge',
-  'knowledge.ingest_text': 'Index local text',
   'planning.general': 'Plan the work',
   'reasoning.general': 'Reason through the request',
   'reasoning.deep_analysis': 'Analyze the request in depth',

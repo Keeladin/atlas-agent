@@ -212,7 +212,10 @@ class LocalRootRegistry:
                 "root_id": root.config.root_id,
                 "configuration_revision": root.config.configuration_revision,
                 "read_allowed": root.config.read_allowed,
+                "mutation_allowed": root.config.mutation_allowed,
+                "allow_cross_mounts": root.config.allow_cross_mounts,
                 "display_name": root.config.display_name,
+                "availability": "available",
             }
             for root in sorted(
                 roots,

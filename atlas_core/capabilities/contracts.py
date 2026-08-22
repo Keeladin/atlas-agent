@@ -9,6 +9,7 @@ CompletionGroundingPolicy = Literal["none", "evidence_required"]
 PrivacyRoute = Literal["local_only", "cloud_allowed", "cloud_preferred"]
 DataClassification = Literal["public", "internal", "sensitive"]
 ArtifactProvenance = Literal[
+    "invocation_input",
     "acquired_observation",
     "acquired_content",
     "generated_deliverable",

@@ -187,6 +187,8 @@ class WorkPresenter:
         }
         outputs = []
         for artifact in self.store.list_artifacts(work_id):
+            if artifact.provenance_category == "invocation_input":
+                continue
             if artifact.kind in self._INTERNAL_KINDS:
                 continue
             if work.status == "completed" and accepted_evidence and artifact.id not in accepted_evidence:

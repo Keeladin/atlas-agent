@@ -4,10 +4,12 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from atlas_core.advanced import TaskBrief, TaskCriterion, TaskCriterionBinding
 from atlas_core.capabilities import CapabilityBinding, CapabilityExecutionProfile, CapabilityOutcome
 from atlas_core.evidence import qualifies_as_source_evidence
+from atlas_core.presentation import WorkPresenter
 from atlas_core.sources import LocalRootConfig, LocalRootRegistry
 from atlas_core.sources.capabilities import _ERROR_STATUS, _error_outcome
 from atlas_core.sources.errors import LocalSourceError
@@ -190,6 +192,89 @@ class FilesWorkTests(unittest.TestCase):
             str([item.payload for item in runtime.store.list_artifacts(work_id)]),
         )
 
+    def test_invocation_input_is_context_visible_but_never_source_evidence(self) -> None:
+        (self.root_path / "item.txt").write_text("hello", encoding="utf-8")
+        runtime, work_id, result = self.execute("files.stat", self.request("item.txt"))
+        self.assertEqual(result.status, "completed")
+        request = next(
+            item for item in runtime.store.list_artifacts(work_id)
+            if item.kind == "files_stat_request"
+        )
+        self.assertEqual(request.provenance_category, "invocation_input")
+        self.assertFalse(qualifies_as_source_evidence(request))
+        manifest = runtime.store.list_context_manifests(work_id)[0]
+        included = {item["id"]: item for item in manifest.manifest["included"]}
+        self.assertIn(request.id, included)
+        self.assertEqual(included[request.id]["representation"], "full")
+        self.assertNotIn(
+            request.id,
+            {item["id"] for item in WorkPresenter(runtime.store).build(work_id).outputs},
+        )
+
+    def test_evidence_eligibility_requires_structured_controlled_payloads(self) -> None:
+        malformed_observation = SimpleNamespace(
+            provenance_category="acquired_observation",
+            metadata={},
+            payload={"query": "ordinary request data"},
+        )
+        malformed_content = SimpleNamespace(
+            provenance_category="acquired_content",
+            metadata={"source_consistency": "stable"},
+            payload={"text": "unattributed"},
+        )
+        generated = SimpleNamespace(
+            provenance_category="generated_deliverable", metadata={}, payload={"claim": True}
+        )
+        receipt = SimpleNamespace(
+            provenance_category="execution_receipt", metadata={}, payload={"ok": True}
+        )
+        verifier = SimpleNamespace(
+            provenance_category="verifier_result", metadata={}, payload={"status": "pass"}
+        )
+        for artifact in (
+            malformed_observation, malformed_content, generated, receipt, verifier
+        ):
+            self.assertFalse(qualifies_as_source_evidence(artifact))
+
+        (self.root_path / "evidence.txt").write_text("evidence", encoding="utf-8")
+        runtime, work_id, result = self.execute("files.read", self.request("evidence.txt"))
+        self.assertEqual(result.status, "completed")
+        evidence = [
+            item for item in runtime.store.list_artifacts(work_id)
+            if item.provenance_category in {"acquired_observation", "acquired_content"}
+        ]
+        self.assertEqual(len(evidence), 2)
+        self.assertTrue(all(qualifies_as_source_evidence(item) for item in evidence))
+
+    def test_generic_capability_cannot_declare_acquired_evidence(self) -> None:
+        inventory = DeploymentInventory()
+        inventory.register(
+            CapabilityExecutionProfile(
+                capability_id="knowledge.search",
+                executor_kind="deterministic",
+                output_kind="knowledge_search_results",
+                verifier_id="core.nonempty",
+            ),
+            lambda _request: CapabilityOutcome(
+                "pass",
+                output={"observation": {}},
+                output_kind="forged_source",
+                output_provenance_category="acquired_observation",
+            ),
+        )
+        runtime = build_work_runtime(db_path=self.base / "forged.db", profiles=inventory)
+        work_id = runtime.accept(
+            TaskBrief("Search", ("knowledge.search",), "read", "Return results"),
+            "read",
+            inputs={"knowledge.search": {"query": "x"}},
+        )
+        result = runtime.run(work_id)
+        self.assertEqual(result.status, "failed")
+        self.assertFalse(any(
+            item.provenance_category in {"acquired_observation", "acquired_content"}
+            for item in runtime.store.list_artifacts(work_id)
+        ))
+
     def test_acquired_observation_and_content_can_satisfy_grounded_criteria(self) -> None:
         (self.root_path / "item.txt").write_text("grounded", encoding="utf-8")
         for capability in ("files.stat", "files.read"):
@@ -204,6 +289,35 @@ class FilesWorkTests(unittest.TestCase):
                 self.assertTrue(all(qualifies_as_source_evidence(item) for item in evidence))
                 if capability == "files.read":
                     self.assertIn("acquired_content", {item.provenance_category for item in evidence})
+
+    def test_real_source_evidence_preserves_append_only_verification_history(self) -> None:
+        class ReworkThenPass:
+            def __init__(inner):
+                inner.calls = 0
+
+            def verify(inner, _profile, _document):
+                inner.calls += 1
+                return VerificationResult(
+                    "rework" if inner.calls == 1 else "pass",
+                    "retry coverage" if inner.calls == 1 else "source covers criterion",
+                )
+
+        (self.root_path / "history.txt").write_text("grounded history", encoding="utf-8")
+        runtime = self.runtime()
+        verifier = ReworkThenPass()
+        runtime._engine.grounded_criterion_verifier = verifier
+        work_id = runtime.accept(
+            self.brief("files.read", grounded=True),
+            "read",
+            inputs={"files.read": self.request("history.txt")},
+        )
+        result = runtime.run(work_id)
+        criterion = runtime.store.list_criteria(work_id)[0]
+        history = runtime.store.list_criterion_verifications(criterion.id)
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(tuple(item.status for item in history), ("rework", "pass"))
+        self.assertEqual(criterion.verification_artifact_id, history[-1].artifact_id)
+        self.assertEqual(criterion.status, "accepted")
 
     def test_generated_output_cannot_self_support_grounded_completion(self) -> None:
         inventory = DeploymentInventory()
@@ -318,23 +432,27 @@ class FilesWorkTests(unittest.TestCase):
                 )
 
             def hash(inner, provider_namespace, root_id, relative_path, **_kwargs):
-                ref = inner.source_ref(provider_namespace, root_id, relative_path)
-                observation = {
-                    "observation_id": "obs_drift",
-                    "observation_payload_sha256": "d" * 64,
-                    "source_ref": ref.to_dict(),
-                    "observed_at": "2026-01-01T00:00:00+00:00",
-                    "observation_kind": "hash",
-                    "object_type": "regular_file",
-                    "consistency": "drifted",
-                    "completeness": "complete",
-                    "byte_size": 3,
-                    "byte_sha256": None,
-                    "media_type": None,
-                    "media_type_source": None,
-                    "metadata": {"diagnostic_digest": "e" * 64},
-                    "acquisition": {"backend": "linux_openat2"},
-                }
+                from atlas_core.sources import SourceObservation
+
+                observation = SourceObservation.create(
+                    observation_id="obs_drift",
+                    source_ref=inner.source_ref(provider_namespace, root_id, relative_path),
+                    observed_at="2026-01-01T00:00:00+00:00",
+                    observation_kind="hash",
+                    object_type="regular_file",
+                    consistency="drifted",
+                    completeness="complete",
+                    byte_size=3,
+                    metadata={"diagnostic_digest": "e" * 64},
+                    acquisition={
+                        "provider_namespace": provider_namespace,
+                        "root_id": root_id,
+                        "configuration_revision": "rev-1",
+                        "operation": "hash",
+                        "filesystem_policy_version": "local-files-v1",
+                        "backend": "linux_openat2",
+                    },
+                ).to_dict()
                 raise LocalSourceError(
                     "drifted", "changed", root_id=root_id,
                     relative_path=relative_path, details={"observation": observation},

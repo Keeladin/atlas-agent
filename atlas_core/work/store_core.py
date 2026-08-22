@@ -381,6 +381,93 @@ class WorkStoreCoreMixin:
         artifact_id: str | None = None,
         provenance_category: str = "generated_deliverable",
     ) -> ArtifactRecord:
+        if provenance_category in {"acquired_observation", "acquired_content"}:
+            raise ValueError(
+                "Acquired source evidence requires put_acquired_artifact()."
+            )
+        return self._put_artifact(
+            work_id,
+            kind=kind,
+            payload=payload,
+            step_id=step_id,
+            metadata=metadata,
+            artifact_id=artifact_id,
+            provenance_category=provenance_category,
+        )
+
+    def put_acquired_artifact(
+        self,
+        work_id: str,
+        *,
+        kind: str,
+        payload: Any,
+        provenance_category: str,
+        step_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        artifact_id: str | None = None,
+    ) -> ArtifactRecord:
+        from atlas_core.evidence import (
+            valid_acquired_content_payload,
+            valid_source_observation_payload,
+        )
+
+        valid = (
+            valid_source_observation_payload(payload)
+            if provenance_category == "acquired_observation"
+            else valid_acquired_content_payload(payload)
+            if provenance_category == "acquired_content"
+            else False
+        )
+        if not valid:
+            raise ValueError("Acquired source artifact payload is invalid.")
+        return self._put_artifact(
+            work_id,
+            kind=kind,
+            payload=payload,
+            step_id=step_id,
+            metadata=metadata,
+            artifact_id=artifact_id,
+            provenance_category=provenance_category,
+        )
+
+    def replicate_source_artifact(
+        self,
+        artifact_id: str,
+        *,
+        work_id: str,
+        step_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> ArtifactRecord:
+        from atlas_core.evidence import qualifies_as_source_evidence
+
+        origin = self.get_artifact(artifact_id)
+        if not qualifies_as_source_evidence(origin):
+            raise ValueError("Only qualifying source evidence can be replicated.")
+        return self.put_acquired_artifact(
+            work_id,
+            step_id=step_id,
+            kind=origin.kind,
+            payload=origin.payload,
+            metadata={
+                **origin.metadata,
+                "origin_artifact_id": origin.id,
+                "origin_artifact_sha256": origin.sha256,
+                **(metadata or {}),
+            },
+            provenance_category=origin.provenance_category,
+        )
+
+    def _put_artifact(
+        self,
+        work_id: str,
+        *,
+        kind: str,
+        payload: Any,
+        step_id: str | None,
+        metadata: dict[str, Any] | None,
+        artifact_id: str | None,
+        provenance_category: str,
+    ) -> ArtifactRecord:
         self.get_work(work_id)
         if step_id is not None and self.get_step(step_id).work_id != work_id:
             raise ValueError("Artifact step must belong to the same work.")
@@ -388,6 +475,7 @@ class WorkStoreCoreMixin:
         if not kind:
             raise ValueError("Artifact kind must not be empty.")
         if provenance_category not in {
+            "invocation_input",
             "acquired_observation",
             "acquired_content",
             "generated_deliverable",

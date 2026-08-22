@@ -412,7 +412,10 @@ class CompletionVerifier:
         payloads: list[Any] = []
         for artifact_id in dict.fromkeys(evidence_ids):
             artifact = self.store.get_artifact(artifact_id)
-            if artifact.kind in INTERNAL_ARTIFACT_KINDS:
+            if (
+                artifact.provenance_category == "invocation_input"
+                or artifact.kind in INTERNAL_ARTIFACT_KINDS
+            ):
                 continue
             payloads.append(artifact.payload)
         if payloads and any(check_deliverable(contract, payload)[0] for payload in payloads):

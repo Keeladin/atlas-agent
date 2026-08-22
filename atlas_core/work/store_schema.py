@@ -134,7 +134,7 @@ class WorkStoreSchemaMixin:
                     metadata_json TEXT NOT NULL,
                     provenance_category TEXT NOT NULL DEFAULT 'generated_deliverable'
                         CHECK (provenance_category IN
-                            ('acquired_observation','acquired_content','generated_deliverable',
+                            ('invocation_input','acquired_observation','acquired_content','generated_deliverable',
                              'execution_receipt','verifier_result')),
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (work_id) REFERENCES work(id) ON DELETE CASCADE,
@@ -308,6 +308,62 @@ class WorkStoreSchemaMixin:
                 );
                 """
             )
+
+            artifact_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(work_artifacts)")
+            }
+            if "provenance_category" not in artifact_columns:
+                db.execute(
+                    "ALTER TABLE work_artifacts ADD COLUMN provenance_category "
+                    "TEXT NOT NULL DEFAULT 'generated_deliverable'"
+                )
+                db.execute(
+                    "UPDATE work_artifacts SET provenance_category='execution_receipt' "
+                    "WHERE kind='execution_receipt'"
+                )
+                db.execute(
+                    "UPDATE work_artifacts SET provenance_category='verifier_result' "
+                    "WHERE kind IN ('verification_result','criterion_verification_result')"
+                )
+
+            artifact_sql_row = db.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='work_artifacts'"
+            ).fetchone()
+            artifact_sql = "" if artifact_sql_row is None else str(artifact_sql_row["sql"] or "")
+            if "invocation_input" not in artifact_sql:
+                db.commit()
+                db.execute("PRAGMA foreign_keys = OFF")
+                db.executescript(
+                    """
+                    CREATE TABLE work_artifacts_v5 (
+                        id TEXT PRIMARY KEY,
+                        work_id TEXT NOT NULL,
+                        step_id TEXT,
+                        kind TEXT NOT NULL,
+                        payload_json TEXT NOT NULL,
+                        sha256 TEXT NOT NULL,
+                        metadata_json TEXT NOT NULL,
+                        provenance_category TEXT NOT NULL DEFAULT 'generated_deliverable'
+                            CHECK (provenance_category IN
+                                ('invocation_input','acquired_observation','acquired_content',
+                                 'generated_deliverable','execution_receipt','verifier_result')),
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (work_id) REFERENCES work(id) ON DELETE CASCADE,
+                        FOREIGN KEY (step_id) REFERENCES work_steps(id) ON DELETE SET NULL
+                    );
+                    INSERT INTO work_artifacts_v5
+                        (id,work_id,step_id,kind,payload_json,sha256,metadata_json,
+                         provenance_category,created_at)
+                    SELECT id,work_id,step_id,kind,payload_json,sha256,metadata_json,
+                           provenance_category,created_at
+                    FROM work_artifacts;
+                    DROP TABLE work_artifacts;
+                    ALTER TABLE work_artifacts_v5 RENAME TO work_artifacts;
+                    CREATE INDEX idx_work_artifacts_work
+                        ON work_artifacts(work_id, created_at, id);
+                    """
+                )
+                db.execute("PRAGMA foreign_keys = ON")
 
             # Version 3 adds policy/provenance columns to existing durable rows.
             # CREATE TABLE IF NOT EXISTS does not evolve pre-existing tables.

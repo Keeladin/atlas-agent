@@ -134,7 +134,7 @@ class WorkRuntime:
                         "capability": pin.capability_id,
                         "source_consistency": "stable",
                     },
-                    provenance_category="acquired_observation",
+                    provenance_category="invocation_input",
                 )
                 input_ids = (request.id,)
             record = store.add_step(

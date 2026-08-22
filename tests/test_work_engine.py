@@ -165,7 +165,7 @@ class WorkEngineTests(unittest.TestCase):
         self.assertTrue(store.context_manifest_for_execution(executions[0].id))
         self.assertEqual(runtime.get(work_id).status, "completed")
 
-    def test_grounded_criterion_uses_linked_source_evidence_and_append_only_verdict(self) -> None:
+    def test_invocation_input_cannot_ground_a_criterion(self) -> None:
         def grounded_handler(request):
             return CapabilityOutcome(
                 "pass",
@@ -195,7 +195,8 @@ class WorkEngineTests(unittest.TestCase):
         inventory = DeploymentInventory()
         inventory.register(_profile("automation.workflow.create"), grounded_handler)
         runtime = self._runtime(inventory)
-        runtime._engine.grounded_criterion_verifier = PassingGroundedVerifier()
+        grounded_verifier = PassingGroundedVerifier()
+        runtime._engine.grounded_criterion_verifier = grounded_verifier
         work_id = runtime.accept(
             TaskBrief(
                 objective="Create automation from the supplied requirement",
@@ -211,20 +212,18 @@ class WorkEngineTests(unittest.TestCase):
         result = engine_run_with_confirmation(runtime, runtime._engine, contract, report)
         store = runtime.store
         criterion = store.list_criteria(work_id)[0]
-        claims = store.list_claims(work_id)
         history = store.list_criterion_verifications(criterion.id)
-        claim = next(item for item in claims if item.execution_id == history[-1].execution_id)
         executions = store.list_executions(work_id)
         output_ids = {artifact_id for execution in executions for artifact_id in execution.output_artifact_ids}
-        self.assertEqual(result.status, "completed")
-        self.assertEqual(criterion.status, "accepted")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(criterion.status, "pending")
         self.assertEqual(criterion.satisfaction_policy, "evidence_grounded")
         self.assertEqual(criterion.verification_artifact_id, history[-1].artifact_id)
-        self.assertEqual(tuple(item.status for item in history), ("rework", "pass"))
-        self.assertEqual(claim.execution_id, history[-1].execution_id)
-        self.assertIsNotNone(claim.context_manifest_id)
-        self.assertEqual(set(criterion.evidence_artifact_ids), set(claim.evidence_artifact_ids))
-        self.assertFalse(set(criterion.evidence_artifact_ids) & output_ids)
+        self.assertTrue(history)
+        self.assertTrue(all(item.status == "rework" for item in history))
+        self.assertEqual(criterion.evidence_artifact_ids, ())
+        self.assertEqual(grounded_verifier.calls, 0)
+        self.assertTrue(output_ids)
 
     def test_repeated_capability_occurrences_compile_to_distinct_steps_and_inputs(self) -> None:
         inventory = DeploymentInventory()

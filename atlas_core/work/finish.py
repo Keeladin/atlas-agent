@@ -25,6 +25,35 @@ class WorkFinishMixin:
         context: dict[str, Any],
         outcome: CapabilityOutcome,
     ) -> None:
+        acquired_categories = {"acquired_observation", "acquired_content"}
+        declares_acquired = (
+            outcome.output_provenance_category in acquired_categories
+            or any(
+                item.provenance_category in acquired_categories
+                for item in outcome.artifacts
+            )
+        )
+        binding = pin.binding
+        files_operation = pin.capability_id.removeprefix("files.")
+        expected_tool_prefix = f"native.local_sources.{files_operation}@"
+        acquisition_authorized = (
+            pin.executor_kind == "tool"
+            and pin.capability_id in {"files.list", "files.stat", "files.hash", "files.read"}
+            and binding is not None
+            and binding.capability_id == pin.capability_id
+            and binding.provider == "local_sources"
+            and binding.implementation == files_operation
+            and len(pin.tools) == 1
+            and pin.tools[0].startswith(expected_tool_prefix)
+        )
+        if declares_acquired and not acquisition_authorized:
+            outcome = CapabilityOutcome(
+                "fail",
+                receipt=outcome.receipt,
+                metrics=outcome.metrics,
+                error="capability is not authorized to persist acquired source evidence",
+            )
+
         if outcome.status == "pass" and pin.output_schema:
             try:
                 validate_json(outcome.output, pin.output_schema, path="$.output")
@@ -107,7 +136,12 @@ class WorkFinishMixin:
                     artifacts=outcome.artifacts,
                 )
             else:
-                artifact = self.store.put_artifact(
+                writer = (
+                    self.store.put_acquired_artifact
+                    if outcome.output_provenance_category in acquired_categories
+                    else self.store.put_artifact
+                )
+                artifact = writer(
                     step.work_id,
                     step_id=step.id,
                     kind=outcome.output_kind or pin.output_kind,
@@ -122,7 +156,12 @@ class WorkFinishMixin:
                 output_ids.append(artifact.id)
 
         for declared in outcome.artifacts:
-            artifact = self.store.put_artifact(
+            writer = (
+                self.store.put_acquired_artifact
+                if declared.provenance_category in acquired_categories
+                else self.store.put_artifact
+            )
+            artifact = writer(
                 step.work_id,
                 step_id=step.id,
                 kind=declared.kind,

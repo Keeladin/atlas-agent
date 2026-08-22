@@ -448,25 +448,21 @@ def register_knowledge_capabilities(
                 origin = store.get_artifact(origin_id)
             except Exception:
                 return None
-            if origin.provenance_category not in {"acquired_observation", "acquired_content"}:
-                return None
             if origin.work_id == request.work_id:
                 copied[origin_id] = origin.id
                 return origin.id
-            replica = store.put_artifact(
-                request.work_id,
-                step_id=request.step_id,
-                kind=origin.kind,
-                payload=origin.payload,
-                metadata={
-                    **origin.metadata,
-                    "origin_artifact_id": origin.id,
-                    "origin_artifact_sha256": origin.sha256,
-                    "execution_id": request.execution_id,
-                    "purpose": "knowledge_source_evidence",
-                },
-                provenance_category=origin.provenance_category,
-            )
+            try:
+                replica = store.replicate_source_artifact(
+                    origin.id,
+                    work_id=request.work_id,
+                    step_id=request.step_id,
+                    metadata={
+                        "execution_id": request.execution_id,
+                        "purpose": "knowledge_source_evidence",
+                    },
+                )
+            except ValueError:
+                return None
             if replica.sha256 != origin.sha256:
                 raise ValueError("Knowledge source evidence replica hash mismatch.")
             copied[origin_id] = replica.id

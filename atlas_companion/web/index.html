@@ -86,11 +86,10 @@
         </section>
 
         <section class="screen" id="knowledge-screen">
-          <div class="section-heading"><div><h2>Knowledge</h2><p>Digital library and research. Indexing is Work; the corpus lives here. This is not the web.</p></div></div>
+          <div class="section-heading"><div><h2>Knowledge</h2><p>Digital library and research. The corpus lives here. This is not the web.</p></div></div>
           <div class="filters" id="knowledge-tabs" role="tablist">
             <button class="filter active" data-knowledge-view="library">Library</button>
             <button class="filter" data-knowledge-view="search">Search</button>
-            <button class="filter" data-knowledge-view="indexing">Indexing</button>
           </div>
           <div class="metric-grid" id="knowledge-metrics"></div>
           <div id="knowledge-library">
@@ -108,26 +107,6 @@
               </form>
               <div id="knowledge-hits"></div>
             </article>
-          </div>
-          <div id="knowledge-indexing" hidden>
-            <div class="two-col">
-              <article class="panel">
-                <div class="panel-head"><h3>Index a text source</h3></div>
-                <form id="knowledge-ingest">
-                  <label><span>Server path</span><input name="source_path" placeholder="/home/jaco/Projects/atlas-agent/README.md" required></label>
-                  <p class="technical" id="file-meta">Path and sha256 are captured on this host. The body is not copied into the task artifact.</p>
-                  <div class="form-actions">
-                    <button class="secondary" type="button" id="inspect-path">Inspect path</button>
-                    <button class="primary" type="submit">Create ingest task</button>
-                  </div>
-                  <p id="index-status" role="status"></p>
-                </form>
-              </article>
-              <article class="panel">
-                <div class="panel-head"><h3>Indexing jobs</h3><span class="muted-panel">Execution lives in Work</span></div>
-                <div id="knowledge-jobs"></div>
-              </article>
-            </div>
           </div>
         </section>
 

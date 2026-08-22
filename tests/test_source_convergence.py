@@ -7,7 +7,6 @@ import unittest
 from pathlib import Path
 
 import atlas_core.__main__ as cli
-from atlas_companion.server import CompanionService
 from atlas_core.advanced.brief import TaskBrief
 from atlas_core.knowledge import KnowledgeStore, register_knowledge_capabilities
 from atlas_core.knowledge import capabilities as knowledge_capabilities
@@ -168,22 +167,6 @@ class SourceConvergenceTests(unittest.TestCase):
         cli_index = inspect.getsource(cli.main).split('if args.command == "search":', 1)[0]
         for forbidden in ("read_text(", ".stat(", ".resolve(", "normalized_text_sha256"):
             self.assertNotIn(forbidden, cli_index)
-        companion_source = inspect.getsource(CompanionService.stat_source)
-        for forbidden in ("Path(", "read_text(", ".stat(", ".resolve("):
-            self.assertNotIn(forbidden, companion_source)
-
-    def test_companion_rejects_arbitrary_path_shape_and_uses_files_stat(self):
-        (self.root / "note.txt").write_text("hello", encoding="utf-8")
-        service = CompanionService(db_path=self.db, work_runtime=self.runtime)
-        with self.assertRaises(TypeError):
-            service.stat_source("/etc/passwd")
-        result = service.stat_source(
-            provider_namespace="local", root_id="docs", relative_path="note.txt",
-            configuration_revision="rev-1",
-        )
-        self.assertEqual(result["observation"]["source_ref"]["relative_path"], "note.txt")
-        execution = self.runtime.store.list_executions(result["work_id"])[0]
-        self.assertEqual(execution.capability, "files.stat")
 
 
 if __name__ == "__main__":

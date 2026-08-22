@@ -59,32 +59,6 @@ def is_knowledge_question(text: str) -> bool:
     return first in _QUESTION_STARTERS
 
 
-_INGEST_PREFIXES = (
-    "Index local knowledge source ",
-    "Index local knowledge source:",
-    "Index knowledge source ",
-    "Ingest local knowledge source ",
-    "Ingest local knowledge source:",
-)
-_INGEST_SUFFIXES = {".md", ".txt", ".rst", ".json"}
-
-
-def parse_ingest_objective(objective: str) -> str | None:
-    """Return a source name or path when the objective is an ingest request."""
-    text = (objective or "").strip().strip('"').strip("'")
-    if not text:
-        return None
-    lowered = text.casefold()
-    for prefix in _INGEST_PREFIXES:
-        if lowered.startswith(prefix.casefold()):
-            return text[len(prefix) :].strip() or None
-    if lowered.startswith("index "):
-        rest = text[6:].strip()
-        if any(rest.casefold().endswith(suffix) for suffix in _INGEST_SUFFIXES):
-            return rest
-    return None
-
-
 def _content_tokens(text: str) -> set[str]:
     return {
         token

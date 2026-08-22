@@ -1,7 +1,6 @@
 from .capabilities import (
     grounded_answer_from_hits,
     is_knowledge_question,
-    parse_ingest_objective,
     parse_search_objective,
     register_knowledge_capabilities,
 )
@@ -36,7 +35,6 @@ __all__ = [
     "grounded_answer_from_hits",
     "is_knowledge_question",
     "normalize_knowledge_text",
-    "parse_ingest_objective",
     "parse_search_objective",
     "register_knowledge_capabilities",
     "normalized_text_sha256",

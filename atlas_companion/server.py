@@ -28,7 +28,6 @@ from atlas_companion.credentials import CredentialStore
 from atlas_companion.intent import preview_intent
 from atlas_companion.telemetry import TelemetryCollector
 from atlas_core.context import ASSEMBLER_VERSION
-from atlas_core.advanced.brief import TaskBrief
 from atlas_core.knowledge import KnowledgeStore
 
 
@@ -83,13 +82,6 @@ class CompanionService:
         raise CompanionDisconnectedError(
             "Companion is disconnected from Work execution"
         )
-
-    def _require_files_work(self):
-        if self.work_runtime is None or self.work_runtime._profiles.get("files.stat") is None:
-            raise CompanionDisconnectedError(
-                "Companion source stat is disconnected from controlled Files Work execution"
-            )
-        return self.work_runtime
 
     def tasks(self):
         return []
@@ -409,56 +401,6 @@ class CompanionService:
             ],
         }
 
-    def stat_source(
-        self,
-        *,
-        provider_namespace: str,
-        root_id: str,
-        relative_path: str,
-        configuration_revision: str,
-    ):
-        runtime = self._require_files_work()
-        work_id = runtime.accept(
-            TaskBrief(
-                objective=f"Stat configured local source {root_id}/{relative_path}",
-                capabilities=("files.stat",),
-                required_authority="read",
-                expected_effect="A controlled source metadata observation is persisted.",
-            ),
-            "read",
-            inputs={
-                "files.stat": {
-                    "provider_namespace": provider_namespace,
-                    "root_id": root_id,
-                    "relative_path": relative_path,
-                    "configuration_revision": configuration_revision,
-                }
-            },
-        )
-        result = runtime.run(work_id)
-        if result.status != "completed":
-            raise ValueError(result.reason or "Controlled source stat did not complete.")
-        artifacts = [
-            artifact
-            for artifact in runtime.store.list_artifacts(work_id)
-            if artifact.kind == "files_stat_observation"
-            and artifact.provenance_category == "acquired_observation"
-        ]
-        if not artifacts:
-            raise RuntimeError("Controlled source stat produced no observation artifact.")
-        return {
-            "work_id": work_id,
-            "observation_artifact_id": artifacts[-1].id,
-            "observation": artifacts[-1].payload["observation"],
-        }
-
-    def ingest(self, body: dict[str, Any]):
-        self._require_work()
-
-    def search_task(self, body: dict[str, Any]):
-        self._require_work()
-
-
 class CompanionApp:
     def __init__(self, service, static_dir):
         self.service, self.static_dir = service, static_dir
@@ -497,17 +439,6 @@ class CompanionApp:
                     HTTPStatus.OK,
                     self.service.search_knowledge(query.get("q", ""), int(query.get("limit") or 8)),
                 )
-            if method == "GET" and path == "/api/knowledge/stat":
-                return self._json(
-                    start_response,
-                    HTTPStatus.OK,
-                    self.service.stat_source(
-                        provider_namespace=query.get("provider_namespace", ""),
-                        root_id=query.get("root_id", ""),
-                        relative_path=query.get("relative_path", ""),
-                        configuration_revision=query.get("configuration_revision", ""),
-                    ),
-                )
             if method == "POST" and path == "/api/tasks/preview":
                 return self._json(start_response, HTTPStatus.OK, self.service.preview_task(self._body(environ)))
             if method == "POST" and path == "/api/ask":
@@ -521,10 +452,6 @@ class CompanionApp:
                 return self._json(start_response, HTTPStatus.OK, self.service.delete_task(task_id, confirm_id=confirm))
             if method == "POST" and path == "/api/tasks":
                 return self._json(start_response, HTTPStatus.CREATED, self.service.create_and_run(self._body(environ)))
-            if method == "POST" and path == "/api/knowledge/ingest":
-                return self._json(start_response, HTTPStatus.CREATED, self.service.ingest(self._body(environ)))
-            if method == "POST" and path == "/api/knowledge/search":
-                return self._json(start_response, HTTPStatus.CREATED, self.service.search_task(self._body(environ)))
             if method == "POST" and path.endswith("/run") and path.startswith("/api/tasks/"):
                 return self._json(start_response, HTTPStatus.OK, self.service.run(path.split("/")[3]))
             if method == "POST" and path.endswith("/cancel") and path.startswith("/api/tasks/"):

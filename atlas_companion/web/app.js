@@ -28,10 +28,9 @@ const workViewTitles = {
 const knowledgeViewTitles = {
   library: "Library",
   search: "Search",
-  indexing: "Indexing",
 };
 const terminal = new Set(["completed", "failed", "cancelled"]);
-const recurringWorkflows = new Set(["morning_v1", "knowledge_ingest"]);
+const recurringWorkflows = new Set(["morning_v1"]);
 let busy = false;
 
 async function api(url, options = {}) {
@@ -125,7 +124,6 @@ function setKnowledgeView(view, { syncHash = true } = {}) {
   });
   $("#knowledge-library").hidden = view !== "library";
   $("#knowledge-search-view").hidden = view !== "search";
-  $("#knowledge-indexing").hidden = view !== "indexing";
   $("#crumb").textContent = `Knowledge / ${knowledgeViewTitles[view]}`;
   renderKnowledge();
   if (syncHash) writeHash("knowledge", { knowledgeView: view });
@@ -243,38 +241,17 @@ function renderDocuments() {
     $("#knowledge-docs").innerHTML = '<div class="empty"><p>No documents are indexed yet.</p></div>';
     return;
   }
-  $("#knowledge-docs").innerHTML = `<table class="data-table"><thead><tr><th>Title</th><th>Source</th><th>Chunks</th><th>Hash</th></tr></thead><tbody>${
-    state.documents.map((doc) => `<tr><td>${esc(doc.title)}</td><td class="technical">${esc(doc.source_uri || "inline")}</td><td>${esc(doc.chunk_count)}</td><td class="technical">${esc(shortHash(doc.content_sha256))}</td></tr>`).join("")
+  $("#knowledge-docs").innerHTML = `<table class="data-table"><thead><tr><th>Document</th><th>Chunks</th><th>Normalized hash</th></tr></thead><tbody>${
+    state.documents.map((doc) => `<tr><td class="technical">${esc(doc.id)}</td><td>${esc(doc.chunk_count)}</td><td class="technical">${esc(shortHash(doc.normalized_text_sha256))}</td></tr>`).join("")
   }</tbody></table>`;
 }
 
-function ingestJobs() {
-  return state.tasks.filter((task) => workflowOf(task) === "knowledge_ingest");
-}
-
-function renderIndexingJobs() {
-  const jobs = ingestJobs();
-  const root = $("#knowledge-jobs");
-  if (!root) return;
-  if (!jobs.length) {
-    root.innerHTML = '<div class="empty"><p>No indexing jobs yet. Execution is recorded as Work.</p></div>';
-    return;
-  }
-  root.innerHTML = jobs.map(record).join("");
-  bindTaskLinks(root);
-}
-
 function renderKnowledge() {
-  const jobs = ingestJobs();
   $("#knowledge-metrics").innerHTML = [
     metric("Library", state.documents.length, "Indexed documents"),
-    metric("Indexing jobs", jobs.length, `${jobs.filter(isOpen).length} open`),
-    metric("Completed ingests", jobs.filter((task) => task.status === "completed").length, "Path/hash-backed outcomes"),
-    metric("Failed ingests", jobs.filter((task) => task.status === "failed").length, "Retry from Work"),
   ].join("");
   renderHits(state.hits);
   renderDocuments();
-  renderIndexingJobs();
 }
 
 function renderPresentedResult(data) {
@@ -671,27 +648,6 @@ async function refresh() {
   await Promise.all([loadTasks(), loadHealth(), loadKnowledge(), loadApprovals(), loadAsk()]);
 }
 
-async function inspectPath() {
-  const path = $("#knowledge-ingest [name=source_path]").value.trim();
-  const meta = $("#file-meta");
-  const status = $("#index-status");
-  if (!path) {
-    meta.textContent = "Enter a path on this Atlas host.";
-    return;
-  }
-  status.textContent = "Inspecting host path…";
-  try {
-    const data = await api(`/api/knowledge/stat?path=${encodeURIComponent(path)}`);
-    meta.textContent = `${data.title} · ${data.byte_size} bytes · sha256 ${data.content_sha256} · ${data.path}`;
-    status.textContent = "Path is readable. Work execution is disconnected from Companion.";
-    return data;
-  } catch (error) {
-    meta.textContent = error.message;
-    status.textContent = "";
-    throw error;
-  }
-}
-
 function applyLocation() {
   const parsed = parseHash();
   state.workView = parsed.workView;
@@ -726,7 +682,6 @@ document.querySelectorAll("#work-filters .filter").forEach((button) => {
 });
 $("#refresh-health").onclick = loadHealth;
 $("#refresh-models").onclick = loadModels;
-$("#inspect-path").onclick = () => inspectPath().catch(() => {});
 $("#knowledge-search").onsubmit = async (event) => {
   event.preventDefault();
   const query = new FormData(event.target).get("q");
@@ -735,34 +690,6 @@ $("#knowledge-search").onsubmit = async (event) => {
     renderHits(state.hits);
   } catch (error) {
     toast(error.message);
-  }
-};
-$("#knowledge-ingest").onsubmit = async (event) => {
-  event.preventDefault();
-  if (busy) return;
-  const status = $("#index-status");
-  busy = true;
-  status.textContent = "Creating path-backed ingest task…";
-  try {
-    const form = new FormData(event.target);
-    const data = await api("/api/knowledge/ingest", {
-      method: "POST",
-      body: JSON.stringify({ source_path: form.get("source_path") }),
-    });
-    const taskId = data.presentation?.task_id;
-    status.textContent = taskId ? `Ingest recorded as Work ${taskId}.` : "Ingest task finished.";
-    toast("Knowledge ingest recorded.");
-    await refresh();
-    showScreen("knowledge", { knowledgeView: "indexing" });
-    if (taskId) {
-      status.innerHTML = `Ingest recorded. <button class="work-chip" data-task-id="${esc(taskId)}">Open in Work</button>`;
-      bindTaskLinks(status);
-    }
-  } catch (error) {
-    status.textContent = error.message;
-    toast(error.message);
-  } finally {
-    busy = false;
   }
 };
 $("#new-task").onsubmit = async (event) => {

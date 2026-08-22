@@ -23,8 +23,6 @@ from atlas_companion.intent import preview_intent
 from atlas_companion.local_models import LocalModelError, LocalModelManager
 from atlas_companion.server import CompanionApp, CompanionDisconnectedError, CompanionService
 from atlas_companion import telemetry
-from atlas_core.sources import LocalRootConfig, LocalRootRegistry
-from atlas_core.work import build_work_runtime
 
 
 class FakeService:
@@ -61,11 +59,8 @@ class FakeService:
     def activate_local_model(self, slot_id): return {"id": slot_id, "status": "loaded"}
     def health(self): return {"atlas": {"healthy": True, "running_executions": 0}}
     def approvals(self): return [{"id": "approval_one", "task_id": "task_one", "requested_action": "ingest"}]
-    def documents(self): return [{"id": "doc_one", "title": "README.md", "chunk_count": 2}]
+    def documents(self): return [{"id": "doc_one", "normalized_text_sha256": "ab" * 32, "chunk_count": 2}]
     def search_knowledge(self, query, limit=8): return {"query": query, "results": [{"title": "README.md", "text": query}]}
-    def stat_source(self, **source): return {"observation": {"source_ref": source, "byte_size": 12}}
-    def ingest(self, body): return self.detail("task_ingest")
-    def search_task(self, body): return self.detail("task_search")
 
 
 class CompanionPwaTests(unittest.TestCase):
@@ -100,12 +95,13 @@ class CompanionPwaTests(unittest.TestCase):
         self.assertIn(b'data-work-view="recurring"', body)
         self.assertIn(b"personal-screen", body)
         self.assertIn(b"not connected yet", body)
-        self.assertIn(b"Index a text source", body)
+        self.assertNotIn(b"Index a text source", body)
+        self.assertNotIn(b"source_path", body)
         self.assertIn(b"cloud-providers", body)
         self.assertIn(b"local-models", body)
         self.assertIn(b'data-knowledge-view="library"', body)
         self.assertIn(b'data-knowledge-view="search"', body)
-        self.assertIn(b'data-knowledge-view="indexing"', body)
+        self.assertNotIn(b'data-knowledge-view="indexing"', body)
         self.assertIn(b"Personal", body); self.assertIn(b"Models", body); self.assertIn(b"Settings", body)
         self.assertNotIn(b"Operational picture", body)
         self.assertNotIn(b">Today</span>", body)
@@ -115,43 +111,19 @@ class CompanionPwaTests(unittest.TestCase):
         status, body = self.call("GET", "/api/approvals")
         self.assertEqual(status, "200 OK"); self.assertEqual(json.loads(body)[0]["id"], "approval_one")
         status, body = self.call("GET", "/api/knowledge/documents")
-        self.assertEqual(status, "200 OK"); self.assertEqual(json.loads(body)[0]["title"], "README.md")
+        self.assertEqual(status, "200 OK"); self.assertEqual(json.loads(body)[0]["id"], "doc_one")
         status, body = self.call("GET", "/api/knowledge/search?q=ContextBuilder")
         self.assertEqual(status, "200 OK"); self.assertEqual(json.loads(body)["query"], "ContextBuilder")
-        status, body = self.call("GET", "/api/knowledge/stat?provider_namespace=local&root_id=docs&configuration_revision=1&relative_path=readme.md")
-        self.assertEqual(status, "200 OK"); self.assertEqual(json.loads(body)["observation"]["byte_size"], 12)
-        status, body = self.call("POST", "/api/knowledge/ingest", b'{"source_path":"/tmp/readme.md"}')
-        self.assertEqual(status, "201 Created"); self.assertEqual(json.loads(body)["presentation"]["task_id"], "task_ingest")
 
 
 class CompanionKnowledgeServiceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = Path(self.tmp.name) / "atlas.db"
-        self.source = Path(self.tmp.name) / "note.md"
-        self.source.write_text("ContextBuilder assembles a bounded execution projection.\n", encoding="utf-8")
-        self.registry = LocalRootRegistry()
-        self.registry.register(LocalRootConfig(
-            root_id="docs", provider_namespace="local", host_path=self.tmp.name,
-            configuration_revision="1",
-        ))
-        self.runtime = build_work_runtime(
-            db_path=self.db, local_source_registry=self.registry,
-        )
-        self.service = CompanionService(db_path=self.db, work_runtime=self.runtime)
+        self.service = CompanionService(db_path=self.db)
 
     def tearDown(self):
-        self.registry.close()
         self.tmp.cleanup()
-
-    def test_stat_source_runs_through_controlled_files_work(self):
-        stat = self.service.stat_source(
-            provider_namespace="local", root_id="docs", relative_path="note.md",
-            configuration_revision="1",
-        )
-        self.assertEqual(stat["observation"]["source_ref"]["relative_path"], "note.md")
-        self.assertGreater(stat["observation"]["byte_size"], 0)
-        self.assertNotIn(str(Path(self.tmp.name).resolve()), json.dumps(stat))
 
     def test_cancel_and_run_are_disconnected(self):
         with self.assertRaises(CompanionDisconnectedError):
@@ -209,11 +181,6 @@ class CompanionIntentTests(unittest.TestCase):
         joined = " ".join(intent.criteria).casefold()
         self.assertIn("short story", joined)
         self.assertIn("believable", joined)
-
-    def test_preview_ingest_uses_modify_internal(self):
-        intent = preview_intent("Index local knowledge source /tmp/manual.md")
-        self.assertEqual(intent.authority, "modify_internal")
-        self.assertEqual(intent.workflow, "knowledge_ingest")
 
     def test_supplied_criteria_win(self):
         intent = preview_intent("Do the job", criteria=["Must cite sources"])

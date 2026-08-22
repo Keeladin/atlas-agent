@@ -6,7 +6,6 @@ from typing import Any, Iterable
 from atlas_core.deliverable import has_quality_criteria, infer_deliverable
 from atlas_core.knowledge import (
     is_knowledge_question,
-    parse_ingest_objective,
     parse_search_objective,
 )
 
@@ -50,8 +49,6 @@ def infer_criteria(objective: str, *, supplied: Iterable[str] = ()) -> tuple[str
     if given:
         return given
     text = (objective or "").strip()
-    if parse_ingest_objective(text):
-        return ("The source is durably indexed with chunk provenance.",)
     query = parse_search_objective(text)
     if query:
         if is_knowledge_question(query):
@@ -83,8 +80,6 @@ def infer_authority(objective: str, *, supplied: str | None = None) -> str:
     if raw and raw not in {"auto", "automatic"}:
         return supplied.strip()
     text = (objective or "").strip()
-    if parse_ingest_objective(text):
-        return "modify_internal"
     query = parse_search_objective(text)
     if query and not is_knowledge_question(query):
         return "read"
@@ -104,9 +99,7 @@ def preview_intent(
     resolved = infer_criteria(text, supplied=supplied)
     granted = infer_authority(text, supplied=authority)
     workflow = None
-    if parse_ingest_objective(text):
-        workflow = "knowledge_ingest"
-    elif parse_search_objective(text):
+    if parse_search_objective(text):
         workflow = "knowledge_search"
     contract = infer_deliverable(text, resolved)
     return TaskIntent(

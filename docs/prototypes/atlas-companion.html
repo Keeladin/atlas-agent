@@ -262,7 +262,7 @@
       <section class="screen" id="knowledge">
         <h2>Knowledge</h2>
         <p class="lede">Bulk files stay on disk. Atlas stores a control record, chunks and hashes — not the whole document in context.</p>
-        <div class="grid cols-2">
+        <div>
           <article class="card">
             <h3>Search local knowledge</h3>
             <div class="row">
@@ -270,16 +270,6 @@
               <button class="primary" id="do-search">Search</button>
             </div>
             <div id="hits" style="margin-top:0.8rem"></div>
-          </article>
-          <article class="card">
-            <h3>Index a text source</h3>
-            <label><span>File</span><input id="file" type="file" accept=".md,.txt,text/plain"></label>
-            <p class="muted mono" id="file-meta">No file selected. Path and sha256 will be captured; the body is not copied into the task artifact.</p>
-            <div class="row">
-              <button class="primary" id="do-index">Create ingest task</button>
-              <button class="ghost" id="do-clear">Clear</button>
-            </div>
-            <p class="muted" id="index-status"></p>
           </article>
         </div>
         <article class="card" style="margin-top:0.8rem">
@@ -297,8 +287,6 @@
         <article class="card" id="approval-card">
           <div class="row"><strong>Index Atlas Architecture.md</strong><span class="pill pending">pending</span></div>
           <p class="muted">Requested: knowledge.ingest_text · required authority: modify_internal</p>
-          <p class="mono">source_path = /home/jaco/Projects/atlas-agent/Atlas Architecture — Runtime and Topology.md</p>
-          <p class="mono">content_sha256 = 4e91… (capture-time) · file will be re-hashed at execution</p>
           <div class="row">
             <button class="primary" id="approve">Approve</button>
             <button class="danger" id="deny">Deny</button>
@@ -340,7 +328,7 @@
         steps: [
           ["1", "knowledge.ingest_text@1.1.0", "pass", "6 chunks · sha256 9f3c…"],
         ],
-        artifacts: "knowledge_ingest_request (path/hash) → knowledge_ingest_result",
+        artifacts: "controlled source artifacts → knowledge_ingest_result",
       },
       "t-morning": {
         filter: "completed",
@@ -364,7 +352,7 @@
         steps: [
           ["1", "knowledge.ingest_text@1.1.0", "blocked", "waiting on approval"],
         ],
-        artifacts: "knowledge_ingest_request control record only",
+        artifacts: "controlled source acquisition pending",
       },
     };
 
@@ -425,18 +413,6 @@
       ).join("");
     }
 
-    function hexPreview(buffer) {
-      const bytes = new Uint8Array(buffer.slice(0, 32));
-      return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
-    }
-
-    async function fileMeta(file) {
-      const buf = await file.arrayBuffer();
-      const digest = await crypto.subtle.digest("SHA-256", buf);
-      const hash = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
-      return { name: file.name, size: file.size, hash, preview: hexPreview(buf) };
-    }
-
     document.querySelectorAll(".nav-btn").forEach((btn) => {
       btn.addEventListener("click", () => show(btn.dataset.screen));
     });
@@ -463,33 +439,6 @@
           <p class="mono muted">chunk_…0002 · score 0.81 · sha256 a91e…</p>
         </article>
         <p class="muted">Query “${q}” returned source-grounded chunks. Atlas does not invent a summary above the evidence.</p>`;
-    };
-
-    document.getElementById("file").onchange = async (event) => {
-      const file = event.target.files[0];
-      if (!file) return;
-      const meta = await fileMeta(file);
-      document.getElementById("file-meta").textContent =
-        `source_path ≈ ${file.name} · ${file.size} bytes · content_sha256 ${meta.hash.slice(0, 12)}… · body stays out of context`;
-    };
-
-    document.getElementById("do-index").onclick = async () => {
-      const file = document.getElementById("file").files[0];
-      if (!file) {
-        toast("Choose a UTF-8 text file first.");
-        return;
-      }
-      const meta = await fileMeta(file);
-      document.getElementById("index-status").textContent =
-        "Created tsk_local · knowledge.ingest_text@1.1.0 · control artifact only · waiting for runtime verification.";
-      docs.unshift([file.name, file.name, "…", meta.hash.slice(0, 4) + "…" + meta.hash.slice(-3), "running"]);
-      renderDocs();
-      toast("Ingest task created. File body was not copied into the request artifact.");
-    };
-    document.getElementById("do-clear").onclick = () => {
-      document.getElementById("file").value = "";
-      document.getElementById("file-meta").textContent = "No file selected.";
-      document.getElementById("index-status").textContent = "";
     };
 
     document.getElementById("ask-send").onclick = () => {

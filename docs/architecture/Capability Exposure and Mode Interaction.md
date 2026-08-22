@@ -156,6 +156,23 @@ The brief names **capability ids**, not provider tools. Provider selection is no
 
 Intent != execution. A brief is not a send.
 
+If Advanced cannot map the objective to any briefable capability, it must **not**
+emit an empty or otherwise invalid `TaskBrief`. It returns a typed
+`UnsupportedBrief` (`status: unsupported`) with a human-readable reason and, when
+available, a `closest_capability` drawn only from the product catalogue — never a
+fabricated id. Companion presents this as non-executable (“Atlas can't turn this
+into Work yet”); it must not invent a capability to make the objective look
+briefable.
+
+### Catalogue gap (follow-up)
+
+`coding.software_engineering` exists in the product catalogue as bounded software
+implementation work, but it is not currently exposed for
+`ADVANCED_CONVERSATION` (`brief`). Objectives such as UI/product design therefore
+correctly land as `UnsupportedBrief` today. Whether that capability should become
+briefable — or whether product/UI design needs a distinct capability — is an
+open catalogue decision, not a reason to weaken `TaskBrief` invariants.
+
 ---
 
 ## Runtime frame

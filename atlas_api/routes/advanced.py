@@ -7,7 +7,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from atlas_api.auth import require_mutation_auth
-from atlas_core.advanced import AdvancedError
+from atlas_core.advanced import AdvancedError, TaskBrief, UnsupportedBrief
 
 
 async def create_brief(request: Request) -> JSONResponse:
@@ -22,12 +22,23 @@ async def create_brief(request: Request) -> JSONResponse:
     notes = (body or {}).get("notes")
     notes_text = None if notes is None else str(notes)
     try:
-        brief = request.app.state.services.advanced.brief(
+        result = request.app.state.services.advanced.brief(
             objective, notes=notes_text
         )
     except (AdvancedError, ValueError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
-    return JSONResponse(brief.as_dict())
+    if isinstance(result, UnsupportedBrief):
+        return JSONResponse(result.as_dict())
+    if not isinstance(result, TaskBrief):
+        return JSONResponse({"error": "Advanced returned an invalid brief"}, status_code=500)
+    if not result.capabilities:
+        return JSONResponse(
+            {"error": "TaskBrief requires at least one capability id"},
+            status_code=500,
+        )
+    payload = result.as_dict()
+    payload["status"] = "brief"
+    return JSONResponse(payload)
 
 
 routes = [

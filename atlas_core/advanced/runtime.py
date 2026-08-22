@@ -10,7 +10,7 @@ from atlas_core.providers import (
     load_provider_registry,
 )
 
-from .brief import TaskBrief, assemble_brief
+from .brief import TaskBrief, UnsupportedBrief, assemble_brief, unsupported_brief
 from .intent import interpret, parse_brief_payload
 from .prompts import build_model_input, build_system_prompt
 
@@ -36,7 +36,9 @@ class AdvancedRuntime:
         self._catalog = catalog
         self._system = build_system_prompt(catalog)
 
-    def brief(self, objective: str, *, notes: str | None = None) -> TaskBrief:
+    def brief(
+        self, objective: str, *, notes: str | None = None
+    ) -> TaskBrief | UnsupportedBrief:
         intent = interpret(objective, notes=notes)
         response = self._provider.generate(
             ModelRequest(
@@ -48,9 +50,21 @@ class AdvancedRuntime:
         )
         try:
             payload = parse_brief_payload(response.text)
+        except ValueError as exc:
+            raise AdvancedError(str(exc)) from exc
+
+        objective_text = payload["objective"] or intent.objective
+        capability_ids = payload["capabilities"]
+        if not capability_ids:
+            return unsupported_brief(
+                objective=objective_text,
+                reason=payload["reason"],
+                closest_capability=payload["closest_capability"],
+            )
+        try:
             return assemble_brief(
-                objective=payload["objective"] or intent.objective,
-                capability_ids=payload["capabilities"],
+                objective=objective_text,
+                capability_ids=capability_ids,
                 catalog=self._catalog,
                 expected_effect=payload["expected_effect"] or None,
                 constraints=payload["constraints"],
@@ -58,7 +72,15 @@ class AdvancedRuntime:
                 notes=payload["notes"] or intent.notes,
             )
         except ValueError as exc:
-            raise AdvancedError(str(exc)) from exc
+            message = str(exc)
+            if message.startswith("Unknown or non-briefable capability:"):
+                return unsupported_brief(
+                    objective=objective_text,
+                    reason=payload["reason"] or message,
+                    closest_capability=payload["closest_capability"],
+                    candidate_capability_ids=capability_ids,
+                )
+            raise AdvancedError(message) from exc
 
 
 def build_advanced_runtime(

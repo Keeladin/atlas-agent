@@ -5,6 +5,7 @@ import type { Conversation, WorkDetail, WorkListItem } from '../api/types'
 import { humanWorkStatus } from '../lib/workLabels'
 import { Chip } from '../ui/Chip'
 import { Panel } from '../ui/Panel'
+import { Workspace } from '../ui/Workspace'
 
 export function Home() {
   const workQuery = useQuery({
@@ -51,23 +52,15 @@ export function Home() {
   const offline = workQuery.isError || chatQuery.isError
 
   return (
-    <div className="stack">
-      {offline ? (
-        <div className="offline-banner">
-          Atlas host unreachable or session expired. Some panels may be stale.
-        </div>
-      ) : null}
-
-      <div className="topbar">
-        <div>
-          <h1>Home</h1>
-          <p>
-            {needsYou.length
-              ? `Atlas is holding ${needsYou.length} item${needsYou.length === 1 ? '' : 's'} that need you.`
-              : 'Nothing needs your attention right now.'}
-          </p>
-        </div>
-        <div className="actions">
+    <Workspace
+      title="Home"
+      subtitle={
+        needsYou.length
+          ? `Atlas is holding ${needsYou.length} item${needsYou.length === 1 ? '' : 's'} that need you.`
+          : 'Nothing needs your attention right now.'
+      }
+      headerActions={
+        <>
           <Link to="/chat">
             <button type="button">Continue chat</button>
           </Link>
@@ -76,42 +69,104 @@ export function Home() {
               Start work
             </button>
           </Link>
+        </>
+      }
+      banner={
+        offline ? (
+          <div className="offline-banner">
+            Atlas host unreachable or session expired. Some panels may be stale.
+          </div>
+        ) : null
+      }
+    >
+      <div className="stack">
+        <div className="grid-3">
+          <Panel className="kpi">
+            <div className="value kpi-waiting">
+              {needsYou.length}
+            </div>
+            <div className="label">Needs you</div>
+          </Panel>
+          <Panel className="kpi">
+            <div className="value kpi-running">
+              {inMotion.length}
+            </div>
+            <div className="label">In motion</div>
+          </Panel>
+          <Panel className="kpi">
+            <div className="value kpi-done">
+              {doneToday}
+            </div>
+            <div className="label">Completed work</div>
+          </Panel>
         </div>
-      </div>
 
-      <div className="grid-3">
-        <Panel className="kpi">
-          <div className="value" style={{ color: '#ffd978' }}>
-            {needsYou.length}
-          </div>
-          <div className="label">Needs you</div>
-        </Panel>
-        <Panel className="kpi">
-          <div className="value" style={{ color: '#93c5fd' }}>
-            {inMotion.length}
-          </div>
-          <div className="label">In motion</div>
-        </Panel>
-        <Panel className="kpi">
-          <div className="value" style={{ color: '#6ee7b7' }}>
-            {doneToday}
-          </div>
-          <div className="label">Completed work</div>
-        </Panel>
-      </div>
+        <div className="grid-2">
+          <div className="stack">
+            <Panel title="Needs you" tone="attention">
+              {!needsYou.length ? (
+                <p className="empty">No decisions waiting.</p>
+              ) : (
+                needsYou.map((item) => {
+                  const chip = humanWorkStatus(item)
+                  const reason =
+                    item.pending_confirmations[0]?.summary ||
+                    item.pending_approvals[0]?.requested_action ||
+                    item.blocking?.message ||
+                    'Needs your attention'
+                  return (
+                    <Link
+                      key={item.work_id}
+                      to={`/work/${item.work_id}`}
+                      className="list-row"
+                    >
+                      <div>
+                        <strong>{item.objective}</strong>
+                        <div className="meta">{reason}</div>
+                      </div>
+                      <Chip tone={chip.tone}>{chip.label}</Chip>
+                    </Link>
+                  )
+                })
+              )}
+            </Panel>
 
-      <div className="grid-2">
-        <div className="stack">
-          <Panel title="Needs you" tone="attention">
-            {!needsYou.length ? (
-              <p className="empty">No decisions waiting.</p>
-            ) : (
-              needsYou.map((item) => {
+            <Panel title="In motion">
+              {!inMotion.length ? (
+                <p className="empty">Nothing running.</p>
+              ) : (
+                inMotion.map((item) => (
+                  <Link
+                    key={item.work_id}
+                    to={`/work/${item.work_id}`}
+                    className="list-row"
+                  >
+                    <div>
+                      <strong>{item.objective}</strong>
+                      <div className="meta">
+                        {item.blocking?.message || 'Work is underway'}
+                      </div>
+                    </div>
+                    <Chip tone="running">In progress</Chip>
+                  </Link>
+                ))
+              )}
+            </Panel>
+          </div>
+
+          <div className="stack">
+            <Panel title="Jump back in">
+              {(chatQuery.data?.conversations || []).slice(0, 3).map((item) => (
+                <Link key={item.id} to="/chat" className="list-row">
+                  <div>
+                    <strong>{item.title}</strong>
+                    <div className="meta">{item.turn_count} messages</div>
+                  </div>
+                  <span className="meta">Open</span>
+                </Link>
+              ))}
+              {openItems.slice(0, 3).map((item) => {
                 const chip = humanWorkStatus(item)
-                const reason = item.pending_confirmations[0]?.summary
-                  || item.pending_approvals[0]?.requested_action
-                  || item.blocking?.message
-                  || 'Needs your attention'
                 return (
                   <Link
                     key={item.work_id}
@@ -120,91 +175,42 @@ export function Home() {
                   >
                     <div>
                       <strong>{item.objective}</strong>
-                      <div className="meta">{reason}</div>
+                      <div className="meta">Open work</div>
                     </div>
                     <Chip tone={chip.tone}>{chip.label}</Chip>
                   </Link>
                 )
-              })
-            )}
-          </Panel>
+              })}
+              {!chatQuery.data?.conversations?.length && !openItems.length ? (
+                <p className="empty">Start a chat or plan work to begin.</p>
+              ) : null}
+            </Panel>
 
-          <Panel title="In motion">
-            {!inMotion.length ? (
-              <p className="empty">Nothing running.</p>
-            ) : (
-              inMotion.map((item) => (
-                <Link
-                  key={item.work_id}
-                  to={`/work/${item.work_id}`}
-                  className="list-row"
-                >
-                  <div>
-                    <strong>{item.objective}</strong>
-                    <div className="meta">
-                      {item.blocking?.message || 'Work is underway'}
-                    </div>
-                  </div>
-                  <Chip tone="running">In progress</Chip>
+            <Panel title="Quick starts">
+              <div
+                className="actions"
+                style={{ flexDirection: 'column', alignItems: 'stretch' }}
+              >
+                <Link to="/chat">
+                  <button type="button" style={{ width: '100%' }}>
+                    Ask Atlas anything
+                  </button>
                 </Link>
-              ))
-            )}
-          </Panel>
-        </div>
-
-        <div className="stack">
-          <Panel title="Jump back in">
-            {(chatQuery.data?.conversations || []).slice(0, 3).map((item) => (
-              <Link key={item.id} to="/chat" className="list-row">
-                <div>
-                  <strong>{item.title}</strong>
-                  <div className="meta">{item.turn_count} messages</div>
-                </div>
-                <span className="meta">Open</span>
-              </Link>
-            ))}
-            {openItems.slice(0, 3).map((item) => {
-              const chip = humanWorkStatus(item)
-              return (
-                <Link
-                  key={item.work_id}
-                  to={`/work/${item.work_id}`}
-                  className="list-row"
-                >
-                  <div>
-                    <strong>{item.objective}</strong>
-                    <div className="meta">Open work</div>
-                  </div>
-                  <Chip tone={chip.tone}>{chip.label}</Chip>
+                <Link to="/work/new">
+                  <button type="button" style={{ width: '100%' }}>
+                    Turn an idea into work
+                  </button>
                 </Link>
-              )
-            })}
-            {!chatQuery.data?.conversations?.length && !openItems.length ? (
-              <p className="empty">Start a chat or plan work to begin.</p>
-            ) : null}
-          </Panel>
-
-          <Panel title="Quick starts">
-            <div className="actions" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
-              <Link to="/chat">
-                <button type="button" style={{ width: '100%' }}>
-                  Ask Atlas anything
-                </button>
-              </Link>
-              <Link to="/work/new">
-                <button type="button" style={{ width: '100%' }}>
-                  Turn an idea into work
-                </button>
-              </Link>
-              <Link to="/files">
-                <button type="button" style={{ width: '100%' }}>
-                  Index a file into knowledge
-                </button>
-              </Link>
-            </div>
-          </Panel>
+                <Link to="/files">
+                  <button type="button" style={{ width: '100%' }}>
+                    Index a file into knowledge
+                  </button>
+                </Link>
+              </div>
+            </Panel>
+          </div>
         </div>
       </div>
-    </div>
+    </Workspace>
   )
 }

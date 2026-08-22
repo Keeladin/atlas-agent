@@ -7,6 +7,7 @@ import { humanWorkStatus } from '../lib/workLabels'
 import { Chip } from '../ui/Chip'
 import { Panel } from '../ui/Panel'
 import { StepProgress } from '../ui/StepProgress'
+import { Workspace, WorkspaceRailSection } from '../ui/Workspace'
 
 type Filter = 'all' | 'needs_you' | 'in_progress' | 'waiting' | 'done' | 'failed'
 
@@ -54,51 +55,75 @@ export function WorkList() {
     return true
   })
 
-  return (
-    <div className="stack">
-      <div className="topbar">
-        <div>
-          <h1>Work</h1>
-          <p>
-            Durable responsibilities Atlas is carrying — progress, waits, and
-            outcomes at a glance.
-          </p>
-        </div>
-        <div className="actions">
-          <Link to="/work/new">
-            <button className="primary" type="button">
-              Plan new work
-            </button>
-          </Link>
-        </div>
-      </div>
-
-      {query.isError ? (
-        <div className="offline-banner">Could not load work from the Atlas host.</div>
-      ) : null}
-
-      <div className="filters">
-        {(
-          [
-            ['all', 'All'],
-            ['needs_you', 'Needs you'],
-            ['in_progress', 'In progress'],
-            ['waiting', 'Waiting'],
-            ['done', 'Done'],
-            ['failed', 'Failed'],
-          ] as const
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            className={filter === id ? 'active' : ''}
-            onClick={() => setFilter(id)}
-          >
-            {label}
+  const rail = (
+    <Panel>
+      <div className="workspace-rail-actions">
+        <Link to="/work/new">
+          <button className="primary" type="button">
+            Plan new work
           </button>
-        ))}
+        </Link>
       </div>
+      <WorkspaceRailSection title="Filters">
+        <div className="filters" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+          {(
+            [
+              ['all', 'All'],
+              ['needs_you', 'Needs you'],
+              ['in_progress', 'In progress'],
+              ['waiting', 'Waiting'],
+              ['done', 'Done'],
+              ['failed', 'Failed'],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={filter === id ? 'active' : ''}
+              onClick={() => setFilter(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </WorkspaceRailSection>
+    </Panel>
+  )
 
+  const context = (
+    <Panel title="At a glance">
+      <div className="list-row">
+        <div>
+          <strong>{items.length}</strong>
+          <div className="meta">Total work items</div>
+        </div>
+      </div>
+      <div className="list-row">
+        <div>
+          <strong>{filtered.length}</strong>
+          <div className="meta">In this filter</div>
+        </div>
+      </div>
+      <p className="meta" style={{ marginBottom: 0 }}>
+        Open an item to review progress, decisions, and outcomes.
+      </p>
+    </Panel>
+  )
+
+  return (
+    <Workspace
+      title="Work"
+      subtitle="Durable responsibilities Atlas is carrying — progress, waits, and outcomes at a glance."
+      railLabel="Browse"
+      contextLabel="Summary"
+      rail={rail}
+      context={context}
+      banner={
+        query.isError ? (
+          <div className="offline-banner">Could not load work from the Atlas host.</div>
+        ) : null
+      }
+    >
       <div className="stack">
         {query.isLoading ? <p className="empty">Loading…</p> : null}
         {filtered.map((item) => {
@@ -150,6 +175,6 @@ export function WorkList() {
           </Panel>
         ) : null}
       </div>
-    </div>
+    </Workspace>
   )
 }

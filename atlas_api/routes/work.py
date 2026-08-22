@@ -23,6 +23,8 @@ def _brief_from_body(payload: dict[str, Any]) -> TaskBrief:
     brief_payload = payload.get("brief")
     if not isinstance(brief_payload, dict):
         raise ValueError("brief object is required")
+    if brief_payload.get("status") == "unsupported":
+        raise ValueError("unsupported brief cannot become Work")
     capabilities = brief_payload.get("capabilities") or ()
     if isinstance(capabilities, str):
         capabilities = (capabilities,)

@@ -23,6 +23,9 @@ Return one JSON object with keys:
   objective, capabilities, expected_effect, constraints, deliverable_kind, notes
 
 capabilities is a list of Atlas capability ids from the catalog below.
+If no catalog capability fits the objective, return capabilities as an empty list
+and include a human-readable reason. Optionally include closest_capability as one
+real Atlas capability id that is nearest in meaning — never invent a capability id.
 Never use tool names, vendor names, MCP names, or implementation names.
 Never include authority_scope, task identifiers, or execution identifiers.
 required_authority is derived later from the selected capabilities; do not grant it.

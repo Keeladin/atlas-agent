@@ -46,6 +46,8 @@ def parse_brief_payload(text: str) -> dict[str, Any]:
     expected = payload.get("expected_effect")
     kind = payload.get("deliverable_kind")
     notes = payload.get("notes")
+    reason = payload.get("reason")
+    closest = payload.get("closest_capability")
     return {
         "objective": str(payload.get("objective") or "").strip(),
         "capabilities": capabilities,
@@ -53,6 +55,8 @@ def parse_brief_payload(text: str) -> dict[str, Any]:
         "constraints": constraints,
         "deliverable_kind": str(kind).strip() if kind else None,
         "notes": str(notes).strip() if notes else None,
+        "reason": str(reason).strip() if reason else None,
+        "closest_capability": str(closest).strip() if closest else None,
     }
 
 

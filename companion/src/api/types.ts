@@ -67,6 +67,7 @@ export type WorkDetail = {
 }
 
 export type TaskBrief = {
+  status?: 'brief'
   objective: string
   capabilities: string[]
   required_authority: string
@@ -74,6 +75,26 @@ export type TaskBrief = {
   constraints: string[]
   deliverable_kind?: string | null
   notes?: string | null
+}
+
+export type UnsupportedBrief = {
+  status: 'unsupported'
+  objective: string
+  reason: string
+  closest_capability: string | null
+}
+
+export type BriefResult = TaskBrief | UnsupportedBrief
+
+export function isUnsupportedBrief(
+  value: BriefResult | TaskBrief,
+): value is UnsupportedBrief {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'status' in value &&
+    value.status === 'unsupported'
+  )
 }
 
 export type Conversation = {

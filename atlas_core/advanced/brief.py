@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from atlas_core.authority import AUTHORITY_LEVELS, validate_authority
-from atlas_core.capabilities.awareness import CapabilityAwareness
+from atlas_core.capabilities.awareness import CapabilityAwareness, catalog as product_catalog
 
 
 _EXPECTED_EFFECT = {
@@ -20,6 +20,11 @@ _DELIVERABLE_KIND = {
     "communication.email.send": "communication",
     "knowledge.index": "knowledge",
 }
+
+_DEFAULT_UNSUPPORTED_REASON = (
+    "None of Atlas's briefable capabilities match this objective, "
+    "so it cannot become Work yet."
+)
 
 
 @dataclass(frozen=True)
@@ -61,6 +66,42 @@ class TaskBrief:
         }
 
 
+@dataclass(frozen=True)
+class UnsupportedBrief:
+    """Non-executable Advanced outcome. Not a TaskBrief and not Work."""
+
+    objective: str
+    reason: str
+    closest_capability: str | None = None
+    status: Literal["unsupported"] = "unsupported"
+
+    def __post_init__(self) -> None:
+        objective = self.objective.strip()
+        if not objective:
+            raise ValueError("UnsupportedBrief objective must not be empty")
+        object.__setattr__(self, "objective", objective)
+        reason = self.reason.strip()
+        if not reason:
+            raise ValueError("UnsupportedBrief reason must not be empty")
+        object.__setattr__(self, "reason", reason)
+        closest = (self.closest_capability or "").strip() or None
+        if closest is not None:
+            _reject_vendor_identity(closest)
+            known = {item.id for item in product_catalog()}
+            if closest not in known:
+                raise ValueError(f"Unknown closest capability: {closest}")
+        object.__setattr__(self, "closest_capability", closest)
+        object.__setattr__(self, "status", "unsupported")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "status": "unsupported",
+            "objective": self.objective,
+            "reason": self.reason,
+            "closest_capability": self.closest_capability,
+        }
+
+
 def assemble_brief(
     *,
     objective: str,
@@ -83,6 +124,43 @@ def assemble_brief(
         deliverable_kind=kind or None,
         notes=notes,
     )
+
+
+def unsupported_brief(
+    *,
+    objective: str,
+    reason: str | None = None,
+    closest_capability: str | None = None,
+    candidate_capability_ids: tuple[str, ...] = (),
+) -> UnsupportedBrief:
+    """Build a typed non-executable result. Never invents a capability id."""
+
+    known = {item.id for item in product_catalog()}
+    closest = _known_capability_id(closest_capability, known)
+    if closest is None:
+        for raw in candidate_capability_ids:
+            closest = _known_capability_id(raw, known)
+            if closest is not None:
+                break
+    text = (reason or "").strip() or _DEFAULT_UNSUPPORTED_REASON
+    return UnsupportedBrief(
+        objective=objective,
+        reason=text,
+        closest_capability=closest,
+    )
+
+
+def _known_capability_id(raw: Any, known: set[str]) -> str | None:
+    capability_id = str(raw or "").strip()
+    if not capability_id:
+        return None
+    try:
+        _reject_vendor_identity(capability_id)
+    except ValueError:
+        return None
+    if capability_id not in known:
+        return None
+    return capability_id
 
 
 def resolve_capabilities(

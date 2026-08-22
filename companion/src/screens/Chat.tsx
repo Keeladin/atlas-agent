@@ -6,6 +6,7 @@ import { api } from '../api/client'
 import type { Conversation } from '../api/types'
 import { Inspect } from '../ui/Inspect'
 import { Panel } from '../ui/Panel'
+import { Workspace, WorkspaceRailSection } from '../ui/Workspace'
 
 const NEAR_BOTTOM_PX = 72
 
@@ -81,7 +82,6 @@ export function Chat() {
   const createConversation = createMutation.mutate
   const creating = createMutation.isPending
 
-  // Prefer most recent conversation; otherwise open a blank ready-to-type chat.
   useEffect(() => {
     if (bootstrapped.current || activeId || !listQuery.isSuccess) return
     const list = listQuery.data?.conversations || []
@@ -134,167 +134,166 @@ export function Chat() {
   const turns = conversationQuery.data?.turns || []
   const ready = Boolean(activeId)
 
-  return (
-    <div className="chat-page">
-      <div className="chat-page-header">
-        <h1>Chat</h1>
-        <p>
-          Talk with Atlas. Start work from the left rail when talk becomes a
-          responsibility.
-        </p>
+  const rail = (
+    <Panel className="chat-rail" title="Conversations">
+      <div className="workspace-rail-actions">
+        <button
+          className="primary"
+          type="button"
+          onClick={() => createMutation.mutate()}
+          disabled={createMutation.isPending}
+        >
+          New chat
+        </button>
+        <Link to="/work/new">
+          <button className="primary" type="button">
+            Start work from this
+          </button>
+        </Link>
       </div>
-
-      {listQuery.isError || conversationQuery.isError ? (
-        <div className="offline-banner">
-          Could not reach chat. Check your connection or sign in again.
-        </div>
-      ) : null}
-
-      <div className="chat-layout">
-        <Panel className="chat-rail" title="Conversations">
-          <div className="chat-rail-actions">
+      <WorkspaceRailSection title="Recents">
+        <div className="chat-rail-scroll">
+          {(listQuery.data?.conversations || []).map((item) => (
             <button
-              className="primary"
+              key={item.id}
               type="button"
-              onClick={() => createMutation.mutate()}
-              disabled={createMutation.isPending}
+              className={`ghost chat-recent-item${item.id === activeId ? ' active' : ''}`}
+              onClick={() => selectConversation(item.id)}
             >
-              New chat
+              <strong>{item.title}</strong>
+              <span className="meta">{item.turn_count} messages</span>
             </button>
-            <Link to="/work/new">
-              <button className="primary" type="button">
-                Start work from this
-              </button>
-            </Link>
-          </div>
-          <h2 className="chat-section-title">Recents</h2>
-          <div className="chat-rail-scroll">
-            {(listQuery.data?.conversations || []).map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className="ghost chat-recent-item"
-                onClick={() => selectConversation(item.id)}
-                style={{
-                  background:
-                    item.id === activeId
-                      ? 'rgba(110, 168, 255, 0.12)'
-                      : 'transparent',
-                }}
-              >
-                <strong>{item.title}</strong>
-                <span className="meta">{item.turn_count} messages</span>
-              </button>
-            ))}
-            {!listQuery.data?.conversations?.length && !createMutation.isPending ? (
-              <p className="empty">No conversations yet.</p>
-            ) : null}
-          </div>
-        </Panel>
+          ))}
+          {!listQuery.data?.conversations?.length && !createMutation.isPending ? (
+            <p className="empty">No conversations yet.</p>
+          ) : null}
+        </div>
+      </WorkspaceRailSection>
+    </Panel>
+  )
 
-        <Panel className="chat-thread-pane">
-          <div className="chat-thread-body">
-            {!ready ? (
-              <p className="empty">Opening chat…</p>
-            ) : (
-              <>
-                <div className="chat-thread-title">
-                  <strong>
-                    {conversationQuery.data?.title || 'Conversation'}
-                  </strong>
-                </div>
-                <div className="chat-thread-wrap">
-                  <div
-                    className="thread"
-                    ref={threadRef}
-                    onScroll={onThreadScroll}
-                  >
-                    {turns.map((turn) => (
-                      <div
-                        key={turn.id}
-                        className={`bubble ${turn.role === 'user' ? 'user' : ''}`}
-                      >
-                        <div className="who">
-                          {turn.role === 'user' ? 'You' : 'Atlas'}
-                        </div>
-                        {turn.content}
-                      </div>
-                    ))}
-                    {!turns.length ? (
-                      <p className="empty">Say hello to start.</p>
-                    ) : null}
-                    {sendMutation.isError ? (
-                      <p className="error-text">
-                        {(sendMutation.error as Error).message}
-                      </p>
-                    ) : null}
-                  </div>
-                  {showJump ? (
-                    <button
-                      type="button"
-                      className="jump-latest"
-                      onClick={() => scrollToLatest('smooth')}
+  const context = (
+    <Panel className="chat-context-pane" title="Context">
+      <div className="chat-context-scroll">
+        <p className="meta" style={{ marginTop: 0 }}>
+          Helpful next steps — not runtime noise.
+        </p>
+        <div className="list-row">
+          <div>
+            <strong>Suggested next step</strong>
+            <div className="meta">Start work when ready</div>
+          </div>
+        </div>
+        <div className="list-row">
+          <div>
+            <strong>Bridge into Work</strong>
+            <div className="meta">Turn this chat into a durable responsibility</div>
+          </div>
+          <Link to="/work/new">
+            <button className="ghost" type="button">
+              Plan
+            </button>
+          </Link>
+        </div>
+        <Inspect label="Inspect conversation details">
+          {JSON.stringify(
+            {
+              conversation_id: activeId,
+              turn_count: turns.length,
+            },
+            null,
+            2,
+          )}
+        </Inspect>
+      </div>
+    </Panel>
+  )
+
+  return (
+    <Workspace
+      title="Chat"
+      subtitle="Talk with Atlas. Start work from the left rail when talk becomes a responsibility."
+      fillHeight
+      className="chat-page"
+      railLabel="Conversations"
+      contextLabel="Context"
+      rail={rail}
+      context={context}
+      banner={
+        listQuery.isError || conversationQuery.isError ? (
+          <div className="offline-banner">
+            Could not reach chat. Check your connection or sign in again.
+          </div>
+        ) : null
+      }
+    >
+      <Panel className="chat-thread-pane">
+        <div className="chat-thread-body">
+          {!ready ? (
+            <p className="empty">Opening chat…</p>
+          ) : (
+            <>
+              <div className="chat-thread-title">
+                <strong>
+                  {conversationQuery.data?.title || 'Conversation'}
+                </strong>
+              </div>
+              <div className="chat-thread-wrap">
+                <div
+                  className="thread"
+                  ref={threadRef}
+                  onScroll={onThreadScroll}
+                >
+                  {turns.map((turn) => (
+                    <div
+                      key={turn.id}
+                      className={`bubble ${turn.role === 'user' ? 'user' : ''}`}
                     >
-                      Jump to latest
-                    </button>
+                      <div className="who">
+                        {turn.role === 'user' ? 'You' : 'Atlas'}
+                      </div>
+                      {turn.content}
+                    </div>
+                  ))}
+                  {!turns.length ? (
+                    <p className="empty">Say hello to start.</p>
+                  ) : null}
+                  {sendMutation.isError ? (
+                    <p className="error-text">
+                      {(sendMutation.error as Error).message}
+                    </p>
                   ) : null}
                 </div>
-                <form className="composer" onSubmit={onSend}>
-                  <textarea
-                    ref={composerRef}
-                    value={message}
-                    onChange={(event) => setMessage(event.target.value)}
-                    placeholder="Message Atlas…"
-                    required
-                  />
+                {showJump ? (
                   <button
-                    className="primary"
-                    type="submit"
-                    disabled={sendMutation.isPending}
+                    type="button"
+                    className="jump-latest"
+                    onClick={() => scrollToLatest('smooth')}
                   >
-                    Send
+                    Jump to latest
                   </button>
-                </form>
-              </>
-            )}
-          </div>
-        </Panel>
-
-        <Panel className="chat-context-pane" title="Context">
-          <div className="chat-context-scroll">
-            <p className="meta" style={{ marginTop: 0 }}>
-              Helpful next steps — not runtime noise.
-            </p>
-            <div className="list-row">
-              <div>
-                <strong>Suggested next step</strong>
-                <div className="meta">Start work when ready</div>
+                ) : null}
               </div>
-            </div>
-            <div className="list-row">
-              <div>
-                <strong>Bridge</strong>
-                <div className="meta">Turn this chat into durable Work</div>
-              </div>
-              <Link to="/work/new">
-                <button className="ghost" type="button">
-                  Plan
+              <form className="composer" onSubmit={onSend}>
+                <textarea
+                  ref={composerRef}
+                  value={message}
+                  onChange={(event) => setMessage(event.target.value)}
+                  placeholder="Message Atlas…"
+                  required
+                />
+                <button
+                  className="primary"
+                  type="submit"
+                  disabled={sendMutation.isPending}
+                >
+                  Send
                 </button>
-              </Link>
-            </div>
-            <Inspect label="Inspect conversation details">
-              {JSON.stringify(
-                {
-                  conversation_id: activeId,
-                  turn_count: turns.length,
-                },
-                null,
-                2,
-              )}
-            </Inspect>
-          </div>
-        </Panel>
-      </div>
-    </div>
+              </form>
+            </>
+          )}
+        </div>
+      </Panel>
+    </Workspace>
   )
 }

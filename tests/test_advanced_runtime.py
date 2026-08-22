@@ -7,7 +7,13 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from unittest.mock import patch
 
-from atlas_core.advanced import AdvancedError, AdvancedRuntime, TaskBrief, build_advanced_runtime
+from atlas_core.advanced import (
+    AdvancedError,
+    AdvancedRuntime,
+    TaskBrief,
+    UnsupportedBrief,
+    build_advanced_runtime,
+)
 from atlas_core.advanced.prompts import ADVANCED_SYSTEM
 from atlas_core.capabilities.awareness import brief_catalog
 from atlas_core.providers import ModelRequest, ModelResponse, ProviderSpec
@@ -160,6 +166,58 @@ class AdvancedRuntimeTests(unittest.TestCase):
         runtime = self._runtime(provider)
         with self.assertRaises(AdvancedError):
             runtime.brief("Create automation that processes daily reports")
+
+    def test_zero_capability_output_is_unsupported_not_task_brief(self) -> None:
+        objective = (
+            "design a chatgpt style agent ui for my personal agent called atlas"
+        )
+        provider = FakeProvider(
+            _spec(),
+            [],
+            {
+                "objective": objective,
+                "capabilities": [],
+                "reason": (
+                    "No briefable capability covers product or UI design work."
+                ),
+                "closest_capability": "coding.software_engineering",
+            },
+        )
+        runtime = self._runtime(provider)
+        result = runtime.brief(objective)
+        self.assertIsInstance(result, UnsupportedBrief)
+        self.assertNotIsInstance(result, TaskBrief)
+        self.assertEqual(result.status, "unsupported")
+        self.assertEqual(result.objective, objective)
+        self.assertIn("UI design", result.reason)
+        self.assertEqual(result.closest_capability, "coding.software_engineering")
+        payload = result.as_dict()
+        self.assertEqual(payload["status"], "unsupported")
+        self.assertNotIn("capabilities", payload)
+        self.assertNotIn("required_authority", payload)
+        with self.assertRaises(ValueError):
+            TaskBrief(
+                objective=objective,
+                capabilities=(),
+                required_authority="interpret",
+                expected_effect="design",
+            )
+
+    def test_non_briefable_known_capability_is_unsupported(self) -> None:
+        provider = FakeProvider(
+            _spec(),
+            [],
+            {
+                "objective": "Implement a small UI change",
+                "capabilities": ["coding.software_engineering"],
+                "expected_effect": "code change",
+            },
+        )
+        runtime = self._runtime(provider)
+        result = runtime.brief("Implement a small UI change")
+        self.assertIsInstance(result, UnsupportedBrief)
+        self.assertEqual(result.closest_capability, "coding.software_engineering")
+        self.assertIn("coding.software_engineering", result.reason)
 
     def test_creates_no_database(self) -> None:
         runtime = self._runtime()

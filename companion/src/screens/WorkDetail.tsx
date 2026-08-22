@@ -3,11 +3,22 @@ import { useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { WorkDetail as WorkDetailType } from '../api/types'
-import { phaseChip, stepTone } from '../lib/workLabels'
+import {
+  humanCapabilityLabel,
+  isExecutableRun,
+  phaseChip,
+  runActionLabel,
+  stepTone,
+} from '../lib/workLabels'
 import { Chip } from '../ui/Chip'
 import { Inspect } from '../ui/Inspect'
 import { Panel } from '../ui/Panel'
 import { StepProgress } from '../ui/StepProgress'
+import {
+  LifecycleControls,
+  Workspace,
+  WorkspaceRailSection,
+} from '../ui/Workspace'
 
 export function WorkDetail() {
   const { workId = '' } = useParams()
@@ -80,245 +91,296 @@ export function WorkDetail() {
   const waitingNotRunning =
     detail.phase === 'waiting_confirmation' ||
     detail.phase === 'waiting_authority'
+  const runLabel = runActionLabel(detail)
+  const canRun = isExecutableRun(detail)
+  const canRecover = detail.actions.includes('recover')
+  const canCancel = detail.actions.includes('cancel')
 
-  return (
-    <div className="stack">
-      <div className="topbar">
-        <div>
-          <div className="crumb">
-            <Link to="/work">Work</Link> / Current
+  const rail = (
+    <Panel>
+      <WorkspaceRailSection title="Work">
+        <Link to="/work" className="list-row">
+          <div>
+            <strong>All work</strong>
+            <div className="meta">Back to the list</div>
           </div>
-          <h1>{detail.objective}</h1>
-          <p>
-            {waitingNotRunning
-              ? detail.blocking?.message ||
-                'Atlas is waiting for your decision — nothing is executing.'
-              : detail.blocking?.message ||
-                'Track progress, decisions, artifacts, and outcome.'}
-          </p>
-          <div className="actions" style={{ marginTop: '0.55rem' }}>
-            <Chip tone={chip.tone}>{chip.label}</Chip>
-            {detail.phase === 'waiting_confirmation' ? (
-              <Chip tone="confirm">Needs confirmation</Chip>
-            ) : null}
-            {detail.phase === 'waiting_authority' ? (
-              <Chip tone="auth">Needs authority approval</Chip>
-            ) : null}
+        </Link>
+        <Link to="/work/new" className="list-row">
+          <div>
+            <strong>Plan new work</strong>
+            <div className="meta">Start another responsibility</div>
           </div>
-        </div>
-        <div className="actions">
-          {detail.actions.includes('run') ? (
+        </Link>
+      </WorkspaceRailSection>
+      <WorkspaceRailSection title="You are in charge">
+        <p className="meta" style={{ marginTop: 0 }}>
+          Atlas carries the work. Controls below only appear when the host
+          supports them safely.
+        </p>
+        <LifecycleControls>
+          {canRun && runLabel ? (
             <button
               className="primary"
               type="button"
               disabled={runMutation.isPending}
               onClick={() => runMutation.mutate()}
             >
-              Continue
+              {runLabel}
             </button>
           ) : null}
-          {detail.actions.includes('recover') ? (
+          {canRecover ? (
             <button
               className="warn"
               type="button"
               disabled={recoverMutation.isPending}
               onClick={() => recoverMutation.mutate()}
             >
-              Recover
+              Retry / Recover
             </button>
           ) : null}
-          {detail.actions.includes('cancel') ? (
+          {canCancel ? (
             <button
               className="danger"
               type="button"
               disabled={cancelMutation.isPending}
               onClick={() => cancelMutation.mutate()}
             >
-              Cancel work
+              Cancel
             </button>
           ) : null}
-        </div>
-      </div>
+          {!canRun && !canRecover && !canCancel ? (
+            <p className="empty" style={{ margin: 0 }}>
+              No executive actions available in this state.
+            </p>
+          ) : null}
+        </LifecycleControls>
+        {waitingNotRunning ? (
+          <p className="meta" style={{ marginTop: '0.75rem', marginBottom: 0 }}>
+            Decide in the centre first. Start/Resume stays hidden until the work
+            is executable again.
+          </p>
+        ) : null}
+      </WorkspaceRailSection>
+    </Panel>
+  )
 
-      <div className="grid-2">
-        <div className="stack">
-          {(detail.pending_approvals.length > 0 ||
-            detail.pending_confirmations.length > 0) && (
-            <div className="stack">
-              {detail.pending_approvals.map((item) => (
-                <AuthorityCard
-                  key={item.id}
-                  item={item}
-                  onDone={() =>
-                    queryClient.invalidateQueries({
-                      queryKey: ['work-detail', workId],
-                    })
-                  }
-                />
-              ))}
-              {detail.pending_confirmations.map((item) => (
-                <ConfirmationCard
-                  key={item.id}
-                  item={item}
-                  onDone={() =>
-                    queryClient.invalidateQueries({
-                      queryKey: ['work-detail', workId],
-                    })
-                  }
-                />
-              ))}
+  const context = (
+    <div className="stack">
+      <Panel
+        title="Outcome"
+        tone={detail.status === 'failed' ? 'failed' : undefined}
+      >
+        {detail.status === 'completed' ? (
+          <p style={{ marginTop: 0 }}>Work finished successfully.</p>
+        ) : detail.status === 'failed' ? (
+          <p style={{ marginTop: 0 }} className="error-text">
+            Work failed. Inspect activity and recover if needed.
+          </p>
+        ) : waitingNotRunning ? (
+          <p style={{ marginTop: 0 }}>
+            Paused for your decision. No execution is running.
+          </p>
+        ) : (
+          <p style={{ marginTop: 0 }} className="meta">
+            {detail.blocking?.message || 'In progress.'}
+          </p>
+        )}
+        <StepProgress steps={detail.steps} />
+      </Panel>
+
+      <Panel title="Artifacts">
+        <div className="scroll-panel">
+          {detail.artifacts.map((item) => (
+            <details
+              key={String(item.id)}
+              className="list-row"
+              style={{ display: 'block' }}
+            >
+              <summary>
+                <strong>{String(item.kind)}</strong>
+                <div className="meta">Open preview</div>
+              </summary>
+              <Inspect label="Inspect artifact">
+                {JSON.stringify(item.payload, null, 2)}
+              </Inspect>
+            </details>
+          ))}
+          {!detail.artifacts.length ? (
+            <p className="empty">No artifacts yet.</p>
+          ) : null}
+        </div>
+      </Panel>
+
+      <Panel title="Evidence">
+        <div className="scroll-panel">
+          {detail.claims.map((claim) => (
+            <div key={String(claim.id)} className="list-row">
+              <div>
+                <strong>{String(claim.subject)}</strong>
+                <div className="meta">{String(claim.kind)}</div>
+              </div>
             </div>
+          ))}
+          {detail.executions.map((execution) => (
+            <div key={String(execution.id)} className="list-row">
+              <div>
+                <strong>{String(execution.capability)}</strong>
+                <div className="meta">
+                  Attempt {String(execution.attempt)} ·{' '}
+                  {String(execution.status)}
+                  {execution.error ? ` · ${String(execution.error)}` : ''}
+                </div>
+              </div>
+              <Chip tone={stepTone(String(execution.status))}>
+                {String(execution.status)}
+              </Chip>
+            </div>
+          ))}
+          {!detail.claims.length && !detail.executions.length ? (
+            <p className="empty">Evidence appears as work completes.</p>
+          ) : null}
+        </div>
+      </Panel>
+
+      <Panel title="Activity">
+        <div className="scroll-panel">
+          {[...detail.events].reverse().map((event) => (
+            <div key={String(event.id)} className="list-row">
+              <div>
+                <strong>{humanEventName(String(event.name))}</strong>
+                <div className="meta">{String(event.created_at)}</div>
+              </div>
+            </div>
+          ))}
+          {!detail.events.length ? (
+            <p className="empty">No activity yet.</p>
+          ) : null}
+        </div>
+        <Inspect label="Inspect technical details">
+          {JSON.stringify(
+            {
+              work_id: detail.work_id,
+              phase: detail.phase,
+              status: detail.status,
+              contract: detail.contract,
+              capabilities: detail.capabilities,
+              events: detail.events,
+            },
+            null,
+            2,
           )}
+        </Inspect>
+      </Panel>
+    </div>
+  )
 
-          <Panel title="Progress">
-            <StepProgress steps={detail.steps} />
-            <div className="timeline" style={{ marginTop: '0.85rem' }}>
-              {detail.steps.map((step) => (
+  return (
+    <Workspace
+      title={detail.objective}
+      crumb={
+        <>
+          <Link to="/work">Work</Link> / Current
+        </>
+      }
+      subtitle={
+        waitingNotRunning
+          ? detail.blocking?.message ||
+            'Atlas is waiting for your decision — nothing is executing.'
+          : detail.blocking?.message ||
+            'Track progress, decisions, artifacts, and outcome.'
+      }
+      headerActions={
+        <>
+          <Chip tone={chip.tone}>{chip.label}</Chip>
+          {detail.phase === 'waiting_confirmation' ? (
+            <Chip tone="confirm">Needs confirmation</Chip>
+          ) : null}
+          {detail.phase === 'waiting_authority' ? (
+            <Chip tone="auth">Needs authority approval</Chip>
+          ) : null}
+        </>
+      }
+      railLabel="Controls"
+      contextLabel="Details"
+      rail={rail}
+      context={context}
+    >
+      <div className="stack">
+        {(detail.pending_approvals.length > 0 ||
+          detail.pending_confirmations.length > 0) && (
+          <div className="stack">
+            {detail.pending_approvals.map((item) => (
+              <AuthorityCard
+                key={item.id}
+                item={item}
+                onDone={() =>
+                  queryClient.invalidateQueries({
+                    queryKey: ['work-detail', workId],
+                  })
+                }
+              />
+            ))}
+            {detail.pending_confirmations.map((item) => (
+              <ConfirmationCard
+                key={item.id}
+                item={item}
+                onDone={() =>
+                  queryClient.invalidateQueries({
+                    queryKey: ['work-detail', workId],
+                  })
+                }
+              />
+            ))}
+          </div>
+        )}
+
+        <Panel title="Progress">
+          <StepProgress steps={detail.steps} />
+          <div className="timeline" style={{ marginTop: '0.85rem' }}>
+            {detail.steps.map((step) => (
+              <div
+                key={step.id}
+                className={`t-item ${
+                  step.status === 'pass' || step.status === 'skipped'
+                    ? 'done'
+                    : step.status === 'blocked'
+                      ? 'waiting'
+                      : step.status === 'failed'
+                        ? 'failed'
+                        : step.status === 'pending'
+                          ? 'pending'
+                          : ''
+                }`}
+              >
                 <div
-                  key={step.id}
-                  className={`t-item ${
-                    step.status === 'pass' || step.status === 'skipped'
-                      ? 'done'
-                      : step.status === 'blocked'
-                        ? 'waiting'
-                        : step.status === 'failed'
-                          ? 'failed'
-                          : step.status === 'pending'
-                            ? 'pending'
-                            : ''
-                  }`}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    gap: '0.75rem',
+                    flexWrap: 'wrap',
+                  }}
                 >
-                  <div
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      gap: '0.75rem',
-                      flexWrap: 'wrap',
-                    }}
-                  >
-                    <div>
-                      <strong>{step.description}</strong>
-                      <div className="meta">
-                        {step.capability || 'Step'}
-                      </div>
-                    </div>
-                    <Chip tone={stepTone(step.status)}>
-                      {stepLabel(step.status)}
-                    </Chip>
-                  </div>
-                </div>
-              ))}
-              {!detail.steps.length ? (
-                <p className="empty">No steps yet.</p>
-              ) : null}
-            </div>
-          </Panel>
-        </div>
-
-        <div className="stack">
-          <Panel
-            title="Outcome"
-            tone={detail.status === 'failed' ? 'failed' : undefined}
-          >
-            {detail.status === 'completed' ? (
-              <p style={{ marginTop: 0 }}>Work finished successfully.</p>
-            ) : detail.status === 'failed' ? (
-              <p style={{ marginTop: 0 }} className="error-text">
-                Work failed. Inspect activity and recover if needed.
-              </p>
-            ) : waitingNotRunning ? (
-              <p style={{ marginTop: 0 }}>
-                Paused for your decision. No execution is running.
-              </p>
-            ) : (
-              <p style={{ marginTop: 0 }} className="meta">
-                {detail.blocking?.message || 'In progress.'}
-              </p>
-            )}
-            <StepProgress steps={detail.steps} />
-          </Panel>
-
-          <Panel title="Artifacts">
-            <div className="scroll-panel">
-              {detail.artifacts.map((item) => (
-                <details key={String(item.id)} className="list-row" style={{ display: 'block' }}>
-                  <summary>
-                    <strong>{String(item.kind)}</strong>
-                    <div className="meta">Open preview</div>
-                  </summary>
-                  <Inspect label="Inspect artifact">
-                    {JSON.stringify(item.payload, null, 2)}
-                  </Inspect>
-                </details>
-              ))}
-              {!detail.artifacts.length ? (
-                <p className="empty">No artifacts yet.</p>
-              ) : null}
-            </div>
-          </Panel>
-
-          <Panel title="Evidence">
-            <div className="scroll-panel">
-              {detail.claims.map((claim) => (
-                <div key={String(claim.id)} className="list-row">
                   <div>
-                    <strong>{String(claim.subject)}</strong>
-                    <div className="meta">{String(claim.kind)}</div>
-                  </div>
-                </div>
-              ))}
-              {detail.executions.map((execution) => (
-                <div key={String(execution.id)} className="list-row">
-                  <div>
-                    <strong>{String(execution.capability)}</strong>
+                    <strong>{step.description}</strong>
                     <div className="meta">
-                      Attempt {String(execution.attempt)} · {String(execution.status)}
-                      {execution.error ? ` · ${String(execution.error)}` : ''}
+                      {step.capability
+                        ? humanCapabilityLabel(step.capability)
+                        : 'Step'}
                     </div>
                   </div>
-                  <Chip tone={stepTone(String(execution.status))}>
-                    {String(execution.status)}
+                  <Chip tone={stepTone(step.status)}>
+                    {stepLabel(step.status)}
                   </Chip>
                 </div>
-              ))}
-              {!detail.claims.length && !detail.executions.length ? (
-                <p className="empty">Evidence appears as work completes.</p>
-              ) : null}
-            </div>
-          </Panel>
-
-          <Panel title="Activity">
-            <div className="scroll-panel">
-              {[...detail.events].reverse().map((event) => (
-                <div key={String(event.id)} className="list-row">
-                  <div>
-                    <strong>{humanEventName(String(event.name))}</strong>
-                    <div className="meta">{String(event.created_at)}</div>
-                  </div>
-                </div>
-              ))}
-              {!detail.events.length ? (
-                <p className="empty">No activity yet.</p>
-              ) : null}
-            </div>
-            <Inspect label="Inspect technical details">
-              {JSON.stringify(
-                {
-                  work_id: detail.work_id,
-                  phase: detail.phase,
-                  status: detail.status,
-                  contract: detail.contract,
-                  capabilities: detail.capabilities,
-                  events: detail.events,
-                },
-                null,
-                2,
-              )}
-            </Inspect>
-          </Panel>
-        </div>
+              </div>
+            ))}
+            {!detail.steps.length ? (
+              <p className="empty">No steps yet.</p>
+            ) : null}
+          </div>
+        </Panel>
       </div>
-    </div>
+    </Workspace>
   )
 }
 
@@ -418,7 +480,11 @@ function ConfirmationCard({
       {invocation ? (
         <div
           className="card"
-          style={{ boxShadow: 'none', background: '#0a1020', margin: '0.75rem 0 1rem' }}
+          style={{
+            boxShadow: 'none',
+            background: 'var(--atlas-bg)',
+            margin: '0.75rem 0 1rem',
+          }}
         >
           <div className="meta" style={{ marginBottom: '0.35rem' }}>
             Message preview
@@ -426,7 +492,9 @@ function ConfirmationCard({
           {Object.entries(invocation).map(([key, value]) => (
             <div key={key} className="brief-row">
               <span>{key}</span>
-              <div>{typeof value === 'string' ? value : JSON.stringify(value)}</div>
+              <div>
+                {typeof value === 'string' ? value : JSON.stringify(value)}
+              </div>
             </div>
           ))}
         </div>

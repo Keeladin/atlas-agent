@@ -196,10 +196,12 @@ class AtlasApiTests(unittest.TestCase):
             headers=self._headers(),
         )
         self.assertEqual(brief.status_code, 200)
+        self.assertEqual(brief.json().get("status"), "brief")
         self.assertEqual(
             brief.json()["capabilities"],
             ["communication.email.send"],
         )
+        self.assertTrue(brief.json()["capabilities"])
 
         accepted = self.client.post(
             "/api/work",
@@ -259,6 +261,64 @@ class AtlasApiTests(unittest.TestCase):
         )
         self.assertEqual(finished.status_code, 200)
         self.assertEqual(finished.json()["detail"]["status"], "completed")
+
+    def test_zero_capability_output_never_returns_invalid_task_brief(self) -> None:
+        self._login()
+        objective = (
+            "design a chatgpt style agent ui for my personal agent called atlas"
+        )
+        empty_json = json.dumps(
+            {
+                "objective": objective,
+                "capabilities": [],
+                "reason": (
+                    "No briefable capability covers product or UI design work."
+                ),
+                "closest_capability": "coding.software_engineering",
+            }
+        )
+        self.app.state.services.advanced = AdvancedRuntime(
+            provider=FakeProvider(empty_json),
+            catalog=brief_catalog(),
+        )
+        response = self.client.post(
+            "/api/advanced/brief",
+            json={"objective": objective},
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "unsupported")
+        self.assertEqual(body["objective"], objective)
+        self.assertIn("UI design", body["reason"])
+        self.assertEqual(body["closest_capability"], "coding.software_engineering")
+        self.assertNotIn("capabilities", body)
+        self.assertNotIn("required_authority", body)
+        self.assertNotIn("expected_effect", body)
+
+        accepted = self.client.post(
+            "/api/work",
+            json={"brief": body, "authority_scope": "interpret"},
+            headers=self._headers(),
+        )
+        self.assertEqual(accepted.status_code, 400)
+        self.assertIn("unsupported", accepted.json()["error"].casefold())
+
+        invalid = self.client.post(
+            "/api/work",
+            json={
+                "brief": {
+                    "objective": objective,
+                    "capabilities": [],
+                    "required_authority": "interpret",
+                    "expected_effect": "design",
+                },
+                "authority_scope": "interpret",
+            },
+            headers=self._headers(),
+        )
+        self.assertEqual(invalid.status_code, 400)
+        self.assertIn("capability", invalid.json()["error"].casefold())
 
     def test_authority_and_confirmation_are_separate_endpoints(self) -> None:
         self._login()

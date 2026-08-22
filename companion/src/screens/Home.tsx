@@ -18,8 +18,9 @@ export function Home() {
       api<{ conversations: Conversation[] }>('/api/chat/conversations'),
   })
 
-  const openItems = (workQuery.data?.work || []).filter((item) =>
-    ['planned', 'active', 'waiting'].includes(item.status),
+  const openItems = (workQuery.data?.work || []).filter(
+    (item) =>
+      ['planned', 'active', 'waiting'].includes(item.status) && !item.archived,
   )
   const detailQueries = useQueries({
     queries: openItems.slice(0, 8).map((item) => ({
@@ -39,11 +40,14 @@ export function Home() {
   )
   const inMotion = details.filter(
     (d) =>
-      d.phase === 'running' ||
-      d.phase === 'active' ||
-      (d.status === 'active' &&
-        !d.pending_confirmations.length &&
-        !d.pending_approvals.length),
+      d.phase !== 'paused' &&
+      d.phase !== 'pausing' &&
+      d.phase !== 'archived' &&
+      (d.phase === 'running' ||
+        d.phase === 'active' ||
+        (d.status === 'active' &&
+          !d.pending_confirmations.length &&
+          !d.pending_approvals.length)),
   )
   const doneToday = (workQuery.data?.work || []).filter(
     (item) => item.status === 'completed',
@@ -56,8 +60,8 @@ export function Home() {
       title="Home"
       subtitle={
         needsYou.length
-          ? `Atlas is holding ${needsYou.length} item${needsYou.length === 1 ? '' : 's'} that need you.`
-          : 'Nothing needs your attention right now.'
+          ? `I need you on ${needsYou.length} item${needsYou.length === 1 ? '' : 's'}.`
+          : "Nothing needs you right now — I'm taking care of the rest."
       }
       headerActions={
         <>
@@ -113,7 +117,7 @@ export function Home() {
                     item.pending_confirmations[0]?.summary ||
                     item.pending_approvals[0]?.requested_action ||
                     item.blocking?.message ||
-                    'Needs your attention'
+                    'I need you on this'
                   return (
                     <Link
                       key={item.work_id}

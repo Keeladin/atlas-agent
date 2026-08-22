@@ -12,6 +12,9 @@ class WorkError(RuntimeError):
     pass
 
 
+TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+
 @dataclass(frozen=True)
 class WorkRecord:
     """Durable work item. Backed by Work persistence, not Chat storage."""

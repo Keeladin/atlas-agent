@@ -9,6 +9,7 @@ from .records import StepRecord
 from .store import InvalidTransitionError
 
 from .contract import WorkContract
+from .control import control_patch, is_pause_requested, is_paused
 from .resolve import ResolveReport
 from .work import UNAVAILABLE, WorkError
 
@@ -64,6 +65,15 @@ class WorkLifecycleMixin:
         cycles = 0
         while cycles < budget.max_cycles:
             cycles += 1
+            paused = self._honor_owner_pause(work_id)
+            if paused is not None:
+                return RuntimeResult(
+                    work_id,
+                    paused.status,
+                    cycles,
+                    len(self.store.list_executions(work_id)),
+                    paused.reason,
+                )
             before = len(self.store.list_executions(work_id))
             if before >= budget.max_executions:
                 self.store.set_work_status(work_id, "failed")
@@ -85,6 +95,15 @@ class WorkLifecycleMixin:
                 contract, report, max_new_executions=remaining
             )
             after = len(self.store.list_executions(work_id))
+            paused = self._honor_owner_pause(work_id)
+            if paused is not None:
+                return RuntimeResult(
+                    work_id,
+                    paused.status,
+                    cycles,
+                    after,
+                    paused.reason,
+                )
             task = self.store.get_work(work_id)
             if task.status in {"completed", "failed", "cancelled"}:
                 return RuntimeResult(
@@ -348,6 +367,25 @@ class WorkLifecycleMixin:
             recovered,
             failed_closed,
             self.store.get_work(work_id).status,
+        )
+
+    def _honor_owner_pause(self, work_id: str) -> RuntimeResult | None:
+        task = self.store.get_work(work_id)
+        if not (is_pause_requested(task) or is_paused(task)):
+            return None
+        if task.status == "active":
+            self.store.set_work_status(work_id, "waiting")
+        self.store.merge_work_metadata(
+            work_id, control_patch(paused=True, pause_requested=False)
+        )
+        self._emit(work_id, "work.paused", payload={"reason": "owner_requested"})
+        waiting = self.store.get_work(work_id)
+        return RuntimeResult(
+            work_id,
+            waiting.status,
+            0,
+            len(self.store.list_executions(work_id)),
+            "paused at a safe boundary",
         )
 
     def _membership_violation(self, contract: WorkContract) -> bool:

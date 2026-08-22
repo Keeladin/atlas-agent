@@ -22,6 +22,7 @@ from atlas_core.work import (
     DeploymentInventory,
     build_work_runtime,
 )
+from atlas_core.work.control import is_paused
 
 
 class FakeProvider:
@@ -373,6 +374,100 @@ class AtlasApiTests(unittest.TestCase):
         self.assertEqual(unauth.status_code, 401)
         paths = [getattr(route, "path", "") for route in self.app.routes]
         self.assertIn("/api/work/{work_id}/events/stream", paths)
+
+    def test_pdf_index_accept_is_unavailable(self) -> None:
+        self._login()
+        accepted = self.client.post(
+            "/api/work",
+            json={
+                "brief": {
+                    "objective": "Index this PDF manual into knowledge",
+                    "capabilities": ["knowledge.index"],
+                    "required_authority": "modify_internal",
+                    "expected_effect": "Index local knowledge",
+                    "constraints": [],
+                },
+                "authority_scope": "modify_internal",
+            },
+            headers=self._headers(),
+        )
+        self.assertEqual(accepted.status_code, 409)
+        body = accepted.json()
+        self.assertEqual(body["status"], "unavailable")
+        self.assertIn("PDF ingestion", body["reason"])
+        listed = self.client.get("/api/work", headers=self._headers())
+        self.assertEqual(listed.json()["work"], [])
+
+    def test_work_pause_archive_delete_and_chat_ownership(self) -> None:
+        self._login()
+        created = self.client.post(
+            "/api/work",
+            json={
+                "brief": {
+                    "objective": "Search local knowledge",
+                    "capabilities": ["knowledge.search"],
+                    "required_authority": "read",
+                    "expected_effect": "Retrieved local chunks",
+                    "constraints": [],
+                },
+                "authority_scope": "read",
+                "inputs": {"knowledge.search": {"query": "notes", "limit": 1}},
+            },
+            headers=self._headers(),
+        )
+        self.assertEqual(created.status_code, 201)
+        work_id = created.json()["work_id"]
+        paused = self.client.post(
+            f"/api/work/{work_id}/pause", json={}, headers=self._headers()
+        )
+        self.assertEqual(paused.status_code, 200)
+        self.assertEqual(paused.json()["phase"], "paused")
+        self.assertTrue(is_paused(self.app.state.services.work.store.get_work(work_id)))
+        archived = self.client.post(
+            f"/api/work/{work_id}/archive",
+            json={"archived": True},
+            headers=self._headers(),
+        )
+        self.assertEqual(archived.status_code, 200)
+        self.assertEqual(archived.json()["phase"], "archived")
+        visible = self.client.get("/api/work", headers=self._headers())
+        self.assertEqual(visible.json()["work"], [])
+        hidden = self.client.get("/api/work?archived=true", headers=self._headers())
+        self.assertEqual(len(hidden.json()["work"]), 1)
+        deleted = self.client.delete(f"/api/work/{work_id}", headers=self._headers())
+        self.assertEqual(deleted.status_code, 200)
+
+        opened = self.client.post(
+            "/api/chat/conversations",
+            json={"title": "Ops"},
+            headers=self._headers(),
+        )
+        self.assertEqual(opened.status_code, 201)
+        cid = opened.json()["id"]
+        renamed = self.client.patch(
+            f"/api/chat/conversations/{cid}",
+            json={"title": "Ops notes", "pinned": True},
+            headers=self._headers(),
+        )
+        self.assertEqual(renamed.status_code, 200)
+        self.assertEqual(renamed.json()["title"], "Ops notes")
+        self.assertTrue(renamed.json()["pinned"])
+        archived_chat = self.client.patch(
+            f"/api/chat/conversations/{cid}",
+            json={"archived": True},
+            headers=self._headers(),
+        )
+        self.assertEqual(archived_chat.status_code, 200)
+        recents = self.client.get("/api/chat/conversations", headers=self._headers())
+        self.assertEqual(recents.json()["conversations"], [])
+        stored = self.client.get(
+            "/api/chat/conversations?archived=true", headers=self._headers()
+        )
+        self.assertEqual(stored.json()["conversations"][0]["id"], cid)
+        gone = self.client.delete(
+            f"/api/chat/conversations/{cid}", headers=self._headers()
+        )
+        self.assertEqual(gone.status_code, 200)
 
     def test_spa_fallback_serves_index_and_api_never_falls_through(self) -> None:
         dist = Path(self.tmp.name) / "dist"

@@ -11,7 +11,7 @@ from atlas_api.auth import require_mutation_auth, require_session
 from atlas_api.sse import work_events_stream
 from atlas_api.views.work import build_work_detail, work_list_item
 from atlas_core.advanced.brief import TaskBrief
-from atlas_core.work import WorkError, WorkStoreError
+from atlas_core.work import UnavailableWork, WorkError, WorkStoreError
 from atlas_core.work.store import InvalidTransitionError, UnknownRecordError
 
 
@@ -47,7 +47,13 @@ async def list_work(request: Request) -> JSONResponse:
     if isinstance(gate, JSONResponse):
         return gate
     status = request.query_params.get("status")
-    items = _services(request).work.store.list_work(status=status)
+    archived_param = request.query_params.get("archived")
+    archived: bool | None = False
+    if archived_param in {"1", "true", "yes"}:
+        archived = True
+    elif archived_param in {"all"}:
+        archived = None
+    items = _services(request).work.store.list_work(status=status, archived=archived)
     return JSONResponse({"work": [work_list_item(item) for item in items]})
 
 
@@ -68,6 +74,10 @@ async def create_work(request: Request) -> JSONResponse:
         work_id = _services(request).work.accept(
             brief, authority_scope, inputs=inputs
         )
+    except UnavailableWork as exc:
+        payload = exc.result.as_dict()
+        payload["error"] = exc.result.reason
+        return JSONResponse(payload, status_code=409)
     except (WorkError, ValueError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     detail = build_work_detail(_services(request).work, work_id)
@@ -170,6 +180,52 @@ async def recover_work(request: Request) -> JSONResponse:
             "detail": detail.as_dict(),
         }
     )
+
+
+async def pause_work(request: Request) -> JSONResponse:
+    gate = require_mutation_auth(request)
+    if isinstance(gate, JSONResponse):
+        return gate
+    work_id = request.path_params["work_id"]
+    runtime = _services(request).work
+    try:
+        runtime.pause(work_id)
+    except (WorkError, UnknownRecordError, InvalidTransitionError) as exc:
+        status = 404 if isinstance(exc, UnknownRecordError) else 400
+        return JSONResponse({"error": str(exc)}, status_code=status)
+    return JSONResponse(build_work_detail(runtime, work_id).as_dict())
+
+
+async def archive_work(request: Request) -> JSONResponse:
+    gate = require_mutation_auth(request)
+    if isinstance(gate, JSONResponse):
+        return gate
+    work_id = request.path_params["work_id"]
+    runtime = _services(request).work
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        body = {}
+    archived = True if not body else bool(body.get("archived", True))
+    try:
+        runtime.archive(work_id, archived=archived)
+    except (WorkError, UnknownRecordError) as exc:
+        status = 404 if isinstance(exc, UnknownRecordError) else 400
+        return JSONResponse({"error": str(exc)}, status_code=status)
+    return JSONResponse(build_work_detail(runtime, work_id).as_dict())
+
+
+async def delete_work(request: Request) -> JSONResponse:
+    gate = require_mutation_auth(request)
+    if isinstance(gate, JSONResponse):
+        return gate
+    work_id = request.path_params["work_id"]
+    try:
+        _services(request).work.delete(work_id)
+    except (WorkError, UnknownRecordError) as exc:
+        status = 404 if isinstance(exc, UnknownRecordError) else 400
+        return JSONResponse({"error": str(exc)}, status_code=status)
+    return JSONResponse({"deleted": work_id})
 
 
 async def cancel_work(request: Request) -> JSONResponse:
@@ -321,8 +377,11 @@ routes = [
     Route("/api/work/{work_id}/contract", get_contract, methods=["GET"]),
     Route("/api/work/{work_id}/detail", get_detail, methods=["GET"]),
     Route("/api/work/{work_id}/run", run_work, methods=["POST"]),
+    Route("/api/work/{work_id}/pause", pause_work, methods=["POST"]),
     Route("/api/work/{work_id}/recover", recover_work, methods=["POST"]),
     Route("/api/work/{work_id}/cancel", cancel_work, methods=["POST"]),
+    Route("/api/work/{work_id}/archive", archive_work, methods=["POST"]),
+    Route("/api/work/{work_id}", delete_work, methods=["DELETE"]),
     Route("/api/work/{work_id}/events/stream", work_events_stream, methods=["GET"]),
     Route(
         "/api/work/approvals/{approval_id}/approve",

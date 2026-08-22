@@ -143,12 +143,12 @@ class CapabilityArchitectureTests(unittest.TestCase):
         db = Path(tmp.name) / "atlas-work.db"
         gateway = _RecordingGateway()
         runtime = build_work_runtime(db_path=db, tool_gateway=gateway)
-        work_id = runtime.accept(_email_brief(), "communicate")
-        result = runtime.run(work_id)
-        self.assertEqual(result.reason, UNAVAILABLE)
-        self.assertEqual(result.executions, 0)
+        from atlas_core.work import UnavailableWork
+
+        with self.assertRaises(UnavailableWork):
+            runtime.accept(_email_brief(), "communicate")
+        self.assertEqual(runtime.store.list_work(), ())
         self.assertEqual(gateway.invocations, [])
-        self.assertEqual(runtime.get(work_id).status, "planned")
 
     def test_work_reaches_tool_gateway_only_when_fully_armed(self) -> None:
         tmp = tempfile.TemporaryDirectory()

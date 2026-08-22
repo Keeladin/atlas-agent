@@ -2,15 +2,19 @@ import type { WorkDetail, WorkListItem } from '../api/types'
 
 export function humanWorkStatus(item: Pick<WorkListItem, 'status'> & { phase?: string }) {
   const phase = item.phase
+  if (phase === 'unavailable') return { tone: 'failed', label: "Can't do this yet" }
+  if (phase === 'archived') return { tone: '', label: 'Archived' }
+  if (phase === 'pausing') return { tone: 'waiting', label: 'Stopping at a safe point' }
+  if (phase === 'paused') return { tone: 'waiting', label: 'Paused' }
   if (phase === 'waiting_confirmation') return { tone: 'confirm', label: 'Needs confirmation' }
-  if (phase === 'waiting_authority') return { tone: 'auth', label: 'Needs authority approval' }
-  if (phase === 'running') return { tone: 'running', label: 'In progress' }
+  if (phase === 'waiting_authority') return { tone: 'auth', label: 'Needs approval' }
+  if (phase === 'running') return { tone: 'running', label: "I'm on it" }
   if (item.status === 'completed') return { tone: 'done', label: 'Done' }
-  if (item.status === 'failed') return { tone: 'failed', label: 'Failed' }
+  if (item.status === 'failed') return { tone: 'failed', label: "Couldn't finish" }
   if (item.status === 'cancelled') return { tone: 'waiting', label: 'Cancelled' }
   if (item.status === 'waiting') return { tone: 'waiting', label: 'Waiting' }
-  if (item.status === 'active') return { tone: 'running', label: 'In progress' }
-  if (item.status === 'planned') return { tone: 'waiting', label: 'Planned' }
+  if (item.status === 'active') return { tone: 'running', label: "I'm on it" }
+  if (item.status === 'planned') return { tone: 'waiting', label: 'Not started' }
   return { tone: '', label: item.status }
 }
 
@@ -43,13 +47,17 @@ export function isExecutableRun(detail: WorkDetail) {
     detail.phase !== 'waiting_confirmation' &&
     detail.phase !== 'waiting_authority' &&
     detail.phase !== 'running' &&
+    detail.phase !== 'pausing' &&
+    detail.phase !== 'unavailable' &&
+    detail.phase !== 'archived' &&
     detail.phase !== 'terminal'
   )
 }
 
-/** Honest label for the supported run/resume control. Never invent Pause/Stop/Archive. */
+/** Honest label for the supported run/resume control. */
 export function runActionLabel(detail: WorkDetail) {
   if (!isExecutableRun(detail)) return null
+  if (detail.phase === 'paused') return 'Resume'
   if (detail.status === 'planned' || detail.phase === 'planned') return 'Start'
   return 'Resume'
 }

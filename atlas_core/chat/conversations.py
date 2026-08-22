@@ -20,6 +20,8 @@ class Conversation:
     metadata: dict[str, Any]
     created_at: str
     updated_at: str
+    pinned: bool = False
+    archived_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,8 @@ class ConversationView:
     created_at: str
     updated_at: str
     turn_count: int
+    pinned: bool = False
+    archived_at: str | None = None
     turns: tuple[ConversationTurn, ...] = field(default_factory=tuple)
 
     def as_dict(self) -> dict[str, Any]:
@@ -50,6 +54,9 @@ class ConversationView:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "turn_count": self.turn_count,
+            "pinned": self.pinned,
+            "archived": self.archived_at is not None,
+            "archived_at": self.archived_at,
             "turns": [
                 {
                     "id": turn.id,
@@ -136,6 +143,16 @@ class ConversationStore:
                     ON conversation_turns(conversation_id, created_at, id);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in db.execute("PRAGMA table_info(conversations)").fetchall()
+            }
+            if "pinned" not in columns:
+                db.execute(
+                    "ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"
+                )
+            if "archived_at" not in columns:
+                db.execute("ALTER TABLE conversations ADD COLUMN archived_at TEXT")
 
     def get(self, conversation_id: str) -> Conversation:
         cid = (conversation_id or "").strip()
@@ -178,12 +195,76 @@ class ConversationStore:
             ).fetchone()
         return self._conversation_from_row(row)
 
-    def list(self) -> tuple[Conversation, ...]:
+    def list(self, *, archived: bool = False) -> tuple[Conversation, ...]:
         with self._db() as db:
-            rows = db.execute(
-                "SELECT * FROM conversations ORDER BY updated_at DESC, id DESC"
-            ).fetchall()
+            if archived:
+                rows = db.execute(
+                    """
+                    SELECT * FROM conversations
+                    WHERE archived_at IS NOT NULL
+                    ORDER BY pinned DESC, updated_at DESC, id DESC
+                    """
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    """
+                    SELECT * FROM conversations
+                    WHERE archived_at IS NULL
+                    ORDER BY pinned DESC, updated_at DESC, id DESC
+                    """
+                ).fetchall()
         return tuple(self._conversation_from_row(row) for row in rows)
+
+    def rename(self, conversation_id: str, title: str) -> Conversation:
+        self.get(conversation_id)
+        label = " ".join((title or "").split()) or "Chat"
+        with self._db() as db:
+            db.execute(
+                "UPDATE conversations SET title=? WHERE id=?",
+                (label, conversation_id),
+            )
+            row = db.execute(
+                "SELECT * FROM conversations WHERE id=?",
+                (conversation_id,),
+            ).fetchone()
+        return self._conversation_from_row(row)
+
+    def set_pinned(self, conversation_id: str, pinned: bool) -> Conversation:
+        self.get(conversation_id)
+        with self._db() as db:
+            db.execute(
+                "UPDATE conversations SET pinned=? WHERE id=?",
+                (1 if pinned else 0, conversation_id),
+            )
+            row = db.execute(
+                "SELECT * FROM conversations WHERE id=?",
+                (conversation_id,),
+            ).fetchone()
+        return self._conversation_from_row(row)
+
+    def set_archived(self, conversation_id: str, archived: bool) -> Conversation:
+        self.get(conversation_id)
+        with self._db() as db:
+            if archived:
+                db.execute(
+                    "UPDATE conversations SET archived_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (conversation_id,),
+                )
+            else:
+                db.execute(
+                    "UPDATE conversations SET archived_at=NULL WHERE id=?",
+                    (conversation_id,),
+                )
+            row = db.execute(
+                "SELECT * FROM conversations WHERE id=?",
+                (conversation_id,),
+            ).fetchone()
+        return self._conversation_from_row(row)
+
+    def delete(self, conversation_id: str) -> None:
+        self.get(conversation_id)
+        with self._db() as db:
+            db.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
 
     def turn_count(self, conversation_id: str) -> int:
         self.get(conversation_id)
@@ -249,17 +330,24 @@ class ConversationStore:
             created_at=record.created_at,
             updated_at=record.updated_at,
             turn_count=count,
+            pinned=record.pinned,
+            archived_at=record.archived_at,
             turns=turns,
         )
 
     @staticmethod
     def _conversation_from_row(row: sqlite3.Row) -> Conversation:
+        keys = row.keys()
+        archived_at = row["archived_at"] if "archived_at" in keys else None
+        pinned = bool(row["pinned"]) if "pinned" in keys else False
         return Conversation(
             id=row["id"],
             title=row["title"],
             metadata=_json_load(row["metadata_json"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            pinned=pinned,
+            archived_at=archived_at,
         )
 
     @staticmethod

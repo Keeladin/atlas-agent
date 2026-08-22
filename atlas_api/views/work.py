@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from atlas_core.work import WorkRuntime
+from atlas_core.work.control import is_archived, is_pause_requested, is_paused
 from atlas_core.work.records import (
     ApprovalRecord,
     ArtifactRecord,
@@ -73,6 +74,8 @@ def work_list_item(state: WorkState) -> dict[str, Any]:
         "authority_scope": state.authority_scope,
         "created_at": state.created_at,
         "updated_at": state.updated_at,
+        "archived": is_archived(state),
+        "paused": is_paused(state),
     }
 
 
@@ -94,6 +97,7 @@ def build_work_detail(runtime: WorkRuntime, work_id: str) -> WorkDetailView:
         pending_approvals=pending_approvals,
         pending_confirmations=pending_confirmations,
         running=running,
+        contract=contract,
     )
     return WorkDetailView(
         work_id=state.id,
@@ -128,7 +132,12 @@ def build_work_detail(runtime: WorkRuntime, work_id: str) -> WorkDetailView:
             }
             for item in store.list_criteria(work_id)
         ),
-        actions=_actions(state, running),
+        actions=_actions(
+            state,
+            running,
+            contract=contract,
+            phase=phase,
+        ),
     )
 
 
@@ -138,50 +147,117 @@ def _phase_and_blocking(
     pending_approvals: tuple[ApprovalRecord, ...],
     pending_confirmations: tuple[ConfirmationRecord, ...],
     running: tuple[ExecutionRecord, ...],
+    contract: WorkContract,
 ) -> tuple[str, dict[str, Any] | None]:
+    if is_archived(state):
+        return "archived", {
+            "kind": "archived",
+            "message": "This work is archived. History is kept.",
+        }
     if state.status in {"completed", "failed", "cancelled"}:
         return "terminal", None
+    unarmed = tuple(
+        pin.capability_id for pin in contract.capabilities if not pin.armed
+    )
+    if unarmed:
+        return "unavailable", {
+            "kind": "unavailable",
+            "message": "I can't do this yet because a required capability is not available on this host.",
+            "unarmed": list(unarmed),
+        }
     if running:
+        if is_pause_requested(state):
+            return "pausing", {
+                "kind": "pausing",
+                "message": "I'll stop at the next safe point. The current action will finish.",
+                "execution_ids": [item.id for item in running],
+            }
         return "running", {
             "kind": "execution",
-            "message": "An execution is in progress.",
+            "message": "I'm taking care of this.",
             "execution_ids": [item.id for item in running],
+        }
+    if is_paused(state) or is_pause_requested(state):
+        return "paused", {
+            "kind": "paused",
+            "message": "I paused at a safe point. Nothing else will start until you resume.",
         }
     if pending_confirmations:
         return "waiting_confirmation", {
             "kind": "payload_confirmation",
-            "message": "Exact payload confirmation is required before execution.",
+            "message": "I need your confirmation before I continue.",
             "confirmation_ids": [item.id for item in pending_confirmations],
         }
     if pending_approvals:
         return "waiting_authority", {
             "kind": "authority_approval",
-            "message": "Authority approval is required before execution.",
+            "message": "I need your approval before I continue.",
             "approval_ids": [item.id for item in pending_approvals],
         }
     if state.status == "waiting":
         return "waiting", {
             "kind": "waiting",
-            "message": "Work is waiting with no ready step.",
+            "message": "I'm waiting. Nothing is ready to run yet.",
         }
     if state.status == "planned":
         return "planned", None
-    return "active", None
+    return "active", {
+        "kind": "active",
+        "message": "I'm taking care of this.",
+    }
 
 
 def _actions(
-    state: WorkState, running: tuple[ExecutionRecord, ...]
+    state: WorkState,
+    running: tuple[ExecutionRecord, ...],
+    *,
+    contract: WorkContract,
+    phase: str,
 ) -> tuple[str, ...]:
-    if state.status in {"completed", "failed", "cancelled"}:
-        actions = ["result"]
-        if running:
-            actions.append("recover")
+    actions: list[str] = []
+    archived = is_archived(state)
+    paused = is_paused(state) or phase == "paused"
+    pausing = is_pause_requested(state) or phase == "pausing"
+    unarmed = any(not pin.armed for pin in contract.capabilities)
+    terminal = state.status in {"completed", "failed", "cancelled"}
+    in_flight = bool(running)
+
+    if archived:
+        actions.append("unarchive")
+        if not in_flight:
+            actions.append("delete")
         return tuple(actions)
-    actions = ["run"]
-    if running:
+
+    if terminal:
+        actions.append("result")
+        if in_flight:
+            actions.append("recover")
+        if not in_flight:
+            actions.append("archive")
+            actions.append("delete")
+        return tuple(actions)
+
+    executable = (
+        not unarmed
+        and not in_flight
+        and phase
+        not in {
+            "waiting_confirmation",
+            "waiting_authority",
+            "unavailable",
+            "pausing",
+        }
+    )
+    if executable:
+        actions.append("run")
+    if phase in {"running", "active"} and not paused and not pausing:
+        actions.append("pause")
+    if in_flight:
         actions.append("recover")
-    if state.status != "cancelled":
-        actions.append("cancel")
+    actions.append("cancel")
+    if not in_flight and not pausing:
+        actions.append("archive")
+        actions.append("delete")
     return tuple(actions)
 
 

@@ -9,13 +9,16 @@ import { Panel } from '../ui/Panel'
 import { StepProgress } from '../ui/StepProgress'
 import { Workspace, WorkspaceRailSection } from '../ui/Workspace'
 
-type Filter = 'all' | 'needs_you' | 'in_progress' | 'waiting' | 'done' | 'failed'
+type Filter = 'all' | 'needs_you' | 'in_progress' | 'waiting' | 'done' | 'failed' | 'archived'
 
 export function WorkList() {
   const [filter, setFilter] = useState<Filter>('all')
   const query = useQuery({
-    queryKey: ['work'],
-    queryFn: () => api<{ work: WorkListItem[] }>('/api/work'),
+    queryKey: ['work', filter === 'archived'],
+    queryFn: () =>
+      api<{ work: WorkListItem[] }>(
+        filter === 'archived' ? '/api/work?archived=true' : '/api/work',
+      ),
   })
   const items = query.data?.work || []
   const details = useQueries({
@@ -74,6 +77,7 @@ export function WorkList() {
               ['waiting', 'Waiting'],
               ['done', 'Done'],
               ['failed', 'Failed'],
+              ['archived', 'Archived'],
             ] as const
           ).map(([id, label]) => (
             <button

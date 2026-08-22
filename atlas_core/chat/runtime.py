@@ -112,11 +112,28 @@ class ChatRuntime:
             cid = self._conversations.get_or_create(None).id
         return self._conversations.view(cid)
 
-    def list_conversations(self) -> tuple[ConversationView, ...]:
+    def list_conversations(self, *, archived: bool = False) -> tuple[ConversationView, ...]:
         return tuple(
             self._conversations.view(item.id, include_turns=False)
-            for item in self._conversations.list()
+            for item in self._conversations.list(archived=archived)
         )
+
+    def rename_conversation(self, conversation_id: str, title: str) -> ConversationView:
+        record = self._conversations.rename(conversation_id, title)
+        return self._conversations.view(record.id, include_turns=False)
+
+    def pin_conversation(self, conversation_id: str, pinned: bool) -> ConversationView:
+        record = self._conversations.set_pinned(conversation_id, pinned)
+        return self._conversations.view(record.id, include_turns=False)
+
+    def archive_conversation(
+        self, conversation_id: str, archived: bool
+    ) -> ConversationView:
+        record = self._conversations.set_archived(conversation_id, archived)
+        return self._conversations.view(record.id, include_turns=False)
+
+    def delete_conversation(self, conversation_id: str) -> None:
+        self._conversations.delete(conversation_id)
 
 
 def build_chat_runtime(

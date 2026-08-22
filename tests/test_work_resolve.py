@@ -15,6 +15,7 @@ from atlas_core.capabilities import (
 from atlas_core.tools import ToolDescriptor, ToolGateway, ToolResult
 from atlas_core.work import (
     UNAVAILABLE,
+    UnavailableWork,
     CapabilityExecutionProfile,
     DeploymentInventory,
     ImplementationResolver,
@@ -405,14 +406,11 @@ class WorkRuntimeResolveTests(unittest.TestCase):
     def test_post_accept_register_cannot_arm_unarmed_work(self) -> None:
         inventory = _TrackingInventory()
         runtime = build_work_runtime(db_path=self.db, profiles=inventory)
-        work_id = runtime.accept(_brief(), "execute_external")
+        with self.assertRaises(UnavailableWork):
+            runtime.accept(_brief(), "execute_external")
         after_build = inventory.all_calls
         inventory.register(_profile("1.0.0"), _handler)
-        result = runtime.run(work_id)
-        self.assertEqual(result.reason, UNAVAILABLE)
-        self.assertEqual(result.executions, 0)
-        self.assertEqual(runtime._engine.store.list_executions(work_id), ())
-        self.assertFalse(runtime.contract(work_id).capability("automation.workflow.create").armed)
+        self.assertEqual(runtime.store.list_work(), ())
         self.assertEqual(inventory.all_calls, after_build)
 
     def test_post_accept_newer_version_cannot_replace_the_pin(self) -> None:

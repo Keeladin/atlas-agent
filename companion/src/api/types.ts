@@ -5,6 +5,8 @@ export type WorkListItem = {
   authority_scope: string
   created_at: string
   updated_at: string
+  archived?: boolean
+  paused?: boolean
 }
 
 export type PendingApproval = {
@@ -84,6 +86,15 @@ export type UnsupportedBrief = {
   closest_capability: string | null
 }
 
+export type UnavailableAcceptance = {
+  status: 'unavailable'
+  objective: string
+  reason: string
+  capabilities: string[]
+  unarmed: string[]
+  mismatches: string[]
+}
+
 export type BriefResult = TaskBrief | UnsupportedBrief
 
 export function isUnsupportedBrief(
@@ -97,10 +108,24 @@ export function isUnsupportedBrief(
   )
 }
 
+export function isUnavailableAcceptance(
+  value: unknown,
+): value is UnavailableAcceptance {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'status' in value &&
+    (value as { status?: unknown }).status === 'unavailable'
+  )
+}
+
 export type Conversation = {
   id: string
   title: string
   turn_count: number
+  pinned?: boolean
+  archived?: boolean
+  archived_at?: string | null
   turns?: Array<{
     id: string
     role: string

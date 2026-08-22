@@ -218,23 +218,21 @@ class WorkEngineTests(unittest.TestCase):
         self.assertEqual(seen["surface"].allowed_tools, frozenset({"mail.deliver@1.0.0"}))
 
     def test_unarmed_returns_unavailable_with_zero_executions(self) -> None:
+        from atlas_core.work import UnavailableWork
+
         runtime = build_work_runtime(db_path=self.db)
-        work_id = runtime.accept(
-            TaskBrief(
-                objective="Create automation",
-                capabilities=("automation.workflow.create",),
-                required_authority="execute_external",
-                expected_effect="Create an automation workflow",
-            ),
-            "execute_external",
-        )
-        contract, report = self._resolve(runtime, work_id)
-        self.assertTrue(report.unarmed)
-        result = self._engine(runtime).run(contract, report)
-        self.assertEqual(result.reason, UNAVAILABLE)
-        self.assertEqual(result.executions, 0)
-        self.assertEqual(runtime._engine.store.list_executions(work_id), ())
-        self.assertEqual(runtime.get(work_id).status, "planned")
+        with self.assertRaises(UnavailableWork) as ctx:
+            runtime.accept(
+                TaskBrief(
+                    objective="Create automation",
+                    capabilities=("automation.workflow.create",),
+                    required_authority="execute_external",
+                    expected_effect="Create an automation workflow",
+                ),
+                "execute_external",
+            )
+        self.assertEqual(ctx.exception.result.status, "unavailable")
+        self.assertEqual(runtime.store.list_work(), ())
 
     def test_mismatch_fails_that_step_and_still_runs_the_other(self) -> None:
         inventory = DeploymentInventory()

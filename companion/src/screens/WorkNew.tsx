@@ -2,11 +2,13 @@ import { useMutation } from '@tanstack/react-query'
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { api } from '../api/client'
+import { ApiError, api } from '../api/client'
 import {
+  isUnavailableAcceptance,
   isUnsupportedBrief,
   type BriefResult,
   type TaskBrief,
+  type UnavailableAcceptance,
   type UnsupportedBrief,
   type WorkDetail,
 } from '../api/types'
@@ -30,6 +32,7 @@ export function WorkNew() {
   const [notes, setNotes] = useState('')
   const [brief, setBrief] = useState<TaskBrief | null>(null)
   const [unsupported, setUnsupported] = useState<UnsupportedBrief | null>(null)
+  const [unavailable, setUnavailable] = useState<UnavailableAcceptance | null>(null)
   const [authority, setAuthority] = useState('read')
   const [to, setTo] = useState('')
   const [subject, setSubject] = useState('')
@@ -46,6 +49,7 @@ export function WorkNew() {
       if (isUnsupportedBrief(data)) {
         setBrief(null)
         setUnsupported(data)
+        setUnavailable(null)
         return
       }
       if (!data.capabilities?.length) {
@@ -55,12 +59,14 @@ export function WorkNew() {
         return
       }
       setUnsupported(null)
+      setUnavailable(null)
       setBrief(data)
       setAuthority(data.required_authority)
     },
     onError: (err: Error) => {
       setBrief(null)
       setUnsupported(null)
+      setUnavailable(null)
       setError(err.message)
     },
   })
@@ -84,8 +90,22 @@ export function WorkNew() {
         }),
       })
     },
-    onSuccess: (detail) => navigate(`/work/${detail.work_id}`),
-    onError: (err: Error) => setError(err.message),
+    onSuccess: (detail) => {
+      if (isUnavailableAcceptance(detail)) {
+        setUnavailable(detail)
+        setError(null)
+        return
+      }
+      navigate(`/work/${detail.work_id}`)
+    },
+    onError: (err: Error) => {
+      if (err instanceof ApiError && isUnavailableAcceptance(err.body)) {
+        setUnavailable(err.body)
+        setError(null)
+        return
+      }
+      setError(err.message)
+    },
   })
 
   function onPlan(event: FormEvent) {
@@ -168,7 +188,7 @@ export function WorkNew() {
       <Panel title="Expected result">
         {brief ? (
           <p style={{ marginTop: 0 }}>{brief.expected_effect}</p>
-        ) : unsupported ? (
+        ) : unsupported || unavailable ? (
           <p style={{ marginTop: 0 }} className="meta">
             No executable plan yet.
           </p>
@@ -217,7 +237,7 @@ export function WorkNew() {
       ) : null}
 
       <Panel title="Accept">
-        {brief ? (
+        {brief && !unavailable ? (
           <div className="actions" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
             <button
               className="primary"
@@ -225,7 +245,7 @@ export function WorkNew() {
               disabled={acceptMutation.isPending}
               onClick={() => acceptMutation.mutate()}
             >
-              Accept into Work
+              I'll take this on
             </button>
             <button
               type="button"
@@ -235,7 +255,7 @@ export function WorkNew() {
               Revise plan
             </button>
           </div>
-        ) : unsupported ? (
+        ) : unsupported || unavailable ? (
           <button
             type="button"
             onClick={() => briefMutation.mutate()}
@@ -258,6 +278,11 @@ export function WorkNew() {
             {JSON.stringify(unsupported, null, 2)}
           </Inspect>
         ) : null}
+        {unavailable ? (
+          <Inspect label="Inspect unavailable result">
+            {JSON.stringify(unavailable, null, 2)}
+          </Inspect>
+        ) : null}
       </Panel>
     </div>
   )
@@ -278,10 +303,20 @@ export function WorkNew() {
       banner={error ? <p className="error-text">{error}</p> : null}
     >
       <Panel title="Proposed plan">
-        {unsupported ? (
+        {unavailable ? (
           <>
             <p className="empty" style={{ marginTop: 0 }}>
-              Atlas can't turn this into Work yet
+              I can't do this yet
+            </p>
+            <div className="brief-row">
+              <span>Reason</span>
+              <div>{unavailable.reason}</div>
+            </div>
+          </>
+        ) : unsupported ? (
+          <>
+            <p className="empty" style={{ marginTop: 0 }}>
+              I can't turn this into work yet
             </p>
             <div className="brief-row">
               <span>Reason</span>

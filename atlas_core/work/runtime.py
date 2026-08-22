@@ -22,8 +22,16 @@ from .engine import WorkEngine
 from .inventory import DeploymentInventory
 from .resolve import ImplementationResolver
 from .model import WorkModelConsumer
-from .store import UnknownRecordError, WorkStore, WorkStoreError
-from .work import UNAVAILABLE, WorkError, WorkId, WorkRecord
+from .availability import refuse_if_unexecutable
+from .control import (
+    control_patch,
+    is_archived,
+    is_pause_requested,
+    is_paused,
+    running_executions,
+)
+from .store import InvalidTransitionError, UnknownRecordError, WorkStore, WorkStoreError
+from .work import TERMINAL_STATUSES, UNAVAILABLE, WorkError, WorkId, WorkRecord
 
 
 DEFAULT_WORK_DB = Path("instance/atlas-work.db")
@@ -72,6 +80,12 @@ class WorkRuntime:
             tools=self._tool_gateway,
             providers=self._providers,
             work_budget=self._budget,
+        )
+        refuse_if_unexecutable(
+            brief=brief,
+            contract=contract,
+            inventory=self._profiles,
+            tools=self._tool_gateway,
         )
         store = self.store
         store.create_work(
@@ -134,6 +148,15 @@ class WorkRuntime:
         return work_id
 
     def run(self, work_id: WorkId) -> RuntimeResult:
+        state = self.store.get_work(work_id)
+        if is_archived(state):
+            raise WorkError("archived work cannot run")
+        if is_paused(state) or is_pause_requested(state):
+            self.store.merge_work_metadata(
+                work_id,
+                control_patch(paused=False, pause_requested=False),
+            )
+            self._engine._emit(work_id, "work.resumed", payload={"reason": "owner_requested"})
         contract = self.contract(work_id)
         report = ImplementationResolver().resolve(
             contract, self._profiles, self._tool_gateway
@@ -144,11 +167,75 @@ class WorkRuntime:
         return self._engine.run(contract, report)
 
     def resume(self, work_id: WorkId) -> int:
+        state = self.store.get_work(work_id)
+        if is_archived(state):
+            raise WorkError("archived work cannot run")
         contract = self.contract(work_id)
         report = ImplementationResolver().resolve(
             contract, self._profiles, self._tool_gateway
         )
         return self._engine.resume(contract, report)
+
+    def pause(self, work_id: WorkId) -> WorkRecord:
+        state = self.store.get_work(work_id)
+        if state.status in TERMINAL_STATUSES:
+            raise WorkError(f"work is already {state.status}")
+        if is_archived(state):
+            raise WorkError("archived work cannot be paused")
+        running = running_executions(self.store.list_executions(work_id))
+        if running:
+            if is_pause_requested(state) and not is_paused(state):
+                return self.get(work_id)
+            self.store.merge_work_metadata(
+                work_id, control_patch(pause_requested=True, paused=False)
+            )
+            self._engine._emit(
+                work_id,
+                "work.pause_requested",
+                payload={"reason": "owner_requested", "in_flight": True},
+            )
+            return self.get(work_id)
+        if is_paused(state):
+            return self.get(work_id)
+        if state.status == "active":
+            self.store.set_work_status(work_id, "waiting")
+        self.store.merge_work_metadata(
+            work_id, control_patch(paused=True, pause_requested=False)
+        )
+        self._engine._emit(
+            work_id, "work.paused", payload={"reason": "owner_requested"}
+        )
+        return self.get(work_id)
+
+    def archive(self, work_id: WorkId, *, archived: bool = True) -> WorkRecord:
+        state = self.store.get_work(work_id)
+        if running_executions(self.store.list_executions(work_id)):
+            raise WorkError("cannot archive while an action is in flight")
+        if archived and is_pause_requested(state):
+            raise WorkError("cannot archive while a pause is in progress")
+        try:
+            self.store.merge_work_metadata(
+                work_id, control_patch(archived=archived), require_idle=archived
+            )
+        except InvalidTransitionError as exc:
+            raise WorkError(str(exc)) from exc
+        self._engine._emit(
+            work_id,
+            "work.archived" if archived else "work.unarchived",
+            payload={"reason": "owner_requested"},
+        )
+        return self.get(work_id)
+
+    def delete(self, work_id: WorkId) -> None:
+        state = self.store.get_work(work_id)
+        if running_executions(self.store.list_executions(work_id)):
+            raise WorkError("cannot delete while an action is in flight")
+        if is_pause_requested(state):
+            raise WorkError("cannot delete while a pause is in progress")
+        try:
+            self.store.delete_work(work_id, require_idle=True)
+        except InvalidTransitionError as exc:
+            raise WorkError(str(exc)) from exc
 
     def recover(self, work_id: WorkId) -> RecoveryResult:
         contract = self.contract(work_id)

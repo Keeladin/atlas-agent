@@ -18,7 +18,8 @@ async def list_conversations(request: Request) -> JSONResponse:
     gate = require_session(request)
     if isinstance(gate, JSONResponse):
         return gate
-    items = _services(request).chat.list_conversations()
+    archived = request.query_params.get("archived") in {"1", "true", "yes"}
+    items = _services(request).chat.list_conversations(archived=archived)
     return JSONResponse({"conversations": [item.as_dict() for item in items]})
 
 
@@ -45,6 +46,44 @@ async def get_conversation(request: Request) -> JSONResponse:
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
     return JSONResponse(view.as_dict())
+
+
+async def update_conversation(request: Request) -> JSONResponse:
+    gate = require_mutation_auth(request)
+    if isinstance(gate, JSONResponse):
+        return gate
+    conversation_id = request.path_params["conversation_id"]
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    chat = _services(request).chat
+    payload = body or {}
+    try:
+        if "title" in payload:
+            chat.rename_conversation(conversation_id, str(payload.get("title") or ""))
+        if "pinned" in payload:
+            chat.pin_conversation(conversation_id, bool(payload.get("pinned")))
+        if "archived" in payload:
+            chat.archive_conversation(conversation_id, bool(payload.get("archived")))
+        if not any(key in payload for key in ("title", "pinned", "archived")):
+            return JSONResponse({"error": "no conversation update provided"}, status_code=400)
+        view = chat.conversation(conversation_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    return JSONResponse(view.as_dict())
+
+
+async def delete_conversation(request: Request) -> JSONResponse:
+    gate = require_mutation_auth(request)
+    if isinstance(gate, JSONResponse):
+        return gate
+    conversation_id = request.path_params["conversation_id"]
+    try:
+        _services(request).chat.delete_conversation(conversation_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    return JSONResponse({"deleted": conversation_id})
 
 
 async def send_message(request: Request) -> JSONResponse:
@@ -78,6 +117,16 @@ routes = [
         "/api/chat/conversations/{conversation_id}",
         get_conversation,
         methods=["GET"],
+    ),
+    Route(
+        "/api/chat/conversations/{conversation_id}",
+        update_conversation,
+        methods=["PATCH"],
+    ),
+    Route(
+        "/api/chat/conversations/{conversation_id}",
+        delete_conversation,
+        methods=["DELETE"],
     ),
     Route(
         "/api/chat/conversations/{conversation_id}/messages",

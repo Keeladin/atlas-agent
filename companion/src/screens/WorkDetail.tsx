@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { WorkDetail as WorkDetailType } from '../api/types'
 import {
@@ -22,7 +22,9 @@ import {
 
 export function WorkDetail() {
   const { workId = '' } = useParams()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const detailQuery = useQuery({
     queryKey: ['work-detail', workId],
     queryFn: () => api<WorkDetailType>(`/api/work/${workId}/detail`),
@@ -50,6 +52,8 @@ export function WorkDetail() {
     source.addEventListener('approval.requested', refresh)
     source.addEventListener('approval.applied', refresh)
     source.addEventListener('work.paused', refresh)
+    source.addEventListener('work.pause_requested', refresh)
+    source.addEventListener('work.resumed', refresh)
     source.addEventListener('work.completed', refresh)
     source.addEventListener('work.failed', refresh)
     source.addEventListener('capability.completed', refresh)
@@ -75,6 +79,31 @@ export function WorkDetail() {
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: ['work-detail', workId] }),
   })
+  const pauseMutation = useMutation({
+    mutationFn: () =>
+      api(`/api/work/${workId}/pause`, { method: 'POST', body: '{}' }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['work-detail', workId] }),
+  })
+  const archiveMutation = useMutation({
+    mutationFn: (archived: boolean) =>
+      api(`/api/work/${workId}/archive`, {
+        method: 'POST',
+        body: JSON.stringify({ archived }),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['work-detail', workId] })
+      void queryClient.invalidateQueries({ queryKey: ['work'] })
+    },
+  })
+  const deleteMutation = useMutation({
+    mutationFn: () =>
+      api(`/api/work/${workId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['work'] })
+      navigate('/work')
+    },
+  })
 
   const detail = detailQuery.data
   if (detailQuery.isLoading) return <p className="empty">Loading work…</p>
@@ -93,8 +122,15 @@ export function WorkDetail() {
     detail.phase === 'waiting_authority'
   const runLabel = runActionLabel(detail)
   const canRun = isExecutableRun(detail)
+  const canPause = detail.actions.includes('pause')
   const canRecover = detail.actions.includes('recover')
   const canCancel = detail.actions.includes('cancel')
+  const canArchive = detail.actions.includes('archive')
+  const canUnarchive = detail.actions.includes('unarchive')
+  const canDelete = detail.actions.includes('delete')
+  const irreversibleDone = detail.steps.some(
+    (step) => step.status === 'pass' || step.status === 'skipped',
+  )
 
   const rail = (
     <Panel>
@@ -114,8 +150,8 @@ export function WorkDetail() {
       </WorkspaceRailSection>
       <WorkspaceRailSection title="You are in charge">
         <p className="meta" style={{ marginTop: 0 }}>
-          Atlas carries the work. Controls below only appear when the host
-          supports them safely.
+          Atlas does the work. You stay in charge. Controls appear only when
+          they are real for this host and this moment.
         </p>
         <LifecycleControls>
           {canRun && runLabel ? (
@@ -127,6 +163,21 @@ export function WorkDetail() {
             >
               {runLabel}
             </button>
+          ) : null}
+          {canPause ? (
+            <button
+              className="warn"
+              type="button"
+              disabled={pauseMutation.isPending}
+              onClick={() => pauseMutation.mutate()}
+            >
+              Pause
+            </button>
+          ) : null}
+          {detail.phase === 'pausing' ? (
+            <p className="meta" style={{ margin: 0 }}>
+              Stopping at the next safe point.
+            </p>
           ) : null}
           {canRecover ? (
             <button
@@ -148,16 +199,69 @@ export function WorkDetail() {
               Cancel
             </button>
           ) : null}
-          {!canRun && !canRecover && !canCancel ? (
+          {canArchive ? (
+            <button
+              type="button"
+              disabled={archiveMutation.isPending}
+              onClick={() => archiveMutation.mutate(true)}
+            >
+              Archive
+            </button>
+          ) : null}
+          {canUnarchive ? (
+            <button
+              type="button"
+              disabled={archiveMutation.isPending}
+              onClick={() => archiveMutation.mutate(false)}
+            >
+              Restore
+            </button>
+          ) : null}
+          {canDelete && !confirmDelete ? (
+            <button
+              className="danger"
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+            >
+              Delete
+            </button>
+          ) : null}
+          {canDelete && confirmDelete ? (
+            <>
+              <button
+                className="danger"
+                type="button"
+                disabled={deleteMutation.isPending}
+                onClick={() => deleteMutation.mutate()}
+              >
+                Delete permanently
+              </button>
+              <button type="button" onClick={() => setConfirmDelete(false)}>
+                Keep
+              </button>
+            </>
+          ) : null}
+          {!canRun &&
+          !canPause &&
+          !canRecover &&
+          !canCancel &&
+          !canArchive &&
+          !canUnarchive &&
+          !canDelete ? (
             <p className="empty" style={{ margin: 0 }}>
               No executive actions available in this state.
             </p>
           ) : null}
         </LifecycleControls>
+        {irreversibleDone ? (
+          <p className="meta" style={{ marginTop: '0.75rem', marginBottom: 0 }}>
+            Finished steps stay done. Pause and cancel do not undo them.
+          </p>
+        ) : null}
         {waitingNotRunning ? (
           <p className="meta" style={{ marginTop: '0.75rem', marginBottom: 0 }}>
-            Decide in the centre first. Start/Resume stays hidden until the work
-            is executable again.
+            Decide in the centre first. Start and Resume stay hidden until I can
+            actually continue.
           </p>
         ) : null}
       </WorkspaceRailSection>
@@ -171,18 +275,23 @@ export function WorkDetail() {
         tone={detail.status === 'failed' ? 'failed' : undefined}
       >
         {detail.status === 'completed' ? (
-          <p style={{ marginTop: 0 }}>Work finished successfully.</p>
+          <p style={{ marginTop: 0 }}>Done — here's what changed.</p>
         ) : detail.status === 'failed' ? (
           <p style={{ marginTop: 0 }} className="error-text">
-            Work failed. Inspect activity and recover if needed.
+            I couldn't finish this. Inspect activity and recover if needed.
+          </p>
+        ) : detail.phase === 'unavailable' ? (
+          <p style={{ marginTop: 0 }} className="error-text">
+            {detail.blocking?.message || "I can't do this yet."}
           </p>
         ) : waitingNotRunning ? (
           <p style={{ marginTop: 0 }}>
-            Paused for your decision. No execution is running.
+            {detail.blocking?.message ||
+              'I need your decision before I continue. Nothing is running.'}
           </p>
         ) : (
           <p style={{ marginTop: 0 }} className="meta">
-            {detail.blocking?.message || 'In progress.'}
+            {detail.blocking?.message || "I'm taking care of this."}
           </p>
         )}
         <StepProgress steps={detail.steps} />
@@ -543,14 +652,18 @@ function stepLabel(status: string) {
 
 function humanEventName(name: string) {
   const map: Record<string, string> = {
-    'work.started': 'Work started',
-    'work.paused': 'Work paused',
-    'work.completed': 'Work completed',
-    'work.failed': 'Work failed',
-    'confirmation.requested': 'Confirmation requested',
-    'confirmation.applied': 'Confirmation applied',
-    'approval.requested': 'Authority approval requested',
-    'approval.applied': 'Authority approval applied',
+    'work.started': 'I started this',
+    'work.paused': 'I paused at a safe point',
+    'work.pause_requested': 'You asked me to pause',
+    'work.resumed': 'I continued',
+    'work.completed': 'Done',
+    'work.failed': "I couldn't finish",
+    'work.archived': 'Archived',
+    'work.unarchived': 'Restored from archive',
+    'confirmation.requested': 'I need your confirmation',
+    'confirmation.applied': 'Confirmation received',
+    'approval.requested': 'I need your approval',
+    'approval.applied': 'Approval received',
     'capability.completed': 'Step completed',
     'capability.started': 'Step started',
   }

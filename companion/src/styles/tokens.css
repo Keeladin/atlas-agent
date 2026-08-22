@@ -1172,3 +1172,61 @@ a.card:hover {
     max-height: 28%;
   }
 }
+
+.chat-recent-wrap {
+  display: flex;
+  align-items: stretch;
+  gap: 0.2rem;
+  margin-bottom: 0.35rem;
+}
+
+.chat-recent-wrap .chat-recent-item {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+}
+
+.chat-recent-more {
+  flex: 0 0 auto;
+  min-width: var(--touch);
+  padding: 0 0.55rem;
+  border-radius: 12px;
+}
+
+.chat-recent-rename {
+  display: grid;
+  gap: 0.4rem;
+  margin-bottom: 0.55rem;
+}
+
+.menu-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+
+.menu {
+  position: fixed;
+  z-index: 51;
+  min-width: 180px;
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.4rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--atlas-border);
+  background: var(--atlas-surface-2);
+  box-shadow: var(--shadow);
+}
+
+.menu button {
+  width: 100%;
+  justify-content: flex-start;
+  border-radius: 10px;
+}
+
+.menu-confirm {
+  margin-top: 0.65rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--atlas-border);
+  background: var(--atlas-surface-1);
+}

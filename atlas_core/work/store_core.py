@@ -52,15 +52,62 @@ class WorkStoreCoreMixin:
             raise UnknownRecordError(f"Unknown work: {work_id}")
         return self._work_from_row(row)
 
-    def list_work(self, *, status: str | None = None) -> tuple[WorkState, ...]:
+    def list_work(
+        self, *, status: str | None = None, archived: bool | None = False
+    ) -> tuple[WorkState, ...]:
         with self._db() as db:
             if status is None:
                 rows = db.execute("SELECT * FROM work ORDER BY created_at,id").fetchall()
             else:
                 if status not in WORK_STATUSES:
                     raise ValueError(f"Unsupported work status: {status}")
-                rows = db.execute("SELECT * FROM work WHERE status=? ORDER BY created_at,id", (status,)).fetchall()
-        return tuple(self._work_from_row(row) for row in rows)
+                rows = db.execute(
+                    "SELECT * FROM work WHERE status=? ORDER BY created_at,id",
+                    (status,),
+                ).fetchall()
+        items = tuple(self._work_from_row(row) for row in rows)
+        if archived is None:
+            return items
+        from .control import is_archived
+
+        return tuple(item for item in items if is_archived(item) is archived)
+
+    def merge_work_metadata(
+        self,
+        work_id: str,
+        patch: dict[str, Any],
+        *,
+        require_idle: bool = False,
+    ) -> WorkState:
+        with self._immediate() as db:
+            row = db.execute("SELECT * FROM work WHERE id=?", (work_id,)).fetchone()
+            if row is None:
+                raise UnknownRecordError(f"Unknown work: {work_id}")
+            if require_idle:
+                running = db.execute(
+                    "SELECT COUNT(*) AS n FROM work_executions "
+                    "WHERE work_id=? AND status='running'",
+                    (work_id,),
+                ).fetchone()
+                if int(running["n"]):
+                    raise InvalidTransitionError(
+                        "cannot mutate control while an action is in flight"
+                    )
+            current = self._work_from_row(row)
+            merged = dict(current.metadata)
+            for key, value in patch.items():
+                if key == "control" and isinstance(value, dict):
+                    existing = merged.get("control")
+                    base = dict(existing) if isinstance(existing, dict) else {}
+                    base.update(value)
+                    merged["control"] = base
+                else:
+                    merged[key] = value
+            db.execute(
+                "UPDATE work SET metadata_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (_json_dump(merged), work_id),
+            )
+        return self.get_work(work_id)
 
     def set_work_status(self, work_id: str, status: str, *, force: bool = False) -> WorkState:
         if status not in WORK_STATUSES:
@@ -89,22 +136,36 @@ class WorkStoreCoreMixin:
         "work",
     )
 
-    def delete_work(self, work_id: str) -> None:
-        self.get_work(work_id)
-        with self._db() as db:
+    def delete_work(self, work_id: str, *, require_idle: bool = False) -> None:
+        with self._immediate() as db:
+            row = db.execute("SELECT id FROM work WHERE id=?", (work_id,)).fetchone()
+            if row is None:
+                raise UnknownRecordError(f"Unknown work: {work_id}")
+            if require_idle:
+                running = db.execute(
+                    "SELECT COUNT(*) AS n FROM work_executions "
+                    "WHERE work_id=? AND status='running'",
+                    (work_id,),
+                ).fetchone()
+                if int(running["n"]):
+                    raise InvalidTransitionError(
+                        "cannot delete while an action is in flight"
+                    )
             cursor = db.execute("DELETE FROM work WHERE id=?", (work_id,))
             if cursor.rowcount != 1:
                 raise UnknownRecordError(f"Unknown work: {work_id}")
             leftover = []
             for table in self._WORK_OWNED_TABLES:
                 if table == "work":
-                    row = db.execute("SELECT COUNT(*) AS n FROM work WHERE id=?", (work_id,)).fetchone()
+                    count = db.execute(
+                        "SELECT COUNT(*) AS n FROM work WHERE id=?", (work_id,)
+                    ).fetchone()
                 else:
-                    row = db.execute(
+                    count = db.execute(
                         f"SELECT COUNT(*) AS n FROM {table} WHERE work_id=?",
                         (work_id,),
                     ).fetchone()
-                if int(row["n"]):
+                if int(count["n"]):
                     leftover.append(table)
             if leftover:
                 raise WorkStoreError(

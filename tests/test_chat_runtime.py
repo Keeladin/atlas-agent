@@ -232,6 +232,32 @@ class ChatRuntimeTests(unittest.TestCase):
         self.assertIn("atlas", model_reply)
         self.assertEqual(cloud.requests, [])
 
+    def test_rename_pin_archive_delete(self) -> None:
+        chat = self._runtime()
+        first = chat.respond("Hello Atlas")
+        second = chat.create_conversation(title="Later")
+        chat.rename_conversation(first.conversation_id, "Torque notes")
+        renamed = chat.conversation(first.conversation_id)
+        self.assertEqual(renamed.title, "Torque notes")
+        self.assertEqual(renamed.turn_count, 2)
+
+        chat.pin_conversation(second.id, True)
+        recents = chat.list_conversations()
+        self.assertEqual(recents[0].id, second.id)
+        self.assertTrue(recents[0].pinned)
+
+        chat.archive_conversation(first.conversation_id, True)
+        recents = chat.list_conversations()
+        self.assertEqual([item.id for item in recents], [second.id])
+        archived = chat.list_conversations(archived=True)
+        self.assertEqual([item.id for item in archived], [first.conversation_id])
+        self.assertTrue(archived[0].archived_at)
+
+        chat.delete_conversation(first.conversation_id)
+        self.assertEqual(chat.list_conversations(archived=True), ())
+        remaining = chat.list_conversations()
+        self.assertEqual([item.id for item in remaining], [second.id])
+
 
 def _table_names(path: Path) -> set[str]:
     with sqlite3.connect(path) as db:

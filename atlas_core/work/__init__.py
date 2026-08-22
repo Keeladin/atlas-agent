@@ -18,6 +18,7 @@ from .model import WorkModelConsumer, WorkModelError
 from .records import ConfirmationRecord
 from .store import InvalidTransitionError, UnknownRecordError, WorkStore, WorkStoreError
 from .surface import ExecutionSurface, SurfaceError, project_surface
+from .availability import UnavailableAcceptance, UnavailableWork
 from .runtime import WorkRuntime, build_work_runtime
 from .work import UNAVAILABLE, WorkError, WorkId, WorkRecord
 
@@ -34,6 +35,8 @@ __all__ = [
     "ResolvedWork",
     "SurfaceError",
     "UNAVAILABLE",
+    "UnavailableAcceptance",
+    "UnavailableWork",
     "ConfirmationRecord",
     "WorkContract",
     "WorkEngine",

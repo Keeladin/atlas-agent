@@ -28,6 +28,26 @@ class WorkStoreSchemaMixin:
         finally:
             db.close()
 
+    @contextmanager
+    def _immediate(self):
+        """Exclusive read-modify-write. Serializes control/execution writers."""
+
+        db = self._connect()
+        previous = db.isolation_level
+        try:
+            db.isolation_level = None
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                yield db
+            except BaseException:
+                db.execute("ROLLBACK")
+                raise
+            else:
+                db.execute("COMMIT")
+        finally:
+            db.isolation_level = previous
+            db.close()
+
     def initialize(self) -> None:
         with self._db() as db:
             db.execute("PRAGMA journal_mode = WAL")

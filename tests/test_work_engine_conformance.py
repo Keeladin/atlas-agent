@@ -152,20 +152,20 @@ class WorkEngineConformanceTests(unittest.TestCase):
         )
 
     def test_unarmed_is_unavailable_on_runtime_and_engine(self) -> None:
-        left, right, _runtime, _left_id, _right_id = self._pair(
-            DeploymentInventory(),
-            TaskBrief(
-                objective="Create automation",
-                capabilities=("automation.workflow.create",),
-                required_authority="execute_external",
-                expected_effect="Create an automation workflow",
-            ),
-            "execute_external",
+        from atlas_core.work import UnavailableWork
+
+        runtime = build_work_runtime(db_path=self.db, profiles=DeploymentInventory())
+        brief = TaskBrief(
+            objective="Create automation",
+            capabilities=("automation.workflow.create",),
+            required_authority="execute_external",
+            expected_effect="Create an automation workflow",
         )
-        self.assertEqual(left, right)
-        self.assertEqual(left["result_reason"], UNAVAILABLE)
-        self.assertEqual(left["result_executions"], 0)
-        self.assertEqual(left["work_status"], "planned")
+        with self.assertRaises(UnavailableWork):
+            runtime.accept(brief, "execute_external")
+        with self.assertRaises(UnavailableWork):
+            runtime.accept(brief, "execute_external")
+        self.assertEqual(runtime.store.list_work(), ())
 
     def test_deterministic_pass_matches(self) -> None:
         inventory = DeploymentInventory()

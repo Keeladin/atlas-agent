@@ -26,12 +26,19 @@ class WorkStoreExecutionMixin:
         self._validate_artifacts_for_work(work_id, input_ids)
         execution_id = execution_id or _new_id("execution")
 
-        with self._db() as db:
-            work_row = db.execute("SELECT status FROM work WHERE id=?", (work_id,)).fetchone()
+        with self._immediate() as db:
+            work_row = db.execute(
+                "SELECT status, metadata_json FROM work WHERE id=?",
+                (work_id,),
+            ).fetchone()
             if work_row is None:
                 raise UnknownRecordError(f"Unknown work: {work_id}")
             if work_row["status"] not in {"planned", "active", "waiting"}:
                 raise InvalidTransitionError(f"Cannot execute terminal work {work_id}.")
+            metadata = _json_load(work_row["metadata_json"], {})
+            control = metadata.get("control") if isinstance(metadata, dict) else {}
+            if isinstance(control, dict) and control.get("archived"):
+                raise InvalidTransitionError("archived work cannot execute")
             step_row = db.execute("SELECT work_id,status FROM work_steps WHERE id=?", (step_id,)).fetchone()
             if step_row is None:
                 raise UnknownRecordError(f"Unknown step: {step_id}")

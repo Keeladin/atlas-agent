@@ -11,6 +11,7 @@ from atlas_core.capabilities import CapabilityBinding, CapabilityOutcome
 from atlas_core.runtime_types import RuntimeResult
 from atlas_core.work import (
     UNAVAILABLE,
+    UnavailableWork,
     CapabilityExecutionProfile,
     DeploymentInventory,
     WorkEngine,
@@ -45,7 +46,23 @@ class WorkRuntimeTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _runtime(self) -> WorkRuntime:
-        return build_work_runtime(db_path=self.work_db)
+        profiles = DeploymentInventory()
+        profiles.register(
+            CapabilityExecutionProfile(
+                capability_id="automation.workflow.create",
+                implementation=CapabilityBinding(
+                    "automation.workflow.create", "internal", "record", "1"
+                ),
+                verifier_id="core.nonempty",
+                executor_kind="deterministic",
+            ),
+            lambda request: CapabilityOutcome(
+                "pass",
+                output={"capability": request.capability_id},
+                receipt={"ok": True},
+            ),
+        )
+        return build_work_runtime(db_path=self.work_db, profiles=profiles)
 
     def test_accept_brief_creates_work_not_chat(self) -> None:
         runtime = self._runtime()
@@ -61,7 +78,7 @@ class WorkRuntimeTests(unittest.TestCase):
             tuple(pin.capability_id for pin in contract.capabilities),
             ("automation.workflow.create",),
         )
-        self.assertFalse(contract.capability("automation.workflow.create").armed)
+        self.assertTrue(contract.capability("automation.workflow.create").armed)
         self.assertEqual(contract.allowed_tools, ())
         self.assertEqual(
             contract.confirmation_requirements,
@@ -91,23 +108,10 @@ class WorkRuntimeTests(unittest.TestCase):
         self.assertFalse(hasattr(runtime, "frame"))
 
     def test_run_without_profile_does_not_execute(self) -> None:
-        runtime = self._runtime()
-        work_id = runtime.accept(_brief(), "execute_external")
-        engine = runtime._engine
-        calls: list[str] = []
-        original = engine.run
-
-        def wrapped(contract, report):
-            calls.append(contract.work_id)
-            return original(contract, report)
-
-        engine.run = wrapped  # type: ignore[method-assign]
-        result = runtime.run(work_id)
-        self.assertEqual(calls, [])
-        self.assertEqual(result.reason, UNAVAILABLE)
-        self.assertEqual(result.executions, 0)
-        self.assertEqual(engine.store.list_executions(work_id), ())
-        self.assertEqual(runtime.get(work_id).status, "planned")
+        runtime = build_work_runtime(db_path=self.work_db)
+        with self.assertRaises(UnavailableWork):
+            runtime.accept(_brief(), "execute_external")
+        self.assertEqual(runtime.store.list_work(), ())
 
     def test_run_with_profile_uses_work_engine(self) -> None:
         profiles = DeploymentInventory()
@@ -267,13 +271,11 @@ class WorkRuntimeTests(unittest.TestCase):
         self.assertEqual(steps[0].capability_version, "2.0.0")
 
     def test_unarmed_step_does_not_hardcode_version(self) -> None:
-        runtime = self._runtime()
-        work_id = runtime.accept(_brief(), "execute_external")
-        step = runtime._engine.store.list_steps(work_id)[0]
-        self.assertIsNone(step.capability_version)
-        self.assertFalse(
-            runtime.contract(work_id).capability("automation.workflow.create").armed
-        )
+        runtime = build_work_runtime(db_path=self.work_db)
+        with self.assertRaises(UnavailableWork) as ctx:
+            runtime.accept(_brief(), "execute_external")
+        self.assertEqual(ctx.exception.result.unarmed, ("automation.workflow.create",))
+        self.assertEqual(runtime.store.list_work(), ())
 
     def test_inputs_attach_only_to_the_named_capability(self) -> None:
         profiles = DeploymentInventory()

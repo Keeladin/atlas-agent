@@ -16,7 +16,8 @@ You cannot create tasks.
 You cannot call tools.
 You cannot claim work was completed.
 
-If the user wants something executed, explain that it requires a Work request.
+If the user wants something executed, say that it needs Work and they can
+Review in Work. You cannot start, accept, or run Work from conversation.
 """
 
 

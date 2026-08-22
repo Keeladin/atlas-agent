@@ -68,6 +68,11 @@ export type WorkDetail = {
   actions: string[]
 }
 
+export type BriefSource = {
+  conversation_id: string
+  until_turn_id: string | null
+}
+
 export type TaskBrief = {
   status?: 'brief'
   objective: string
@@ -77,6 +82,7 @@ export type TaskBrief = {
   constraints: string[]
   deliverable_kind?: string | null
   notes?: string | null
+  source?: BriefSource
 }
 
 export type UnsupportedBrief = {
@@ -84,6 +90,7 @@ export type UnsupportedBrief = {
   objective: string
   reason: string
   closest_capability: string | null
+  source?: BriefSource
 }
 
 export type UnavailableAcceptance = {

@@ -63,10 +63,20 @@ export function runActionLabel(detail: WorkDetail) {
 }
 
 const CAPABILITY_LABELS: Record<string, string> = {
+  'automation.workflow': 'Understand workflow automation',
   'automation.workflow.create': 'Create an automation workflow',
   'automation.workflow.execute': 'Run an automation workflow',
   'communication.email.send': 'Send an email',
   'knowledge.index': 'Index local knowledge',
+  'knowledge.search': 'Search local knowledge',
+  'knowledge.answer': 'Answer from local knowledge',
+  'knowledge.ingest_text': 'Index local text',
+  'planning.general': 'Plan the work',
+  'reasoning.general': 'Reason through the request',
+  'reasoning.deep_analysis': 'Analyze the request in depth',
+  'generation.compose': 'Compose the requested text',
+  'coding.software_engineering': 'Implement software changes',
+  'documents.multimodal': 'Interpret document pages',
 }
 
 export function humanCapabilityLabel(capabilityId: string) {

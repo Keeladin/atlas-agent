@@ -36,12 +36,12 @@ class FakeProvider:
         if "run the maintenance automation" in request.input.casefold():
             if (
                 "cannot execute work" in system
-                and "work request" in system
+                and "review in work" in system
                 and "automation.workflow" in system
             ):
                 text = (
                     "Atlas understands workflow automation as a capability. "
-                    "I cannot run it from conversation; execution requires a Work request."
+                    "I cannot run it from conversation; Review in Work to take it on."
                 )
             else:
                 text = "Running the maintenance automation now."
@@ -114,7 +114,7 @@ class ChatRuntimeTests(unittest.TestCase):
         result = chat.respond("Run the maintenance automation")
         reply = result.reply.casefold()
         self.assertIn("workflow automation", reply)
-        self.assertIn("work request", reply)
+        self.assertIn("review in work", reply)
         self.assertNotIn("running the maintenance automation now", reply)
         request = self.provider.requests[0]
         self.assertIn("automation.workflow", request.system)
@@ -157,7 +157,7 @@ class ChatRuntimeTests(unittest.TestCase):
         self.assertIn("You cannot execute work.", prompt)
         self.assertIn("You cannot create tasks.", prompt)
         self.assertIn("You cannot call tools.", prompt)
-        self.assertIn("Work request", prompt)
+        self.assertIn("Review in Work", prompt)
         self.assertNotIn("execute_workflow", prompt)
         self.assertIn("Atlas identity (runtime truth", prompt)
         self.assertIn("user's own Atlas host", prompt)

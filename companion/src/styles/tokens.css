@@ -879,6 +879,15 @@ a.card:hover {
   font-size: 0.82rem;
 }
 
+.atlas-will {
+  margin: 0;
+  padding-left: 1.15rem;
+}
+
+.atlas-will li {
+  margin: 0.15rem 0;
+}
+
 .empty {
   color: var(--muted);
   padding: 0.5rem 0;

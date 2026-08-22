@@ -1,7 +1,7 @@
 import { useMutation } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ApiError, api } from '../api/client'
 import {
   isUnavailableAcceptance,
@@ -17,32 +17,37 @@ import { Inspect } from '../ui/Inspect'
 import { Panel } from '../ui/Panel'
 import { Workspace, WorkspaceRailSection } from '../ui/Workspace'
 
-const AUTHORITIES = [
-  'read',
-  'interpret',
-  'recommend',
-  'modify_internal',
-  'communicate',
-  'execute_external',
-]
+type BriefBody = {
+  objective?: string
+  notes?: string | null
+  conversation_id?: string
+  until_turn_id?: string
+  revision?: string
+}
 
 export function WorkNew() {
   const navigate = useNavigate()
-  const [objective, setObjective] = useState('')
-  const [notes, setNotes] = useState('')
+  const [searchParams] = useSearchParams()
+  const conversationId = searchParams.get('conversation')?.trim() || ''
+  const untilTurnId = searchParams.get('until')?.trim() || ''
+  const fromChat = Boolean(conversationId)
+
+  const [request, setRequest] = useState('')
+  const [extra, setExtra] = useState('')
+  const [revision, setRevision] = useState('')
   const [brief, setBrief] = useState<TaskBrief | null>(null)
   const [unsupported, setUnsupported] = useState<UnsupportedBrief | null>(null)
   const [unavailable, setUnavailable] = useState<UnavailableAcceptance | null>(null)
-  const [authority, setAuthority] = useState('read')
   const [to, setTo] = useState('')
   const [subject, setSubject] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [handoffStarted, setHandoffStarted] = useState(false)
 
   const briefMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: (body: BriefBody) =>
       api<BriefResult>('/api/advanced/brief', {
         method: 'POST',
-        body: JSON.stringify({ objective, notes: notes || null }),
+        body: JSON.stringify(body),
       }),
     onSuccess: (data) => {
       setError(null)
@@ -61,7 +66,6 @@ export function WorkNew() {
       setUnsupported(null)
       setUnavailable(null)
       setBrief(data)
-      setAuthority(data.required_authority)
     },
     onError: (err: Error) => {
       setBrief(null)
@@ -70,6 +74,16 @@ export function WorkNew() {
       setError(err.message)
     },
   })
+
+  useEffect(() => {
+    if (!fromChat) return
+    setHandoffStarted(true)
+    const body: BriefBody = { conversation_id: conversationId }
+    if (untilTurnId) body.until_turn_id = untilTurnId
+    briefMutation.mutate(body)
+    // Compile once per conversation pointer. briefMutation is unstable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, untilTurnId, fromChat])
 
   const acceptMutation = useMutation({
     mutationFn: async () => {
@@ -85,7 +99,7 @@ export function WorkNew() {
         method: 'POST',
         body: JSON.stringify({
           brief,
-          authority_scope: authority,
+          authority_scope: brief.required_authority,
           inputs: Object.keys(inputs).length ? inputs : undefined,
         }),
       })
@@ -108,79 +122,128 @@ export function WorkNew() {
     },
   })
 
-  function onPlan(event: FormEvent) {
+  function compileDirect(event: FormEvent) {
     event.preventDefault()
-    briefMutation.mutate()
+    briefMutation.mutate({
+      objective: request,
+      notes: extra.trim() ? extra : null,
+    })
   }
+
+  function compileRevision(event: FormEvent) {
+    event.preventDefault()
+    const text = revision.trim()
+    if (!text) return
+    if (fromChat) {
+      const body: BriefBody = {
+        conversation_id: conversationId,
+        revision: text,
+      }
+      if (untilTurnId) body.until_turn_id = untilTurnId
+      briefMutation.mutate(body)
+      return
+    }
+    briefMutation.mutate({
+      objective: text,
+      notes: extra.trim() ? extra : null,
+    })
+  }
+
+  const planning = briefMutation.isPending
+  const ready = Boolean(brief) && !unavailable
+  const blocked = Boolean(unsupported || unavailable)
 
   const rail = (
     <Panel>
-      <WorkspaceRailSection title="Intent">
-        <form onSubmit={onPlan}>
-          <div className="field">
-            <label htmlFor="objective">What should Atlas do?</label>
-            <textarea
-              id="objective"
-              value={objective}
-              onChange={(event) => setObjective(event.target.value)}
-              required
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="notes">Notes / context</label>
-            <textarea
-              id="notes"
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
-            />
-          </div>
-          <div className="workspace-rail-actions">
-            <button
-              className="primary"
-              type="submit"
-              disabled={briefMutation.isPending}
-            >
-              {briefMutation.isPending ? 'Planning…' : 'Create plan'}
-            </button>
-          </div>
-        </form>
-      </WorkspaceRailSection>
-      <WorkspaceRailSection title="Sources">
-        <p className="meta" style={{ margin: 0 }}>
-          Planning uses your objective and notes. Attachments and knowledge
-          sources will land here later.
-        </p>
-      </WorkspaceRailSection>
+      {fromChat && !brief && !blocked ? (
+        <WorkspaceRailSection title="From Chat">
+          <p className="meta" style={{ margin: 0 }}>
+            Atlas is planning from this conversation. You do not need to split
+            the request into form fields.
+          </p>
+        </WorkspaceRailSection>
+      ) : null}
+      {!fromChat && !brief && !blocked ? (
+        <WorkspaceRailSection title="Request">
+          <form onSubmit={compileDirect}>
+            <div className="field">
+              <label htmlFor="request">Tell Atlas what you want done</label>
+              <textarea
+                id="request"
+                value={request}
+                onChange={(event) => setRequest(event.target.value)}
+                required
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="extra">Additional context (optional)</label>
+              <textarea
+                id="extra"
+                value={extra}
+                onChange={(event) => setExtra(event.target.value)}
+              />
+            </div>
+            <div className="workspace-rail-actions">
+              <button className="primary" type="submit" disabled={planning}>
+                {planning ? 'Planning…' : 'Create plan'}
+              </button>
+            </div>
+          </form>
+        </WorkspaceRailSection>
+      ) : null}
+      {(brief || blocked) && !unavailable ? (
+        <WorkspaceRailSection title="Revise">
+          <form onSubmit={compileRevision}>
+            <div className="field">
+              <label htmlFor="revision">Tell Atlas how to change the plan</label>
+              <textarea
+                id="revision"
+                value={revision}
+                onChange={(event) => setRevision(event.target.value)}
+                required
+              />
+            </div>
+            <div className="workspace-rail-actions">
+              <button className="primary" type="submit" disabled={planning}>
+                {planning ? 'Planning…' : 'Revise plan'}
+              </button>
+            </div>
+          </form>
+        </WorkspaceRailSection>
+      ) : null}
+      {fromChat ? (
+        <WorkspaceRailSection title="Source">
+          <p className="meta" style={{ marginTop: 0 }}>
+            This plan is from a Chat conversation. Accepting it does not change
+            that conversation.
+          </p>
+          <Link to="/chat">Back to Chat</Link>
+        </WorkspaceRailSection>
+      ) : (
+        <WorkspaceRailSection title="Sources">
+          <p className="meta" style={{ margin: 0 }}>
+            Planning uses your request. Attachments and knowledge sources will
+            land here later.
+          </p>
+        </WorkspaceRailSection>
+      )}
     </Panel>
   )
 
   const context = (
     <div className="stack">
-      <Panel title="Permissions">
+      <Panel title="Permission needed">
         {brief ? (
           <>
-            <div className="field">
-              <label htmlFor="authority">Authority for this work</label>
-              <select
-                id="authority"
-                value={authority}
-                onChange={(event) => setAuthority(event.target.value)}
-              >
-                {AUTHORITIES.map((level) => (
-                  <option key={level} value={level}>
-                    {level}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <p style={{ marginTop: 0 }}>{brief.required_authority}</p>
             <p className="meta">
-              Proposed permission: {brief.required_authority}. You can raise or
-              keep it before accepting.
+              Atlas derived this from the plan. Reviewing or handing off from
+              Chat does not grant it.
             </p>
           </>
         ) : (
           <p className="empty" style={{ margin: 0 }}>
-            Create a plan to review permissions.
+            Appears after planning.
           </p>
         )}
       </Panel>
@@ -237,7 +300,7 @@ export function WorkNew() {
       ) : null}
 
       <Panel title="Accept">
-        {brief && !unavailable ? (
+        {ready ? (
           <div className="actions" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
             <button
               className="primary"
@@ -245,24 +308,13 @@ export function WorkNew() {
               disabled={acceptMutation.isPending}
               onClick={() => acceptMutation.mutate()}
             >
-              I'll take this on
-            </button>
-            <button
-              type="button"
-              onClick={() => briefMutation.mutate()}
-              disabled={briefMutation.isPending}
-            >
-              Revise plan
+              Accept Work
             </button>
           </div>
-        ) : unsupported || unavailable ? (
-          <button
-            type="button"
-            onClick={() => briefMutation.mutate()}
-            disabled={briefMutation.isPending}
-          >
-            Try again
-          </button>
+        ) : blocked ? (
+          <p className="empty" style={{ margin: 0 }}>
+            Atlas cannot accept this as Work yet.
+          </p>
         ) : (
           <p className="empty" style={{ margin: 0 }}>
             Accept becomes available after a plan is ready.
@@ -295,7 +347,11 @@ export function WorkNew() {
           <Link to="/work">Work</Link> / Plan
         </>
       }
-      subtitle="Describe what Atlas should own. Review the plan, grant the right permission, then accept it into durable work."
+      subtitle={
+        fromChat
+          ? 'Atlas prepared this plan from Chat. Review it, then accept if you want Work to own it.'
+          : 'Tell Atlas what you want done. Review the plan, then accept it into durable work.'
+      }
       railLabel="Intent"
       contextLabel="Review"
       rail={rail}
@@ -303,7 +359,11 @@ export function WorkNew() {
       banner={error ? <p className="error-text">{error}</p> : null}
     >
       <Panel title="Proposed plan">
-        {unavailable ? (
+        {planning && !brief && !blocked ? (
+          <p className="empty" style={{ margin: 0 }}>
+            Atlas is preparing a plan…
+          </p>
+        ) : unavailable ? (
           <>
             <p className="empty" style={{ marginTop: 0 }}>
               I can't do this yet
@@ -333,33 +393,42 @@ export function WorkNew() {
           </>
         ) : !brief ? (
           <p className="empty" style={{ margin: 0 }}>
-            Create a plan from the intent rail. The readable proposal appears
-            here.
+            {fromChat && handoffStarted
+              ? 'Atlas is preparing a plan…'
+              : 'Tell Atlas what you want done. The readable proposal appears here.'}
           </p>
         ) : (
           <>
             <div className="brief-row">
-              <span>Objective</span>
+              <span>Work request</span>
               <div>{brief.objective}</div>
             </div>
             <div className="brief-row">
-              <span>Will do</span>
+              <span>Atlas will</span>
               <div>
-                {brief.capabilities
-                  .map((id) => humanCapabilityLabel(id))
-                  .join(' · ')}
+                <ul className="atlas-will">
+                  {brief.capabilities.map((id) => (
+                    <li key={id}>{humanCapabilityLabel(id)}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+            <div className="brief-row">
+              <span>Constraints</span>
+              <div>
+                {brief.constraints.length
+                  ? brief.constraints.join(' · ')
+                  : 'None stated'}
               </div>
             </div>
             <div className="brief-row">
               <span>Expected result</span>
               <div>{brief.expected_effect}</div>
             </div>
-            {brief.notes ? (
-              <div className="brief-row">
-                <span>Notes</span>
-                <div>{brief.notes}</div>
-              </div>
-            ) : null}
+            <div className="brief-row">
+              <span>Permission needed</span>
+              <div>{brief.required_authority}</div>
+            </div>
           </>
         )}
       </Panel>

@@ -12,6 +12,12 @@ import { Workspace, WorkspaceRailSection } from '../ui/Workspace'
 
 const NEAR_BOTTOM_PX = 72
 
+function isHandoffUtterance(content: string) {
+  return /^(please\s+)?((submit|send|start)\s+(this\s+)?(as\s+)?work|review(\s+it)?\s+in\s+work)(\s+please)?\s*[.!?]*$/i.test(
+    content.trim(),
+  )
+}
+
 export function Chat() {
   const queryClient = useQueryClient()
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -197,6 +203,15 @@ export function Chat() {
 
   const turns = conversationQuery.data?.turns || []
   const ready = Boolean(activeId)
+  const lastUserTurn = [...turns]
+    .reverse()
+    .find((turn) => turn.role === 'user' && !isHandoffUtterance(turn.content))
+  const workHandoffSearch = new URLSearchParams()
+  if (activeId) workHandoffSearch.set('conversation', activeId)
+  if (lastUserTurn?.id) workHandoffSearch.set('until', lastUserTurn.id)
+  const workHandoffTo = activeId
+    ? `/work/new?${workHandoffSearch.toString()}`
+    : '/work/new'
 
   const rail = (
     <Panel className="chat-rail" title="Conversations">
@@ -209,9 +224,9 @@ export function Chat() {
         >
           New chat
         </button>
-        <Link to="/work/new">
-          <button className="primary" type="button">
-            Start work from this
+        <Link to={workHandoffTo}>
+          <button className="primary" type="button" disabled={!activeId}>
+            Send to Work
           </button>
         </Link>
       </div>
@@ -353,18 +368,20 @@ export function Chat() {
         </p>
         <div className="list-row">
           <div>
-            <strong>Suggested next step</strong>
-            <div className="meta">Start work when ready</div>
+            <strong>This needs Work</strong>
+            <div className="meta">
+              Atlas will prepare a plan. You still authorize execution.
+            </div>
           </div>
         </div>
         <div className="list-row">
           <div>
-            <strong>Bridge into Work</strong>
-            <div className="meta">Turn this chat into a durable responsibility</div>
+            <strong>Review in Work</strong>
+            <div className="meta">Send this conversation as a Work plan</div>
           </div>
-          <Link to="/work/new">
-            <button className="ghost" type="button">
-              Plan
+          <Link to={workHandoffTo}>
+            <button className="ghost" type="button" disabled={!activeId}>
+              Review in Work
             </button>
           </Link>
         </div>
@@ -385,7 +402,7 @@ export function Chat() {
   return (
     <Workspace
       title="Chat"
-      subtitle="Talk with Atlas. Start work from the left rail when talk becomes a responsibility."
+      subtitle="Talk with Atlas. Send to Work when talk becomes a responsibility — that reviews a plan, it does not run it."
       fillHeight
       className="chat-page"
       railLabel="Conversations"

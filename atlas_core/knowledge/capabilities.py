@@ -9,6 +9,7 @@ from atlas_core.capabilities import (
     RetryPolicy,
     require,
 )
+from atlas_core.evidence import qualifies_as_source_evidence
 from atlas_core.verification import VerificationResult, VerifierRegistry
 from atlas_core.work.inventory import DeploymentInventory
 
@@ -246,6 +247,8 @@ def _acquired_source(store, request):
     content_artifact = None
     for artifact_id in request.dependency_artifact_ids:
         artifact = store.get_artifact(artifact_id)
+        if not qualifies_as_source_evidence(artifact):
+            continue
         if artifact.provenance_category == "acquired_observation" and artifact.kind == "files_read_observation":
             observation_artifact = artifact
         elif artifact.provenance_category == "acquired_content" and artifact.kind == "files_acquired_content":
@@ -270,12 +273,8 @@ def _acquired_source(store, request):
         raise ValueError("Knowledge acquired content has no UTF-8 text.")
     return {
         "text": content["text"],
-        "source_ref": content["source_ref"],
-        "source_observation_id": observation["observation_id"],
-        "observation_payload_sha256": observation["observation_payload_sha256"],
         "observation_artifact_id": observation_artifact.id,
         "acquired_content_artifact_id": content_artifact.id,
-        "source_byte_sha256": content.get("source_byte_sha256"),
         "evidence_artifact_ids": (observation_artifact.id, content_artifact.id),
     }
 
@@ -397,22 +396,16 @@ def register_knowledge_capabilities(
             metadata=(dict(data["metadata"]) if isinstance(data.get("metadata"), dict) else {}),
             chunk_chars=int(data.get("chunk_chars", 4000)),
             overlap_chars=int(data.get("overlap_chars", 400)),
-            source_provenance={
-                key: acquired[key]
-                for key in ("observation_artifact_id", "acquired_content_artifact_id")
-            },
+            observation_artifact_id=acquired["observation_artifact_id"],
+            acquired_content_artifact_id=acquired["acquired_content_artifact_id"],
         )
         output = {
             "document_id": result.document.id,
-            "title": result.document.title,
             "normalized_text_sha256": result.document.normalized_text_sha256,
-            "source_byte_sha256": acquired["source_byte_sha256"],
-            "source_ref": acquired["source_ref"],
-            "source_observation_id": acquired["source_observation_id"],
             "observation_artifact_id": acquired["observation_artifact_id"],
             "acquired_content_artifact_id": acquired["acquired_content_artifact_id"],
             "chunk_count": result.document.chunk_count,
-            "created": result.created,
+            "status": "created" if result.created else "deduplicated",
         }
         return CapabilityOutcome(
             "pass",
@@ -525,13 +518,6 @@ def register_knowledge_capabilities(
             "pass",
             output=text,
             output_kind="grounded_answer",
-            claims=(
-                {
-                    "kind": "inferred",
-                    "subject": "knowledge.grounded_answer",
-                    "value": {"query": query, "excerpt_count": min(3, len(results))},
-                },
-            ),
         )
 
     require("knowledge.ingest_text")
@@ -553,18 +539,17 @@ def register_knowledge_capabilities(
             },
             output_schema={
                 "type": "object",
-                "required": ["document_id", "title", "normalized_text_sha256", "chunk_count", "created"],
+                "required": [
+                    "document_id", "normalized_text_sha256", "observation_artifact_id",
+                    "acquired_content_artifact_id", "chunk_count", "status",
+                ],
                 "properties": {
                     "document_id": {"type": "string"},
-                    "title": {"type": "string"},
                     "normalized_text_sha256": {"type": "string"},
-                    "source_byte_sha256": {"type": ["string", "null"]},
-                    "source_ref": {"type": "object"},
-                    "source_observation_id": {"type": "string"},
                     "observation_artifact_id": {"type": "string"},
-                    "acquired_content_artifact_id": {"type": ["string", "null"]},
+                    "acquired_content_artifact_id": {"type": "string"},
                     "chunk_count": {"type": "integer", "minimum": 1},
-                    "created": {"type": "boolean"},
+                    "status": {"type": "string", "enum": ["created", "deduplicated"]},
                 },
                 "additionalProperties": False,
             },

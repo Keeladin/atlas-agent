@@ -50,6 +50,15 @@ class KnowledgeRuntimeTests(unittest.TestCase):
             local_source_registry=self.registry,
         )
 
+    @staticmethod
+    def _store_ingest(store, *, title: str, text: str, suffix: str = "one"):
+        return store.ingest_text(
+            title=title,
+            text=text,
+            observation_artifact_id=f"artifact_observation_{suffix}",
+            acquired_content_artifact_id=f"artifact_content_{suffix}",
+        )
+
     def _ingest_via_path(
         self,
         runtime,
@@ -146,11 +155,18 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         store = KnowledgeStore(self.db)
         store.initialize()
         text = "RLH5 hydraulic pump failure. Replace the suction hose and inspect cavitation.\n\nBrake test procedure is separate."
-        first = store.ingest_text(title="RLH5 manual", text=text)
-        second = store.ingest_text(title="duplicate title", text=text)
+        first = self._store_ingest(store, title="RLH5 manual", text=text)
+        second = self._store_ingest(
+            store, title="duplicate title", text=text, suffix="two"
+        )
         self.assertTrue(first.created)
         self.assertFalse(second.created)
         self.assertEqual(first.document.id, second.document.id)
+        self.assertNotIn(first.document.normalized_text_sha256[:24], first.document.id)
+        self.assertEqual(
+            [source.title for source in store.list_document_sources(first.document.id)],
+            ["RLH5 manual", "duplicate title"],
+        )
         hits = store.search("hydraulic cavitation", limit=5)
         self.assertTrue(hits)
         self.assertEqual(hits[0].chunk.document_id, first.document.id)
@@ -241,6 +257,10 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         ]
         self.assertTrue(answers)
         self.assertIn("From retrieved sources", answers[0].payload)
+        self.assertFalse(any(
+            claim.subject == "knowledge.grounded_answer"
+            for claim in runtime.store.list_claims(answer_id)
+        ))
         answer_md = WorkPresenter(runtime.store).build(answer_id).render_markdown()
         self.assertNotIn('"results":', answer_md)
 
@@ -305,8 +325,8 @@ class KnowledgeRuntimeTests(unittest.TestCase):
             for artifact in runtime.store.list_artifacts(second_task.id)
             if artifact.kind == "knowledge_ingest_result"
         )
-        self.assertTrue(first.payload["created"])
-        self.assertFalse(second.payload["created"])
+        self.assertEqual(first.payload["status"], "created")
+        self.assertEqual(second.payload["status"], "deduplicated")
         self.assertEqual(first.payload["document_id"], second.payload["document_id"])
         self.assertEqual(first.payload["normalized_text_sha256"], second.payload["normalized_text_sha256"])
 
@@ -362,10 +382,12 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         store = KnowledgeStore(self.db)
         store.initialize()
         constitution = (REPO_ROOT / "Atlas Constitution.md").read_text(encoding="utf-8")
-        store.ingest_text(title="Atlas Constitution.md", text=constitution)
-        store.ingest_text(
+        self._store_ingest(store, title="Atlas Constitution.md", text=constitution)
+        self._store_ingest(
+            store,
             title="README.md",
             text=(REPO_ROOT / "README.md").read_text(encoding="utf-8"),
+            suffix="two",
         )
         riddle = (
             "fictional character breaks fourth wall selfless ascetics humor "
@@ -391,7 +413,8 @@ class KnowledgeRuntimeTests(unittest.TestCase):
     def test_on_topic_search_is_bounded_and_claims_omit_chunk_text(self):
         store = KnowledgeStore(self.db)
         store.initialize()
-        store.ingest_text(
+        self._store_ingest(
+            store,
             title="Atlas Constitution.md",
             text=(REPO_ROOT / "Atlas Constitution.md").read_text(encoding="utf-8"),
         )
@@ -456,6 +479,19 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(miss.status, "pass")
         self.assertIn("no relevant", miss.summary)
+
+    def test_store_rejects_orphan_ingestion_but_helpers_remain_pure(self):
+        store = KnowledgeStore(self.db)
+        store.initialize()
+        with self.assertRaises(TypeError):
+            store.ingest_text(title="orphan", text="orphan source text")
+        with self.assertRaisesRegex(ValueError, "artifact references"):
+            store.ingest_text(
+                title="orphan", text="orphan source text",
+                observation_artifact_id="", acquired_content_artifact_id="content",
+            )
+        self.assertEqual(normalized_text_sha256("a\r\nb"), normalized_text_sha256("a\nb"))
+        self.assertEqual(chunk_text("independent helper text"), ("independent helper text",))
 
 
 if __name__ == "__main__":

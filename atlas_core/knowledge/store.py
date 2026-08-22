@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -13,7 +14,6 @@ from typing import Any
 @dataclass(frozen=True)
 class KnowledgeDocument:
     id: str
-    title: str
     normalized_text_sha256: str
     chunk_count: int
     metadata: dict[str, Any]
@@ -25,6 +25,7 @@ class KnowledgeSourceProvenance:
     document_id: str
     observation_artifact_id: str
     acquired_content_artifact_id: str
+    title: str
     created_at: str
 
 
@@ -186,7 +187,6 @@ class KnowledgeStore:
                 """
                 CREATE TABLE IF NOT EXISTS knowledge_documents (
                     id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
                     normalized_text_sha256 TEXT NOT NULL UNIQUE,
                     chunk_count INTEGER NOT NULL,
                     metadata_json TEXT NOT NULL DEFAULT '{}',
@@ -208,6 +208,7 @@ class KnowledgeStore:
                     document_id TEXT NOT NULL,
                     observation_artifact_id TEXT NOT NULL,
                     acquired_content_artifact_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (document_id) REFERENCES knowledge_documents(id) ON DELETE CASCADE,
                     UNIQUE(document_id, observation_artifact_id, acquired_content_artifact_id)
@@ -216,6 +217,15 @@ class KnowledgeStore:
                     ON knowledge_document_sources(document_id, created_at, observation_artifact_id);
                 """
             )
+            columns = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(knowledge_document_sources)")
+            }
+            if "title" not in columns:
+                db.execute(
+                    "ALTER TABLE knowledge_document_sources "
+                    "ADD COLUMN title TEXT NOT NULL DEFAULT 'Untitled'"
+                )
             try:
                 db.execute(
                     "CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts "
@@ -244,11 +254,18 @@ class KnowledgeStore:
         metadata: dict[str, Any] | None = None,
         chunk_chars: int = 4000,
         overlap_chars: int = 400,
-        source_provenance: dict[str, Any] | None = None,
+        observation_artifact_id: str,
+        acquired_content_artifact_id: str,
     ) -> IngestResult:
         title = title.strip()
         if not title:
             raise ValueError("Knowledge document title must not be empty.")
+        observation_artifact_id = observation_artifact_id.strip()
+        acquired_content_artifact_id = acquired_content_artifact_id.strip()
+        if not observation_artifact_id or not acquired_content_artifact_id:
+            raise ValueError(
+                "Knowledge ingestion requires observation and acquired-content artifact references."
+            )
         chunks = chunk_text(
             text,
             chunk_chars=chunk_chars,
@@ -257,7 +274,11 @@ class KnowledgeStore:
         if not chunks:
             raise ValueError("Knowledge document text must not be empty.")
         content_hash = normalized_text_sha256(text)
-        document_id = f"doc_{content_hash[:24]}"
+        source_provenance = {
+            "observation_artifact_id": observation_artifact_id,
+            "acquired_content_artifact_id": acquired_content_artifact_id,
+            "title": title,
+        }
 
         with self._db() as db:
             existing = db.execute(
@@ -270,13 +291,14 @@ class KnowledgeStore:
                 )
                 return IngestResult(self._document_from_row(existing), False)
 
+            document_id = f"doc_{uuid.uuid4().hex}"
+
             db.execute(
                 "INSERT INTO knowledge_documents "
-                "(id,title,normalized_text_sha256,chunk_count,metadata_json) "
-                "VALUES (?,?,?,?,?)",
+                "(id,normalized_text_sha256,chunk_count,metadata_json) "
+                "VALUES (?,?,?,?)",
                 (
                     document_id,
-                    title,
                     content_hash,
                     len(chunks),
                     _json(metadata or {}),
@@ -284,7 +306,7 @@ class KnowledgeStore:
             )
             for ordinal, chunk in enumerate(chunks, start=1):
                 digest = hashlib.sha256(chunk.encode("utf-8")).hexdigest()
-                chunk_id = f"chunk_{content_hash[:16]}_{ordinal:06d}"
+                chunk_id = f"chunk_{uuid.uuid4().hex}"
                 db.execute(
                     "INSERT INTO knowledge_chunks "
                     "(id,document_id,ordinal,text,sha256,metadata_json) "
@@ -302,7 +324,7 @@ class KnowledgeStore:
                     db.execute(
                         "INSERT INTO knowledge_fts (chunk_id,document_id,title,text) "
                         "VALUES (?,?,?,?)",
-                        (chunk_id, document_id, title, chunk),
+                        (chunk_id, document_id, "", chunk),
                     )
             row = db.execute(
                 "SELECT * FROM knowledge_documents WHERE id=?",
@@ -315,18 +337,17 @@ class KnowledgeStore:
     def _insert_source_provenance(
         db: sqlite3.Connection,
         document_id: str,
-        provenance: dict[str, Any] | None,
+        provenance: dict[str, Any],
     ) -> None:
-        if provenance is None:
-            return
         db.execute(
             "INSERT OR IGNORE INTO knowledge_document_sources "
-            "(document_id,observation_artifact_id,acquired_content_artifact_id) "
-            "VALUES (?,?,?)",
+            "(document_id,observation_artifact_id,acquired_content_artifact_id,title) "
+            "VALUES (?,?,?,?)",
             (
                 document_id,
                 str(provenance["observation_artifact_id"]),
                 str(provenance["acquired_content_artifact_id"]),
+                str(provenance["title"]),
             ),
         )
 
@@ -365,7 +386,9 @@ class KnowledgeStore:
     def get_chunk(self, chunk_id: str) -> KnowledgeChunk:
         with self._db() as db:
             row = db.execute(
-                "SELECT c.*,d.title FROM knowledge_chunks c "
+                "SELECT c.*,COALESCE((SELECT s.title FROM knowledge_document_sources s "
+                "WHERE s.document_id=c.document_id ORDER BY s.created_at DESC,s.rowid DESC LIMIT 1),"
+                "'Untitled') AS title FROM knowledge_chunks c "
                 "JOIN knowledge_documents d ON d.id=c.document_id "
                 "WHERE c.id=?",
                 (chunk_id,),
@@ -394,7 +417,9 @@ class KnowledgeStore:
             if self._has_fts():
                 fts_query = " OR ".join(f'"{token.replace(chr(34), "")}"' for token in tokens)
                 rows = db.execute(
-                    "SELECT c.*,d.title,bm25(knowledge_fts) AS rank "
+                    "SELECT c.*,COALESCE((SELECT s.title FROM knowledge_document_sources s "
+                    "WHERE s.document_id=c.document_id ORDER BY s.created_at DESC,s.rowid DESC LIMIT 1),"
+                    "'Untitled') AS title,bm25(knowledge_fts) AS rank "
                     "FROM knowledge_fts "
                     "JOIN knowledge_chunks c ON c.id=knowledge_fts.chunk_id "
                     "JOIN knowledge_documents d ON d.id=c.document_id "
@@ -410,7 +435,9 @@ class KnowledgeStore:
                 clauses = " OR ".join("lower(c.text) LIKE ?" for _ in tokens)
                 params = [f"%{token}%" for token in tokens]
                 rows = db.execute(
-                    "SELECT c.*,d.title FROM knowledge_chunks c "
+                    "SELECT c.*,COALESCE((SELECT s.title FROM knowledge_document_sources s "
+                    "WHERE s.document_id=c.document_id ORDER BY s.created_at DESC,s.rowid DESC LIMIT 1),"
+                    "'Untitled') AS title FROM knowledge_chunks c "
                     "JOIN knowledge_documents d ON d.id=c.document_id "
                     f"WHERE {clauses} ORDER BY c.document_id,c.ordinal LIMIT ?",
                     (*params, candidate_limit),
@@ -439,7 +466,6 @@ class KnowledgeStore:
     def _document_from_row(row: sqlite3.Row) -> KnowledgeDocument:
         return KnowledgeDocument(
             id=row["id"],
-            title=row["title"],
             normalized_text_sha256=row["normalized_text_sha256"],
             chunk_count=int(row["chunk_count"]),
             metadata=_load(row["metadata_json"]),
@@ -464,5 +490,6 @@ class KnowledgeStore:
             document_id=row["document_id"],
             observation_artifact_id=row["observation_artifact_id"],
             acquired_content_artifact_id=row["acquired_content_artifact_id"],
+            title=row["title"],
             created_at=row["created_at"],
         )

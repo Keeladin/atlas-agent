@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import inspect
 import json
 import tempfile
@@ -79,8 +78,13 @@ class SourceConvergenceTests(unittest.TestCase):
         raw = b"alpha\r\nbeta\r\n"
         (self.root / "note.txt").write_bytes(raw)
         work_id, output = self.ingest("note.txt")
-        self.assertEqual(output.payload["source_byte_sha256"], hashlib.sha256(raw).hexdigest())
-        self.assertNotEqual(output.payload["source_byte_sha256"], output.payload["normalized_text_sha256"])
+        self.assertEqual(
+            set(output.payload),
+            {
+                "document_id", "normalized_text_sha256", "observation_artifact_id",
+                "acquired_content_artifact_id", "chunk_count", "status",
+            },
+        )
         sources = self.knowledge.list_document_sources(output.payload["document_id"])
         self.assertEqual(len(sources), 1)
         source = sources[0]
@@ -88,7 +92,6 @@ class SourceConvergenceTests(unittest.TestCase):
         artifacts = {item.id: item for item in self.runtime.store.list_artifacts(work_id)}
         observation = artifacts[source.observation_artifact_id].payload["observation"]
         self.assertEqual(observation["source_ref"]["relative_path"], "note.txt")
-        self.assertEqual(observation["observation_id"], output.payload["source_observation_id"])
         self.assertEqual(artifacts[source.acquired_content_artifact_id].payload["text"], raw.decode("utf-8"))
         self.assertNotIn(str(self.root), json.dumps([item.payload for item in artifacts.values()]))
 
@@ -107,6 +110,7 @@ class SourceConvergenceTests(unittest.TestCase):
         }
         self.assertEqual(paths, {"one.txt", "two.txt"})
         self.assertEqual(len({item.observation_artifact_id for item in sources}), 2)
+        self.assertEqual({item.title for item in sources}, {"one.txt", "two.txt"})
 
     def test_search_derivative_is_not_source_evidence(self):
         (self.root / "proof.txt").write_text("controlled-source-probe evidence\n", encoding="utf-8")

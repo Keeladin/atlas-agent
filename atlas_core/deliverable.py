@@ -23,7 +23,6 @@ INTERNAL_ARTIFACT_KINDS = frozenset(
         "task_plan",
         "planning_request",
         "morning_request",
-        "knowledge_ingest_request",
         "knowledge_search_request",
         "capability_request",
     }

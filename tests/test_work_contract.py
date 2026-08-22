@@ -24,7 +24,7 @@ CONTRACT_SOURCE = (
 
 GOLDEN_COMPILED_AT = "2026-01-01T00:00:00Z"
 GOLDEN_WORK_ID = "work_golden_unarmed_knowledge_index"
-GOLDEN_SHA256 = "8b07a8cf12179588e15012501f1c44cfd941f383ca94697f5961653d44f531e7"
+GOLDEN_SHA256 = "24cf910cf4f2a53e78de81355f0882fac7464a6a8dc2ec4c42916a0b4fef3f49"
 
 
 def _brief(**overrides) -> TaskBrief:
@@ -516,12 +516,12 @@ class WorkContractCompileTests(unittest.TestCase):
         )
         inventory.register(
             CapabilityExecutionProfile(
-                capability_id="knowledge.index",
+                capability_id="knowledge.ingest_text",
                 tools=("index.write",),
                 verifier_id="core.nonempty",
                 executor_kind="deterministic",
                 implementation=CapabilityBinding(
-                    "knowledge.index", "internal", "index", "1"
+                    "knowledge.ingest_text", "internal", "index", "1"
                 ),
             ),
             _handler,
@@ -530,7 +530,7 @@ class WorkContractCompileTests(unittest.TestCase):
             work_id="work_1",
             brief=TaskBrief(
                 objective="Index then email",
-                capabilities=("knowledge.index", "communication.email.send"),
+                capabilities=("knowledge.ingest_text", "communication.email.send"),
                 required_authority="communicate",
                 expected_effect="Index and send",
             ),
@@ -540,7 +540,7 @@ class WorkContractCompileTests(unittest.TestCase):
         )
         self.assertEqual(
             tuple(item.capability_id for item in contract.capabilities),
-            ("knowledge.index", "communication.email.send"),
+            ("knowledge.ingest_text", "communication.email.send"),
         )
         self.assertEqual(
             contract.allowed_tools,
@@ -600,12 +600,12 @@ class WorkContractCompileTests(unittest.TestCase):
             ("mail.deliver@1.0.0",),
         )
 
-    def test_golden_hash_unarmed_knowledge_index(self) -> None:
+    def test_golden_hash_unarmed_knowledge_ingest(self) -> None:
         contract = compile_contract(
             work_id=GOLDEN_WORK_ID,
             brief=TaskBrief(
                 objective="Index local knowledge",
-                capabilities=("knowledge.index",),
+                capabilities=("knowledge.ingest_text",),
                 required_authority="modify_internal",
                 expected_effect="Index local knowledge",
             ),
@@ -616,7 +616,7 @@ class WorkContractCompileTests(unittest.TestCase):
             contract_id="contract_golden",
         )
         self.assertEqual(contract.contract_id, "contract_golden")
-        self.assertFalse(contract.capability("knowledge.index").armed)
+        self.assertFalse(contract.capability("knowledge.ingest_text").armed)
         _encoded, digest = _payload_hash(contract.as_payload())
         self.assertEqual(digest, GOLDEN_SHA256)
         self.assertEqual(contract.sha256, GOLDEN_SHA256)

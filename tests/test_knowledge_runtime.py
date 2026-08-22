@@ -359,25 +359,6 @@ class KnowledgeRuntimeTests(unittest.TestCase):
             "ContextBuilder",
         )
 
-    def test_ingest_objective_parser_extracts_title_and_path(self):
-        from atlas_core.knowledge import parse_ingest_objective, resolve_knowledge_source
-
-        self.assertEqual(
-            parse_ingest_objective("Index local knowledge source README.md"),
-            "README.md",
-        )
-        self.assertEqual(
-            resolve_knowledge_source(
-                "README.md", provider_namespace="local", root_id="repo",
-                configuration_revision="repo-1",
-            ),
-            {
-                "provider_namespace": "local", "root_id": "repo",
-                "configuration_revision": "repo-1", "relative_path": "README.md",
-            },
-        )
-        self.assertIsNone(resolve_knowledge_source(str(README_PATH)))
-
     def test_off_topic_riddle_is_an_honest_search_miss(self):
         store = KnowledgeStore(self.db)
         store.initialize()

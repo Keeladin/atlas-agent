@@ -98,13 +98,6 @@ def catalog() -> tuple[CapabilityDefinition, ...]:
             side_effect_class="external_effect",
         ),
         CapabilityDefinition(
-            id="knowledge.index",
-            description="Index local knowledge into Atlas.",
-            required_authority="modify_internal",
-            confirmation="none",
-            side_effect_class="reversible",
-        ),
-        CapabilityDefinition(
             id="planning.general",
             description="General bounded planning and task decomposition.",
             required_authority="interpret",
@@ -249,7 +242,7 @@ def default_exposure() -> ExposurePolicy:
             work="execute",
         ),
         CapabilityExposure(
-            "knowledge.index",
+            "knowledge.ingest_text",
             chat="explain",
             advanced_conversation="brief",
             work="execute",

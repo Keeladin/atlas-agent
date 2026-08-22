@@ -59,18 +59,6 @@ def is_knowledge_question(text: str) -> bool:
     return first in _QUESTION_STARTERS
 
 
-def search_query_from_task(*, objective: str, description: str | None = None) -> str:
-    """Deterministic query for a search step that has no request artifact."""
-    parsed = parse_search_objective(objective)
-    if parsed:
-        return parsed
-    for candidate in (description, objective):
-        text = (candidate or "").strip()
-        if text:
-            return text
-    raise ValueError("knowledge.search requires a non-empty query.")
-
-
 _INGEST_PREFIXES = (
     "Index local knowledge source ",
     "Index local knowledge source:",
@@ -95,65 +83,6 @@ def parse_ingest_objective(objective: str) -> str | None:
         if any(rest.casefold().endswith(suffix) for suffix in _INGEST_SUFFIXES):
             return rest
     return None
-
-
-def resolve_knowledge_source(
-    label: str,
-    *,
-    provider_namespace: str | None = None,
-    root_id: str | None = None,
-    configuration_revision: str | None = None,
-) -> dict | None:
-    """Parse controlled source intent without touching the filesystem."""
-    text = (label or "").strip().strip('"').strip("'")
-    if not text or not provider_namespace or not root_id or not configuration_revision:
-        return None
-    try:
-        from atlas_core.sources.local import validate_relative_path
-
-        relative_path = validate_relative_path(text)
-    except Exception:
-        return None
-    return {
-        "provider_namespace": provider_namespace,
-        "root_id": root_id,
-        "configuration_revision": configuration_revision,
-        "relative_path": relative_path,
-    }
-
-
-def ingest_request_from_task(
-    *,
-    objective: str,
-    description: str | None = None,
-    provider_namespace: str,
-    root_id: str,
-    configuration_revision: str,
-) -> dict:
-    """Build controlled source intent from durable task text without acquisition."""
-    label = parse_ingest_objective(objective)
-    if not label:
-        label = parse_ingest_objective(description or "") or (description or "").strip() or objective.strip()
-    source = resolve_knowledge_source(
-        label,
-        provider_namespace=provider_namespace,
-        root_id=root_id,
-        configuration_revision=configuration_revision,
-    )
-    if source is None:
-        raise ValueError(
-            "knowledge ingestion requires a valid configured root-relative source; "
-            f"could not parse {label!r}."
-        )
-    title = source["relative_path"].rsplit("/", 1)[-1]
-    return {
-        "files.read": source,
-        "knowledge.ingest_text": {
-            "title": title,
-            "chunk_chars": 4000,
-            "overlap_chars": 400,
-        },
-    }
 
 
 def _content_tokens(text: str) -> set[str]:

@@ -382,7 +382,7 @@ class AtlasApiTests(unittest.TestCase):
             json={
                 "brief": {
                     "objective": "Index this PDF manual into knowledge",
-                    "capabilities": ["knowledge.index"],
+                    "capabilities": ["knowledge.ingest_text"],
                     "required_authority": "modify_internal",
                     "expected_effect": "Index local knowledge",
                     "constraints": [],

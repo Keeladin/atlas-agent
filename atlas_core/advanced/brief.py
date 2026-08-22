@@ -11,14 +11,14 @@ _EXPECTED_EFFECT = {
     "automation.workflow.create": "Create an automation workflow",
     "automation.workflow.execute": "Execute an automation workflow",
     "communication.email.send": "external communication",
-    "knowledge.index": "Index local knowledge",
+    "knowledge.ingest_text": "Ingest controlled text into local knowledge",
 }
 
 _DELIVERABLE_KIND = {
     "automation.workflow.create": "automation",
     "automation.workflow.execute": "automation",
     "communication.email.send": "communication",
-    "knowledge.index": "knowledge",
+    "knowledge.ingest_text": "knowledge",
 }
 
 _DEFAULT_UNSUPPORTED_REASON = (

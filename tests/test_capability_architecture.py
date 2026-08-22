@@ -326,7 +326,7 @@ class CapabilityArchitectureTests(unittest.TestCase):
                 "automation.workflow.create",
                 "automation.workflow.execute",
                 "communication.email.send",
-                "knowledge.index",
+                "knowledge.ingest_text",
             },
         )
         self.assertIsNotNone(lookup("planning.general"))

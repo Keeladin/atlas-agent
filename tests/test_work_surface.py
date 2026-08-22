@@ -155,7 +155,7 @@ class ExecutionSurfaceTests(unittest.TestCase):
             work_id="work_1",
             step_id="step_1",
             authority_scope="read",
-            capability_id="knowledge.index",
+            capability_id="knowledge.ingest_text",
             allowed_tools=frozenset(),
             confirmation_required=False,
             eligible_providers=(),
@@ -375,9 +375,9 @@ class WorkRuntimeSurfaceTests(unittest.TestCase):
         )
         inventory.register(
             CapabilityExecutionProfile(
-                capability_id="knowledge.index",
+                capability_id="knowledge.ingest_text",
                 implementation=CapabilityBinding(
-                    "knowledge.index", "internal", "index", "1"
+                    "knowledge.ingest_text", "internal", "index", "1"
                 ),
                 tools=("index.write",),
                 verifier_id="core.nonempty",
@@ -391,7 +391,7 @@ class WorkRuntimeSurfaceTests(unittest.TestCase):
         work_id = runtime.accept(
             TaskBrief(
                 objective="Index then email",
-                capabilities=("knowledge.index", "communication.email.send"),
+                capabilities=("knowledge.ingest_text", "communication.email.send"),
                 required_authority="communicate",
                 expected_effect="Index and send",
             ),

@@ -279,7 +279,7 @@ class WorkRuntimeTests(unittest.TestCase):
 
     def test_inputs_attach_only_to_the_named_capability(self) -> None:
         profiles = DeploymentInventory()
-        for capability_id in ("knowledge.index", "communication.email.send"):
+        for capability_id in ("knowledge.ingest_text", "communication.email.send"):
             profiles.register(
                 CapabilityExecutionProfile(
                     capability_id=capability_id,
@@ -297,23 +297,23 @@ class WorkRuntimeTests(unittest.TestCase):
         work_id = runtime.accept(
             TaskBrief(
                 objective="Index then email",
-                capabilities=("knowledge.index", "communication.email.send"),
+                capabilities=("knowledge.ingest_text", "communication.email.send"),
                 required_authority="communicate",
                 expected_effect="Index and send",
             ),
             "communicate",
-            inputs={"knowledge.index": {"title": "notes"}},
+            inputs={"knowledge.ingest_text": {"title": "notes"}},
         )
         by_capability = {
             step.capability: step
             for step in runtime._engine.store.list_steps(work_id)
         }
-        index_step = by_capability["knowledge.index"]
+        index_step = by_capability["knowledge.ingest_text"]
         email_step = by_capability["communication.email.send"]
         self.assertEqual(len(index_step.input_artifact_ids), 1)
         self.assertEqual(email_step.input_artifact_ids, ())
         artifact = runtime._engine.store.get_artifact(index_step.input_artifact_ids[0])
-        self.assertEqual(artifact.kind, "knowledge_index_request")
+        self.assertEqual(artifact.kind, "knowledge_ingest_text_request")
         self.assertEqual(artifact.payload, {"title": "notes"})
         kinds = {
             item.kind for item in runtime._engine.store.list_artifacts(work_id)
@@ -329,7 +329,7 @@ class WorkRuntimeTests(unittest.TestCase):
             runtime.accept(
                 _brief(),
                 "execute_external",
-                inputs={"knowledge.index": {"title": "nope"}},
+                inputs={"knowledge.ingest_text": {"title": "nope"}},
             )
         self.assertIn("accepted brief", str(ctx.exception))
         self.assertEqual(runtime._engine.store.list_work(), ())

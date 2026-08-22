@@ -1,12 +1,9 @@
 from .capabilities import (
     grounded_answer_from_hits,
-    ingest_request_from_task,
     is_knowledge_question,
     parse_ingest_objective,
     parse_search_objective,
     register_knowledge_capabilities,
-    resolve_knowledge_source,
-    search_query_from_task,
 )
 from .store import (
     MAX_SEARCH_RESULT_CHARS,
@@ -37,13 +34,10 @@ __all__ = [
     "hit_is_relevant",
     "token_overlap",
     "grounded_answer_from_hits",
-    "ingest_request_from_task",
     "is_knowledge_question",
     "normalize_knowledge_text",
     "parse_ingest_objective",
     "parse_search_objective",
     "register_knowledge_capabilities",
-    "resolve_knowledge_source",
-    "search_query_from_task",
     "normalized_text_sha256",
 ]

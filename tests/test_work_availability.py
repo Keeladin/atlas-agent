@@ -53,7 +53,7 @@ class WorkAvailabilityTests(unittest.TestCase):
             runtime.accept(
                 TaskBrief(
                     objective="Index the attached PDF manual into Atlas knowledge",
-                    capabilities=("knowledge.index",),
+                    capabilities=("documents.multimodal", "knowledge.ingest_text"),
                     required_authority="modify_internal",
                     expected_effect="Index local knowledge",
                 ),
@@ -62,26 +62,13 @@ class WorkAvailabilityTests(unittest.TestCase):
         result = ctx.exception.result
         self.assertEqual(result.status, "unavailable")
         self.assertIn("PDF ingestion", result.reason)
-        self.assertEqual(result.unarmed, ("knowledge.index",))
-        self.assertNotIn("knowledge.ingest_text", result.capabilities)
+        self.assertEqual(result.unarmed, ("documents.multimodal",))
+        self.assertEqual(
+            result.capabilities,
+            ("documents.multimodal", "knowledge.ingest_text"),
+        )
         self.assertEqual(runtime.store.list_work(), ())
         self.assertEqual(_work_residue(self.db), {})
-
-    def test_does_not_fallback_to_ingest_text(self) -> None:
-        runtime = self._text_knowledge_runtime()
-        with self.assertRaises(UnavailableWork) as ctx:
-            runtime.accept(
-                TaskBrief(
-                    objective="Index local knowledge",
-                    capabilities=("knowledge.index",),
-                    required_authority="modify_internal",
-                    expected_effect="Index local knowledge",
-                ),
-                "modify_internal",
-            )
-        self.assertEqual(ctx.exception.result.unarmed, ("knowledge.index",))
-        self.assertIn("knowledge indexing isn't available", ctx.exception.result.reason)
-        self.assertEqual(runtime.store.list_work(), ())
 
     def test_armed_search_still_accepts(self) -> None:
         runtime = self._text_knowledge_runtime()

@@ -15,7 +15,6 @@ from .work import WorkError
 _PDF_RE = re.compile(r"\bpdfs?\b|\.pdf\b", re.IGNORECASE)
 
 _CAPABILITY_PHRASE = {
-    "knowledge.index": "knowledge indexing",
     "knowledge.ingest_text": "text knowledge ingestion",
     "knowledge.search": "local knowledge search",
     "knowledge.answer": "grounded knowledge answers",
@@ -106,14 +105,10 @@ def explain_unavailable(
     )
     pdf = bool(_PDF_RE.search(blob))
     if pdf and any(
-        item in missing for item in ("knowledge.index", "knowledge.ingest_text", "documents.multimodal")
+        item in missing for item in ("knowledge.ingest_text", "documents.multimodal")
     ):
         return (
             "Atlas can't do this yet because PDF ingestion is not available on this host."
-        )
-    if "knowledge.index" in missing:
-        return (
-            "Atlas can't do this yet because knowledge indexing isn't available on this host."
         )
     if missing:
         phrases = [_CAPABILITY_PHRASE.get(item, item.replace(".", " ")) for item in missing]

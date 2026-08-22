@@ -66,7 +66,7 @@ def _payload_for(model_input: str) -> dict:
     if "index this pdf manual" in text:
         return {
             "objective": "Index this PDF manual into knowledge",
-            "capabilities": ["knowledge.index"],
+            "capabilities": ["knowledge.ingest_text"],
             "expected_effect": "Index local knowledge",
             "constraints": ["keep internal"],
         }
@@ -373,7 +373,7 @@ class ChatWorkHandoffApiTests(unittest.TestCase):
         self.assertEqual(planned.status_code, 200)
         brief = planned.json()
         self.assertEqual(brief["status"], "brief")
-        self.assertEqual(brief["capabilities"], ["knowledge.index"])
+        self.assertEqual(brief["capabilities"], ["knowledge.ingest_text"])
         listed = self.client.get("/api/work", headers=self._headers())
         self.assertEqual(listed.json()["work"], [])
         accepted = self.client.post(

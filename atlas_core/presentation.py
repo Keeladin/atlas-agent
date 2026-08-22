@@ -160,7 +160,6 @@ class WorkPresenter:
         "task_plan",
         "planning_request",
         "morning_request",
-        "knowledge_ingest_request",
         "knowledge_search_request",
     }
 

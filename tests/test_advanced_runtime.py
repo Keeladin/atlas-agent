@@ -67,7 +67,7 @@ def _payload_for(model_input: str) -> dict:
         }
     return {
         "objective": model_input,
-        "capabilities": ["knowledge.index"],
+        "capabilities": ["knowledge.ingest_text"],
         "expected_effect": "Index local knowledge",
     }
 
@@ -108,7 +108,7 @@ class AdvancedRuntimeTests(unittest.TestCase):
                 "automation.workflow.create",
                 "automation.workflow.execute",
                 "communication.email.send",
-                "knowledge.index",
+                "knowledge.ingest_text",
             },
         )
 

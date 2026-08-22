@@ -67,7 +67,7 @@ const CAPABILITY_LABELS: Record<string, string> = {
   'automation.workflow.create': 'Create an automation workflow',
   'automation.workflow.execute': 'Run an automation workflow',
   'communication.email.send': 'Send an email',
-  'knowledge.index': 'Index local knowledge',
+  'knowledge.ingest_text': 'Index local knowledge',
   'knowledge.search': 'Search local knowledge',
   'knowledge.answer': 'Answer from local knowledge',
   'knowledge.ingest_text': 'Index local text',

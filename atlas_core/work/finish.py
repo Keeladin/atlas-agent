@@ -269,8 +269,14 @@ class WorkFinishMixin:
         evidence_ids = tuple(fallback_evidence)
         for claim in outcome.claims:
             claim_kind = str(claim.get("kind", "inferred"))
-            claim_evidence = tuple(
-                claim.get("evidence_artifact_ids") or evidence_ids
+            # An explicit empty list is meaningful for evidence-optional claims.
+            # Preserve the legacy fallback only for producers that omitted the
+            # field altogether. In particular, a model outcome must not acquire
+            # its newly-created output artifact as evidence merely by finishing.
+            claim_evidence = (
+                tuple(claim["evidence_artifact_ids"])
+                if "evidence_artifact_ids" in claim
+                else evidence_ids
             )
             self.store.add_claim(
                 step.work_id,

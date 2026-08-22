@@ -41,6 +41,31 @@ def _email_brief() -> TaskBrief:
 
 
 class CapabilityArchitectureTests(unittest.TestCase):
+    def test_intelligence_profiles_declare_model_outcome_policies(self) -> None:
+        inventory = DeploymentInventory()
+        register_intelligence_capabilities(inventory)
+        self.assertEqual(
+            {
+                capability_id: inventory.get(capability_id).model_outcome_policy
+                for capability_id in (
+                    "planning.general",
+                    "generation.compose",
+                    "coding.software_engineering",
+                    "reasoning.general",
+                    "reasoning.deep_analysis",
+                    "documents.multimodal",
+                )
+            },
+            {
+                "planning.general": "deliverable_only",
+                "generation.compose": "deliverable_only",
+                "coding.software_engineering": "deliverable_only",
+                "reasoning.general": "claim_bearing",
+                "reasoning.deep_analysis": "claim_bearing",
+                "documents.multimodal": "claim_bearing",
+            },
+        )
+
     def test_capability_exists_without_implementation(self) -> None:
         definition = lookup("communication.email.send")
         self.assertIsNotNone(definition)

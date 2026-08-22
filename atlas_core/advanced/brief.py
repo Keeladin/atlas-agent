@@ -38,6 +38,7 @@ class TaskBrief:
     constraints: tuple[str, ...] = ()
     deliverable_kind: str | None = None
     notes: str | None = None
+    completion_grounding_policy: Literal["none", "evidence_required"] = "none"
 
     def __post_init__(self) -> None:
         objective = self.objective.strip()
@@ -51,6 +52,8 @@ class TaskBrief:
         if not effect:
             raise ValueError("TaskBrief expected_effect must not be empty")
         object.__setattr__(self, "expected_effect", effect)
+        if self.completion_grounding_policy not in {"none", "evidence_required"}:
+            raise ValueError("Unsupported completion grounding policy")
         for capability_id in self.capabilities:
             _reject_vendor_identity(capability_id)
 
@@ -63,6 +66,7 @@ class TaskBrief:
             "constraints": list(self.constraints),
             "deliverable_kind": self.deliverable_kind,
             "notes": self.notes,
+            "completion_grounding_policy": self.completion_grounding_policy,
         }
 
 
@@ -111,6 +115,7 @@ def assemble_brief(
     constraints: tuple[str, ...] = (),
     deliverable_kind: str | None = None,
     notes: str | None = None,
+    completion_grounding_policy: Literal["none", "evidence_required"] = "none",
 ) -> TaskBrief:
     selected = resolve_capabilities(capability_ids, catalog)
     effect = (expected_effect or "").strip() or classify_expected_effect(selected)
@@ -123,6 +128,7 @@ def assemble_brief(
         constraints=constraints,
         deliverable_kind=kind or None,
         notes=notes,
+        completion_grounding_policy=completion_grounding_policy,
     )
 
 

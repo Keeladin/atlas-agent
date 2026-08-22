@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 ExecutorKind = Literal["deterministic", "tool", "model", "composite", "human"]
+ModelOutcomePolicy = Literal["deliverable_only", "claim_bearing"]
+CompletionGroundingPolicy = Literal["none", "evidence_required"]
 PrivacyRoute = Literal["local_only", "cloud_allowed", "cloud_preferred"]
 DataClassification = Literal["public", "internal", "sensitive"]
 ConfirmationRequirement = Literal["none", "required"]

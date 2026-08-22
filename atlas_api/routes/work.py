@@ -39,6 +39,9 @@ def _brief_from_body(payload: dict[str, Any]) -> TaskBrief:
         constraints=tuple(str(item) for item in constraints),
         deliverable_kind=brief_payload.get("deliverable_kind"),
         notes=brief_payload.get("notes"),
+        completion_grounding_policy=str(
+            brief_payload.get("completion_grounding_policy") or "none"
+        ),
     )
 
 

@@ -97,7 +97,16 @@ def _brief(capability_id: str = "reasoning.general") -> TaskBrief:
     )
 
 
-def _stub_generate(provider, text: str = "A bounded explanation of the request."):
+def _stub_generate(
+    provider,
+    text: str = json.dumps(
+        {
+            "deliverable": "A bounded explanation of the request.",
+            "claims": [],
+            "limitations": [],
+        }
+    ),
+):
     calls: list = []
 
     def generate(request):

@@ -28,6 +28,7 @@ def register_intelligence_capabilities(
         CapabilityExecutionProfile(
             capability_id="planning.general",
             executor_kind="model",
+            model_outcome_policy="deliverable_only",
             context_profile="plan",
             verifier_id="core.nonempty",
             privacy="cloud_allowed",
@@ -37,6 +38,7 @@ def register_intelligence_capabilities(
         CapabilityExecutionProfile(
             capability_id="reasoning.general",
             executor_kind="model",
+            model_outcome_policy="claim_bearing",
             context_profile="research",
             objective="General deliberate reasoning over bounded task evidence.",
             verifier_id="core.nonempty",
@@ -47,6 +49,7 @@ def register_intelligence_capabilities(
         CapabilityExecutionProfile(
             capability_id="generation.compose",
             executor_kind="model",
+            model_outcome_policy="deliverable_only",
             context_profile="compose",
             objective=(
                 "Compose the user-requested artifact itself "
@@ -61,6 +64,7 @@ def register_intelligence_capabilities(
         CapabilityExecutionProfile(
             capability_id="reasoning.deep_analysis",
             executor_kind="model",
+            model_outcome_policy="claim_bearing",
             context_profile="research",
             verifier_id="core.nonempty",
             privacy="cloud_allowed",
@@ -70,6 +74,7 @@ def register_intelligence_capabilities(
         CapabilityExecutionProfile(
             capability_id="coding.software_engineering",
             executor_kind="model",
+            model_outcome_policy="deliverable_only",
             context_profile="execute",
             verifier_id="core.nonempty",
             privacy="cloud_allowed",
@@ -82,6 +87,7 @@ def register_intelligence_capabilities(
             CapabilityExecutionProfile(
                 capability_id="documents.multimodal",
                 executor_kind="model",
+                model_outcome_policy="claim_bearing",
                 context_profile="research",
                 verifier_id="core.nonempty",
                 privacy="cloud_allowed",

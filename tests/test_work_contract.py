@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 import unittest
 
@@ -14,6 +15,7 @@ from atlas_core.work import (
     WorkError,
     compile_contract,
 )
+from atlas_core.work.contract import work_contract_from_stored
 
 
 CONTRACT_SOURCE = (
@@ -22,7 +24,7 @@ CONTRACT_SOURCE = (
 
 GOLDEN_COMPILED_AT = "2026-01-01T00:00:00Z"
 GOLDEN_WORK_ID = "work_golden_unarmed_knowledge_index"
-GOLDEN_SHA256 = "45cc6ac3d37940d8d4639e9455d1d2a451d78740f566faf71d53b1fe71a901a8"
+GOLDEN_SHA256 = "2a9e4650fc5c8d9fef112d447b76eef7eed387db09532fe0e5476dc20301c2b5"
 
 
 def _brief(**overrides) -> TaskBrief:
@@ -66,6 +68,76 @@ class _TrackingGateway(ToolGateway):
 
 
 class WorkContractCompileTests(unittest.TestCase):
+    def test_model_outcome_and_completion_grounding_policies_are_frozen(self) -> None:
+        inventory = DeploymentInventory()
+        inventory.register(
+            CapabilityExecutionProfile(
+                capability_id="reasoning.general",
+                executor_kind="model",
+                model_outcome_policy="claim_bearing",
+                verifier_id="core.nonempty",
+                eligible_providers=(),
+            )
+        )
+        contract = compile_contract(
+            work_id="work_grounded",
+            brief=TaskBrief(
+                objective="Analyze the supplied maintenance record",
+                capabilities=("reasoning.general",),
+                required_authority="interpret",
+                expected_effect="A bounded analysis",
+                completion_grounding_policy="evidence_required",
+            ),
+            authority_scope="interpret",
+            inventory=inventory,
+            compiled_at=GOLDEN_COMPILED_AT,
+            contract_id="contract_grounded",
+        )
+        self.assertEqual(contract.completion_grounding_policy, "evidence_required")
+        self.assertEqual(
+            contract.capability("reasoning.general").model_outcome_policy,
+            "claim_bearing",
+        )
+        restored = work_contract_from_stored(
+            work_id=contract.work_id,
+            contract_id=contract.contract_id,
+            sha256=contract.sha256,
+            payload=contract.as_payload(),
+            compiled_at=contract.compiled_at,
+        )
+        self.assertEqual(restored.completion_grounding_policy, "evidence_required")
+        self.assertEqual(
+            restored.capability("reasoning.general").model_outcome_policy,
+            "claim_bearing",
+        )
+
+    def test_completion_grounding_policy_defaults_to_none(self) -> None:
+        self.assertEqual(_brief().completion_grounding_policy, "none")
+
+    def test_legacy_contracts_restore_with_default_policies_without_rehashing(self) -> None:
+        contract = compile_contract(
+            work_id="work_legacy",
+            brief=_brief(),
+            authority_scope="execute_external",
+            inventory=DeploymentInventory(),
+            compiled_at=GOLDEN_COMPILED_AT,
+            contract_id="contract_legacy",
+        )
+        legacy_payload = copy.deepcopy(contract.as_payload())
+        legacy_payload.pop("completion_grounding_policy")
+        for capability in legacy_payload["capabilities"]:
+            capability.pop("model_outcome_policy")
+        _encoded, legacy_sha = _payload_hash(legacy_payload)
+        restored = work_contract_from_stored(
+            work_id=contract.work_id,
+            contract_id=contract.contract_id,
+            sha256=legacy_sha,
+            payload=legacy_payload,
+            compiled_at=contract.compiled_at,
+        )
+        self.assertEqual(restored.completion_grounding_policy, "none")
+        self.assertEqual(restored.as_payload(), legacy_payload)
+
     def test_unarmed_catalog_capability_stays_in_contract(self) -> None:
         contract = compile_contract(
             work_id="work_1",

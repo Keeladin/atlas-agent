@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -10,11 +10,13 @@ from atlas_core.authority import authority_allows, validate_authority
 from atlas_core.capabilities.bindings import CapabilityBinding
 from atlas_core.capabilities.contracts import (
     ConfirmationRequirement,
+    CompletionGroundingPolicy,
     ContextPolicy,
     DataClassification,
     ExecutionBudget,
     ExecutorKind,
     HybridWeights,
+    ModelOutcomePolicy,
     PrivacyRoute,
     RetryPolicy,
 )
@@ -102,9 +104,20 @@ class ContractCapability:
     context_profile: str | None = None
     budget: ExecutionBudget | None = None
     retry_policy: RetryPolicy | None = None
+    model_outcome_policy: ModelOutcomePolicy = "deliverable_only"
+    _model_outcome_policy_in_payload: bool = field(
+        default=True, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        if self.model_outcome_policy not in {
+            "deliverable_only",
+            "claim_bearing",
+        }:
+            raise ValueError("Unsupported model outcome policy")
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "capability_id": self.capability_id,
             "definition": self.definition.as_dict(),
             "armed": self.armed,
@@ -132,6 +145,9 @@ class ContractCapability:
             "confirmation": self.confirmation,
             "required_authority": self.required_authority,
         }
+        if self._model_outcome_policy_in_payload:
+            payload["model_outcome_policy"] = self.model_outcome_policy
+        return payload
 
 
 @dataclass(frozen=True)
@@ -154,6 +170,14 @@ class WorkContract:
     confirmation_requirements: tuple[str, ...]
     work_budget: RuntimeBudget
     sha256: str
+    completion_grounding_policy: CompletionGroundingPolicy = "none"
+    _completion_grounding_policy_in_payload: bool = field(
+        default=True, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        if self.completion_grounding_policy not in {"none", "evidence_required"}:
+            raise ValueError("Unsupported completion grounding policy")
 
     def capability(self, capability_id: str) -> ContractCapability:
         for item in self.capabilities:
@@ -164,7 +188,7 @@ class WorkContract:
     def as_payload(self) -> dict[str, Any]:
         """Canonical dict for hashing. Excludes ``contract_id`` and ``sha256``."""
 
-        return {
+        payload = {
             "work_id": self.work_id,
             "compiled_at": self.compiled_at,
             "objective": self.objective,
@@ -176,6 +200,9 @@ class WorkContract:
             "confirmation_requirements": list(self.confirmation_requirements),
             "work_budget": _runtime_budget_dict(self.work_budget),
         }
+        if self._completion_grounding_policy_in_payload:
+            payload["completion_grounding_policy"] = self.completion_grounding_policy
+        return payload
 
 
 def compile_contract(
@@ -246,6 +273,7 @@ def compile_contract(
         confirmation_requirements=tuple(confirmations),
         work_budget=work_budget or RuntimeBudget(),
         sha256="pending",
+        completion_grounding_policy=brief.completion_grounding_policy,
     )
     _encoded, digest = _payload_hash(draft.as_payload())
     return replace(
@@ -268,6 +296,11 @@ def _compile_pin(
         armed=False,
         confirmation=definition.confirmation,
         required_authority=definition.required_authority,
+        model_outcome_policy=(
+            "deliverable_only"
+            if profile is None
+            else profile.model_outcome_policy
+        ),
     )
     if profile is None:
         return unarmed
@@ -314,6 +347,7 @@ def _compile_pin(
         context_profile=profile.context_profile,
         budget=profile.budget,
         retry_policy=profile.retry_policy,
+        model_outcome_policy=profile.model_outcome_policy,
     )
 
 
@@ -473,6 +507,12 @@ def work_contract_from_stored(
             ),
         ),
         sha256=sha256,
+        completion_grounding_policy=str(
+            payload.get("completion_grounding_policy") or "none"
+        ),
+        _completion_grounding_policy_in_payload=(
+            "completion_grounding_policy" in payload
+        ),
     )
 
 
@@ -499,6 +539,10 @@ def _pin_from_payload(item: dict[str, Any]) -> ContractCapability:
             armed=False,
             confirmation=definition.confirmation,
             required_authority=definition.required_authority,
+            model_outcome_policy=str(
+                item.get("model_outcome_policy") or "deliverable_only"
+            ),
+            _model_outcome_policy_in_payload="model_outcome_policy" in item,
         )
     binding_payload = item.get("binding")
     binding = None
@@ -552,6 +596,10 @@ def _pin_from_payload(item: dict[str, Any]) -> ContractCapability:
         ),
         budget=_execution_budget_from_dict(item.get("budget")),
         retry_policy=_retry_policy_from_dict(item.get("retry_policy")),
+        model_outcome_policy=str(
+            item.get("model_outcome_policy") or "deliverable_only"
+        ),
+        _model_outcome_policy_in_payload="model_outcome_policy" in item,
     )
 
 

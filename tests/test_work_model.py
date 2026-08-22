@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Callable
 
 from atlas_core.advanced import TaskBrief
-from atlas_core.capabilities import ExecutionBudget
+from atlas_core.capabilities import ContextPolicy, ExecutionBudget
+from atlas_core.context import ContextManifest, ContextPack, ManifestItem
 from atlas_core.providers import ModelResponse, ModelRouter, ProviderRegistry, ProviderSpec
 from atlas_core.runtime_types import RuntimeBudget
 from atlas_core.tools import ToolDescriptor, ToolGateway, ToolResult
@@ -14,6 +17,7 @@ from atlas_core.work import (
     DeploymentInventory,
     build_work_runtime,
 )
+from atlas_core.work.model import _normalize_claim_bearing_output
 
 
 class FakeProvider:
@@ -21,7 +25,7 @@ class FakeProvider:
         self,
         spec: ProviderSpec,
         *,
-        text: str = "A bounded explanation of the request.",
+        text: str | Callable = "A bounded explanation of the request.",
         error: Exception | None = None,
     ) -> None:
         self.spec = spec
@@ -33,8 +37,9 @@ class FakeProvider:
         self.calls.append(request)
         if self.error is not None:
             raise self.error
+        text = self.text(request) if callable(self.text) else self.text
         return ModelResponse(
-            self.text,
+            text,
             self.spec.key,
             self.spec.model,
             raw={},
@@ -70,12 +75,84 @@ def _profile(**overrides) -> CapabilityExecutionProfile:
     return CapabilityExecutionProfile(**payload)
 
 
-def _brief() -> TaskBrief:
-    return TaskBrief(
+def _brief(**overrides) -> TaskBrief:
+    payload = dict(
         objective="Explain the request",
         capabilities=("reasoning.general",),
         required_authority="interpret",
         expected_effect="A bounded explanation",
+    )
+    payload.update(overrides)
+    return TaskBrief(**payload)
+
+
+def _claim_envelope(request, *, kind="retrieved", evidence=True) -> str:
+    payload = json.loads(request.input)
+    artifact_id = payload["artifacts"][0]["id"] if evidence else None
+    return json.dumps(
+        {
+            "deliverable": "A bounded explanation grounded in the supplied record.",
+            "claims": [
+                {
+                    "kind": kind,
+                    "subject": "maintenance record",
+                    "statement": "The supplied record reports the observed condition.",
+                    "evidence_artifact_ids": [] if artifact_id is None else [artifact_id],
+                }
+            ],
+            "limitations": ["Only the supplied record was considered."],
+        }
+    )
+
+
+def _claim_envelope_from_ids(
+    artifact_id: str | None,
+    *,
+    kind: str = "retrieved",
+) -> str:
+    return json.dumps(
+        {
+            "deliverable": "A bounded conclusion.",
+            "claims": [
+                {
+                    "kind": kind,
+                    "subject": "record",
+                    "statement": "The record supports this conclusion.",
+                    "evidence_artifact_ids": [] if artifact_id is None else [artifact_id],
+                }
+            ],
+            "limitations": ["bounded"],
+        }
+    )
+
+
+def _pack(
+    work_id: str,
+    *included: ManifestItem,
+    omitted: tuple[str, ...] = (),
+    dropped: tuple[ManifestItem, ...] = (),
+) -> ContextPack:
+    return ContextPack(
+        payload={},
+        chars=0,
+        tokens=0,
+        omitted_artifact_ids=omitted,
+        manifest=ContextManifest(
+            manifest_id="context_test",
+            work_id=work_id,
+            step_id="step_test",
+            execution_id="execution_test",
+            capability_id="reasoning.general",
+            capability_version="1",
+            assembled_at="2026-01-01T00:00:00Z",
+            assembler_version="test",
+            budget_tokens=128,
+            total_tokens=1,
+            included=tuple(included),
+            dropped=dropped,
+            buckets={},
+            token_accounting={},
+        ),
     )
 
 
@@ -93,7 +170,16 @@ class WorkModelExecutionTests(unittest.TestCase):
             registry.register(provider)
         return ModelRouter(registry)
 
-    def _run(self, inventory, router, *, gateway=None, budget=None):
+    def _run(
+        self,
+        inventory,
+        router,
+        *,
+        gateway=None,
+        budget=None,
+        brief=None,
+        inputs=None,
+    ):
         runtime = build_work_runtime(
             db_path=self.db,
             profiles=inventory,
@@ -101,7 +187,7 @@ class WorkModelExecutionTests(unittest.TestCase):
             model_router=router,
             budget=budget,
         )
-        work_id = runtime.accept(_brief(), "interpret")
+        work_id = runtime.accept(brief or _brief(), "interpret", inputs=inputs)
         result = runtime.run(work_id)
         return runtime, work_id, result
 
@@ -441,6 +527,205 @@ class WorkModelExecutionTests(unittest.TestCase):
             / "registry.py"
         ).read_text(encoding="utf-8")
         self.assertNotIn("replace", source)
+
+    def test_deliverable_only_model_output_remains_plain_prose_without_claims(self) -> None:
+        provider = FakeProvider(_spec("local:primary", local=True, competence=0.4))
+        inventory = DeploymentInventory()
+        inventory.register(_profile(model_outcome_policy="deliverable_only"))
+        runtime, work_id, result = self._run(inventory, self._router(provider))
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(runtime.store.list_claims(work_id), ())
+
+    def test_claim_bearing_model_rejects_prose_only_output(self) -> None:
+        provider = FakeProvider(
+            _spec("local:primary", local=True, competence=0.4),
+            text="A plausible but unstructured explanation.",
+        )
+        inventory = DeploymentInventory()
+        inventory.register(
+            _profile(
+                model_outcome_policy="claim_bearing",
+                budget=ExecutionBudget(max_attempts=1),
+            )
+        )
+        runtime, work_id, result = self._run(inventory, self._router(provider))
+        self.assertEqual(result.status, "failed")
+        execution = runtime.store.list_executions(work_id)[0]
+        self.assertEqual(execution.status, "rework")
+        self.assertIn("not valid JSON", execution.error or "")
+        self.assertEqual(runtime.store.list_claims(work_id), ())
+
+    def test_claim_bearing_model_persists_valid_full_context_evidence(self) -> None:
+        provider = FakeProvider(
+            _spec("local:primary", local=True, competence=0.4),
+            text=_claim_envelope,
+        )
+        inventory = DeploymentInventory()
+        inventory.register(_profile(model_outcome_policy="claim_bearing"))
+        runtime, work_id, result = self._run(
+            inventory,
+            self._router(provider),
+            inputs={"reasoning.general": {"record": "pump A was inspected"}},
+        )
+        self.assertEqual(result.status, "completed")
+        claim = runtime.store.list_claims(work_id)[0]
+        self.assertEqual(claim.kind, "retrieved")
+        self.assertEqual(claim.subject, "maintenance record")
+        self.assertEqual(len(claim.evidence_artifact_ids), 1)
+        input_artifact = runtime.store.list_executions(work_id)[0].input_artifact_ids[0]
+        self.assertEqual(claim.evidence_artifact_ids, (input_artifact,))
+        receipt = runtime.store.list_executions(work_id)[0].receipt
+        self.assertEqual(receipt["model_output_limitations"], ["Only the supplied record was considered."])
+
+    def test_claim_bearing_model_rejects_reference_only_context_artifact(self) -> None:
+        provider = FakeProvider(
+            _spec("local:primary", local=True, competence=0.4),
+            text=_claim_envelope,
+        )
+        inventory = DeploymentInventory()
+        inventory.register(
+            _profile(
+                model_outcome_policy="claim_bearing",
+                context_policy=ContextPolicy(allow_full_artifact=False),
+                budget=ExecutionBudget(max_attempts=1),
+            )
+        )
+        runtime, work_id, result = self._run(
+            inventory,
+            self._router(provider),
+            inputs={"reasoning.general": {"record": "reference only"}},
+        )
+        self.assertEqual(result.status, "failed")
+        self.assertIn(
+            "without full context exposure",
+            runtime.store.list_executions(work_id)[0].error or "",
+        )
+
+    def test_claim_envelope_rejects_invalid_or_unavailable_evidence(self) -> None:
+        from atlas_core.work import WorkStore
+
+        store = WorkStore(self.db)
+        store.initialize()
+        work = store.create_work(objective="one", success_criteria=("one",))
+        other = store.create_work(objective="two", success_criteria=("two",))
+        full = store.put_artifact(work.id, kind="source", payload="source")
+        foreign = store.put_artifact(other.id, kind="source", payload="other")
+        full_item = ManifestItem(full.id, "artifact", "source", 1, representation="full")
+        before_output = _pack(work.id, full_item)
+        generated_output = store.put_artifact(
+            work.id, kind="capability_result", payload="newly generated"
+        )
+        valid = _claim_envelope_from_ids(full.id)
+        output, claims, limitations = _normalize_claim_bearing_output(
+            valid, work_id=work.id, pack=_pack(work.id, full_item), store=store
+        )
+        self.assertTrue(output)
+        self.assertEqual(claims[0]["evidence_artifact_ids"], (full.id,))
+        self.assertEqual(limitations, ("bounded",))
+
+        for artifact_id, item, expected in (
+            ("artifact_fabricated", full_item, "without full context exposure"),
+            (foreign.id, ManifestItem(foreign.id, "artifact", "source", 1, representation="full"), "another work"),
+            (full.id, ManifestItem(full.id, "artifact", "source", 1, representation="reference"), "without full context exposure"),
+            (generated_output.id, full_item, "without full context exposure"),
+        ):
+            with self.subTest(artifact_id=artifact_id, representation=item.representation):
+                with self.assertRaisesRegex(ValueError, expected):
+                    _normalize_claim_bearing_output(
+                        _claim_envelope_from_ids(artifact_id),
+                        work_id=work.id,
+                        pack=_pack(work.id, item),
+                        store=store,
+                    )
+
+        for unavailable_pack in (
+            _pack(work.id, omitted=(full.id,)),
+            _pack(
+                work.id,
+                dropped=(
+                    ManifestItem(
+                        full.id, "artifact", "source", 1, representation="dropped"
+                    ),
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "without full context exposure"):
+                _normalize_claim_bearing_output(
+                    _claim_envelope_from_ids(full.id),
+                    work_id=work.id,
+                    pack=unavailable_pack,
+                    store=store,
+                )
+        with self.assertRaisesRegex(ValueError, "without full context exposure"):
+            _normalize_claim_bearing_output(
+                _claim_envelope_from_ids(generated_output.id),
+                work_id=work.id,
+                pack=before_output,
+                store=store,
+            )
+
+    def test_claim_envelope_requires_evidence_and_preserves_optional_claims(self) -> None:
+        from atlas_core.work import WorkStore
+
+        store = WorkStore(self.db)
+        store.initialize()
+        work = store.create_work(objective="one", success_criteria=("one",))
+        pack = _pack(work.id)
+        with self.assertRaisesRegex(ValueError, "require evidence"):
+            _normalize_claim_bearing_output(
+                _claim_envelope_from_ids(None, kind="retrieved"),
+                work_id=work.id,
+                pack=pack,
+                store=store,
+            )
+        for kind in ("inferred", "suggested"):
+            with self.subTest(kind=kind):
+                _output, claims, _limitations = _normalize_claim_bearing_output(
+                    _claim_envelope_from_ids(None, kind=kind),
+                    work_id=work.id,
+                    pack=pack,
+                    store=store,
+                )
+                self.assertEqual(claims[0]["evidence_artifact_ids"], ())
+
+    def test_claim_envelope_fails_closed_for_invalid_structure(self) -> None:
+        from atlas_core.work import WorkStore
+
+        store = WorkStore(self.db)
+        store.initialize()
+        work = store.create_work(objective="one", success_criteria=("one",))
+        source = store.put_artifact(work.id, kind="source", payload="source")
+        pack = _pack(
+            work.id,
+            ManifestItem(source.id, "artifact", "source", 1, representation="full"),
+        )
+        invalid = (
+            "not json",
+            json.dumps({"deliverable": "x", "claims": [], "limitations": [], "extra": True}),
+            json.dumps(
+                {
+                    "deliverable": "x",
+                    "claims": [
+                        {
+                            "kind": "unknown",
+                            "subject": "subject",
+                            "statement": "statement",
+                            "evidence_artifact_ids": [source.id],
+                        }
+                    ],
+                    "limitations": [],
+                }
+            ),
+            _claim_envelope_from_ids(source.id).replace(
+                f'"{source.id}"', f'"{source.id}", "{source.id}"'
+            ),
+        )
+        for response in invalid:
+            with self.subTest(response=response):
+                with self.assertRaises(ValueError):
+                    _normalize_claim_bearing_output(
+                        response, work_id=work.id, pack=pack, store=store
+                    )
 
 
 if __name__ == "__main__":

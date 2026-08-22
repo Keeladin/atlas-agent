@@ -9,6 +9,7 @@ from .contracts import (
     DataClassification,
     ExecutionBudget,
     ExecutorKind,
+    ModelOutcomePolicy,
     PrivacyRoute,
     RetryPolicy,
 )
@@ -28,6 +29,7 @@ class CapabilityExecutionProfile:
     verifier_id: str | None = None
     verification_required: bool = True
     executor_kind: ExecutorKind = "deterministic"
+    model_outcome_policy: ModelOutcomePolicy = "deliverable_only"
     version: str = "1.0.0"
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     context_policy: ContextPolicy = field(default_factory=ContextPolicy)
@@ -57,6 +59,8 @@ class CapabilityExecutionProfile:
             raise ValueError("Execution profile version must be SemVer (major.minor.patch)")
         if self.executor_kind not in {"deterministic", "tool", "model", "composite", "human"}:
             raise ValueError(f"Unsupported executor kind: {self.executor_kind}")
+        if self.model_outcome_policy not in {"deliverable_only", "claim_bearing"}:
+            raise ValueError("Unsupported model outcome policy")
         if self.verification_required and self.executor_kind != "human" and not self.verifier_id:
             raise ValueError("Verified execution profiles must name a verifier_id.")
         if self.privacy not in {"local_only", "cloud_allowed", "cloud_preferred"}:

@@ -340,7 +340,7 @@ def build_work_runtime(
     profile_index = profiles if profiles is not None else DeploymentInventory()
     gateway = tool_gateway if tool_gateway is not None else ToolGateway()
     verifier_registry = verifiers if verifiers is not None else VerifierRegistry()
-    consumer = None if model_router is None else WorkModelConsumer(model_router)
+    consumer = None if model_router is None else WorkModelConsumer(model_router, store)
     engine = WorkEngine(
         store=store,
         tools=gateway,

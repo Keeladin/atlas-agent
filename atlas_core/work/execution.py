@@ -486,6 +486,7 @@ def execution_profile_from_pin(pin: ContractCapability) -> CapabilityExecutionPr
         verifier_id=pin.verifier_id,
         verification_required=pin.verification_required,
         executor_kind=pin.executor_kind,
+        model_outcome_policy=pin.model_outcome_policy,
         version=pin.profile_version,
         retry_policy=pin.retry_policy or RetryPolicy(),
         context_policy=pin.context_policy or ContextPolicy(),

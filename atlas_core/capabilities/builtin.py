@@ -5,14 +5,33 @@ from .execution import CapabilityExecutionProfile
 from .contracts import ExecutionBudget
 
 
-def register_intelligence_capabilities(inventory) -> None:
-    profiles = (
+def register_intelligence_capabilities(
+    inventory,
+    *,
+    eligible_providers: tuple[str, ...] = (),
+    include_multimodal: bool = True,
+) -> None:
+    """Register model-backed intelligence profiles for this deployment.
+
+    ``eligible_providers`` is the host allowlist of provider identities
+    for generic text capabilities. Empty remains fail-closed at execute.
+    Competence scores are not eligibility.
+
+    ``documents.multimodal`` is not a generic text capability. Host
+    auto-registration must pass ``include_multimodal=False`` unless a
+    later design can prove multimodal support from canonical provider
+    metadata. Overlay scores and provider presence are not that proof.
+    """
+
+    keys = tuple(str(key) for key in eligible_providers if str(key).strip())
+    profiles = [
         CapabilityExecutionProfile(
             capability_id="planning.general",
             executor_kind="model",
             context_profile="plan",
             verifier_id="core.nonempty",
             privacy="cloud_allowed",
+            eligible_providers=keys,
             budget=ExecutionBudget(max_attempts=3, max_context_chars=48_000, max_output_chars=24_000),
         ),
         CapabilityExecutionProfile(
@@ -22,6 +41,7 @@ def register_intelligence_capabilities(inventory) -> None:
             objective="General deliberate reasoning over bounded task evidence.",
             verifier_id="core.nonempty",
             privacy="cloud_allowed",
+            eligible_providers=keys,
             budget=ExecutionBudget(max_attempts=3, max_context_chars=64_000, max_output_chars=32_000),
         ),
         CapabilityExecutionProfile(
@@ -35,6 +55,7 @@ def register_intelligence_capabilities(inventory) -> None:
             ),
             verifier_id="core.nonempty",
             privacy="cloud_allowed",
+            eligible_providers=keys,
             budget=ExecutionBudget(max_attempts=3, max_context_chars=48_000, max_output_chars=32_000),
         ),
         CapabilityExecutionProfile(
@@ -43,6 +64,7 @@ def register_intelligence_capabilities(inventory) -> None:
             context_profile="research",
             verifier_id="core.nonempty",
             privacy="cloud_allowed",
+            eligible_providers=keys,
             budget=ExecutionBudget(max_attempts=3, max_context_chars=96_000, max_output_chars=48_000),
         ),
         CapabilityExecutionProfile(
@@ -51,17 +73,22 @@ def register_intelligence_capabilities(inventory) -> None:
             context_profile="execute",
             verifier_id="core.nonempty",
             privacy="cloud_allowed",
+            eligible_providers=keys,
             budget=ExecutionBudget(max_attempts=3, max_context_chars=96_000, max_output_chars=64_000),
         ),
-        CapabilityExecutionProfile(
-            capability_id="documents.multimodal",
-            executor_kind="model",
-            context_profile="research",
-            verifier_id="core.nonempty",
-            privacy="cloud_allowed",
-            budget=ExecutionBudget(max_attempts=2, max_context_chars=128_000, max_output_chars=32_000),
-        ),
-    )
+    ]
+    if include_multimodal:
+        profiles.append(
+            CapabilityExecutionProfile(
+                capability_id="documents.multimodal",
+                executor_kind="model",
+                context_profile="research",
+                verifier_id="core.nonempty",
+                privacy="cloud_allowed",
+                eligible_providers=keys,
+                budget=ExecutionBudget(max_attempts=2, max_context_chars=128_000, max_output_chars=32_000),
+            )
+        )
     for profile in profiles:
         require(profile.capability_id)
         inventory.register(profile)

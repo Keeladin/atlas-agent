@@ -7,10 +7,14 @@ from typing import Any
 from atlas_companion.cloud_providers import ProviderStateStore, build_registry
 from atlas_companion.credentials import CredentialStore
 from atlas_core.advanced import AdvancedRuntime, build_advanced_runtime
-from atlas_core.capabilities import CapabilityBinding, CapabilityOutcome
+from atlas_core.capabilities import (
+    CapabilityBinding,
+    CapabilityOutcome,
+    register_intelligence_capabilities,
+)
 from atlas_core.chat import ChatError, ChatRuntime, build_chat_runtime
 from atlas_core.knowledge import KnowledgeStore, register_knowledge_capabilities
-from atlas_core.providers import ModelProvider, ProviderRegistry
+from atlas_core.providers import ModelProvider, ModelRouter, ProviderRegistry
 from atlas_core.verification import VerifierRegistry
 from atlas_core.work import (
     CapabilityExecutionProfile,
@@ -66,7 +70,7 @@ def build_default_work_runtime(
     db_path: str | Path,
     **work_kwargs: Any,
 ) -> WorkRuntime:
-    """WorkRuntime with knowledge + local email recorder inventory."""
+    """WorkRuntime with knowledge, local email recorder, and host intelligence."""
 
     verifiers = work_kwargs.pop("verifiers", None) or VerifierRegistry()
     inventory = work_kwargs.pop("profiles", None) or DeploymentInventory()
@@ -97,6 +101,7 @@ def build_default_work_runtime(
             ),
             _local_email_recorder,
         )
+    _register_host_intelligence(inventory, work_kwargs.get("model_router"))
     return runtime
 
 
@@ -120,16 +125,19 @@ def compose_services(
     """
 
     auth_service = auth if auth is not None else auth_from_env()
+    registry = None
+    if provider_config is not None and (
+        chat is None or advanced is None or work is None
+    ):
+        registry = _host_provider_registry(
+            provider_config,
+            instance_root=Path(chat_db).expanduser().resolve().parent,
+        )
     provider = None
     if chat is None or advanced is None:
-        if provider_config is None:
+        if registry is None:
             raise ValueError("provider_config or chat/advanced runtime is required")
-        provider = _select_conversational_provider(
-            _host_provider_registry(
-                provider_config,
-                instance_root=Path(chat_db).expanduser().resolve().parent,
-            )
-        )
+        provider = _select_conversational_provider(registry)
     chat_runtime = chat
     if chat_runtime is None:
         chat_runtime = build_chat_runtime(db_path=chat_db, provider=provider)
@@ -138,7 +146,10 @@ def compose_services(
         advanced_runtime = build_advanced_runtime(provider=provider)
     work_runtime = work
     if work_runtime is None:
-        work_runtime = build_default_work_runtime(db_path=work_db, **work_kwargs)
+        kwargs = dict(work_kwargs)
+        if registry is not None:
+            kwargs.setdefault("model_router", ModelRouter(registry))
+        work_runtime = build_default_work_runtime(db_path=work_db, **kwargs)
     return ApiServices(
         chat=chat_runtime,
         advanced=advanced_runtime,
@@ -156,8 +167,9 @@ def _host_provider_registry(
 ) -> ProviderRegistry:
     """Load overlay + ProviderStateStore + CredentialStore once.
 
-    Chat/Advanced pick one enabled conversational provider from this
-    registry. API keys stay in CredentialStore, not JSON.
+    This is the host deployment provider truth. Chat/Advanced pick one
+    enabled conversational provider from it. Work pins named keys from
+    the same registry. API keys stay in CredentialStore, not JSON.
     """
 
     credentials = CredentialStore(instance_root)
@@ -174,3 +186,30 @@ def _select_conversational_provider(registry: ProviderRegistry) -> ModelProvider
     if not enabled:
         raise ChatError("ChatRuntime requires an enabled model provider.")
     return max(enabled, key=lambda item: (item.spec.priority, -item.spec.latency_rank))
+
+
+def _host_eligible_provider_keys(registry: ProviderRegistry) -> tuple[str, ...]:
+    """Provider identities this host may pin for generic text Work.
+
+    Every key in the effective registry is an execution identity.
+    Enablement is a live execute-time check. Overlay competence scores
+    are ranking, not the allowlist. This list is not proof of
+    multimodal document support.
+    """
+
+    return tuple(item.spec.key for item in registry.providers())
+
+
+def _register_host_intelligence(inventory: DeploymentInventory, model_router) -> None:
+    if model_router is None:
+        return
+    if inventory.get("reasoning.general") is not None:
+        return
+    keys = _host_eligible_provider_keys(model_router.registry)
+    if not keys:
+        return
+    register_intelligence_capabilities(
+        inventory,
+        eligible_providers=keys,
+        include_multimodal=False,
+    )

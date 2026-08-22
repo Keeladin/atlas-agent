@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
-import { loadSession, logout } from './api/client'
+import { AUTH_EXPIRED_EVENT, loadSession, logout } from './api/client'
 import { Chat } from './screens/Chat'
 import { Home } from './screens/Home'
 import { Login } from './screens/Login'
@@ -29,6 +29,15 @@ export default function App() {
       .then((session) => setAuthed(Boolean(session.authenticated)))
       .catch(() => setAuthed(false))
       .finally(() => setReady(true))
+  }, [])
+
+  useEffect(() => {
+    const handleAuthExpiry = () => {
+      queryClient.clear()
+      setAuthed(false)
+    }
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpiry)
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpiry)
   }, [])
 
   if (!ready) {

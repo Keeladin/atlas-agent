@@ -37,29 +37,45 @@ export function WorkDetail() {
 
   useEffect(() => {
     if (!workId) return
-    const events = detailQuery.data?.events || []
-    const after = events.length ? String(events[events.length - 1].id) : '0'
-    const source = new EventSource(
-      `/api/work/${workId}/events/stream?after=${after}`,
-      { withCredentials: true },
-    )
-    const refresh = () => {
+    let cursor = '0'
+    let source: EventSource | null = null
+    let reconnectTimer: number | null = null
+    let stopped = false
+    const refresh = (event: Event) => {
+      if (event instanceof MessageEvent && event.lastEventId) {
+        cursor = event.lastEventId
+      }
       void queryClient.invalidateQueries({ queryKey: ['work-detail', workId] })
       void queryClient.invalidateQueries({ queryKey: ['work'] })
     }
-    source.addEventListener('confirmation.requested', refresh)
-    source.addEventListener('confirmation.applied', refresh)
-    source.addEventListener('approval.requested', refresh)
-    source.addEventListener('approval.applied', refresh)
-    source.addEventListener('work.paused', refresh)
-    source.addEventListener('work.pause_requested', refresh)
-    source.addEventListener('work.resumed', refresh)
-    source.addEventListener('work.completed', refresh)
-    source.addEventListener('work.failed', refresh)
-    source.addEventListener('capability.completed', refresh)
-    source.onmessage = refresh
-    return () => source.close()
-  }, [workId, queryClient, detailQuery.data?.events?.length])
+    const connect = () => {
+      source = new EventSource(
+        `/api/work/${workId}/events/stream?after=${cursor}`,
+        { withCredentials: true },
+      )
+      source.addEventListener('confirmation.requested', refresh)
+      source.addEventListener('confirmation.applied', refresh)
+      source.addEventListener('approval.requested', refresh)
+      source.addEventListener('approval.applied', refresh)
+      source.addEventListener('work.paused', refresh)
+      source.addEventListener('work.pause_requested', refresh)
+      source.addEventListener('work.resumed', refresh)
+      source.addEventListener('work.completed', refresh)
+      source.addEventListener('work.failed', refresh)
+      source.addEventListener('capability.completed', refresh)
+      source.onmessage = refresh
+      source.onerror = () => {
+        source?.close()
+        if (!stopped) reconnectTimer = window.setTimeout(connect, 1000)
+      }
+    }
+    connect()
+    return () => {
+      stopped = true
+      source?.close()
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
+    }
+  }, [workId, queryClient])
 
   const runMutation = useMutation({
     mutationFn: () =>

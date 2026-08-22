@@ -6,6 +6,8 @@ export type SessionInfo = {
 
 let csrfToken: string | null = null
 
+export const AUTH_EXPIRED_EVENT = 'atlas:auth-expired'
+
 export function setCsrfToken(token: string | null) {
   csrfToken = token
 }
@@ -52,6 +54,10 @@ export async function api<T = unknown>(
     }
   }
   if (!response.ok) {
+    if (response.status === 401 && path !== '/api/auth/session') {
+      setCsrfToken(null)
+      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
+    }
     const message =
       typeof body === 'object' &&
       body &&

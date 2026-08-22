@@ -20,7 +20,7 @@ export function WorkList() {
         filter === 'archived' ? '/api/work?archived=true' : '/api/work',
       ),
   })
-  const items = query.data?.work || []
+  const items = useMemo(() => query.data?.work || [], [query.data?.work])
   const details = useQueries({
     queries: items.map((item) => ({
       queryKey: ['work-detail', item.work_id],
@@ -30,7 +30,8 @@ export function WorkList() {
   const byId = useMemo(() => {
     const map = new Map<string, WorkDetail>()
     details.forEach((entry, index) => {
-      if (entry.data) map.set(items[index].work_id, entry.data)
+      const item = items[index]
+      if (entry.data && item) map.set(item.work_id, entry.data)
     })
     return map
   }, [details, items])

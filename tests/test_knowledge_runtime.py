@@ -2,6 +2,7 @@ from __future__ import annotations
 from tests.capability_fixtures import make_registration
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -150,6 +151,15 @@ class KnowledgeRuntimeTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertGreater(len(first), 2)
         self.assertTrue(all(chunk.strip() for chunk in first))
+
+    def test_chunk_schema_has_no_unused_metadata_column(self):
+        store = KnowledgeStore(self.db)
+        store.initialize()
+        with sqlite3.connect(self.db) as db:
+            columns = {
+                row[1] for row in db.execute("PRAGMA table_info(knowledge_chunks)")
+            }
+        self.assertNotIn("metadata_json", columns)
 
     def test_knowledge_ingest_is_content_idempotent_and_searchable(self):
         store = KnowledgeStore(self.db)

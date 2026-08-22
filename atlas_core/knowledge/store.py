@@ -37,7 +37,6 @@ class KnowledgeChunk:
     text: str
     sha256: str
     title: str
-    metadata: dict[str, Any]
     source_provenance: tuple[KnowledgeSourceProvenance, ...] = field(default_factory=tuple)
 
 
@@ -198,7 +197,6 @@ class KnowledgeStore:
                     ordinal INTEGER NOT NULL,
                     text TEXT NOT NULL,
                     sha256 TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
                     FOREIGN KEY (document_id) REFERENCES knowledge_documents(id) ON DELETE CASCADE,
                     UNIQUE(document_id, ordinal)
                 );
@@ -309,15 +307,14 @@ class KnowledgeStore:
                 chunk_id = f"chunk_{uuid.uuid4().hex}"
                 db.execute(
                     "INSERT INTO knowledge_chunks "
-                    "(id,document_id,ordinal,text,sha256,metadata_json) "
-                    "VALUES (?,?,?,?,?,?)",
+                    "(id,document_id,ordinal,text,sha256) "
+                    "VALUES (?,?,?,?,?)",
                     (
                         chunk_id,
                         document_id,
                         ordinal,
                         chunk,
                         digest,
-                        _json({}),
                     ),
                 )
                 if self._has_fts():
@@ -481,7 +478,6 @@ class KnowledgeStore:
             text=row["text"],
             sha256=row["sha256"],
             title=row["title"],
-            metadata=_load(row["metadata_json"]),
         )
 
     @staticmethod

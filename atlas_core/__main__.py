@@ -36,7 +36,10 @@ def _parser() -> argparse.ArgumentParser:
     deny.add_argument("--note")
     result = sub.add_parser("result", help="Render durable work truth as a user-facing report")
     result.add_argument("work_id")
-    index_text = sub.add_parser("index-text", help="Index a UTF-8 text file into Atlas local knowledge")
+    index_text = sub.add_parser(
+        "index-text",
+        help="Request controlled UTF-8 ingestion from a configured local source root",
+    )
     index_text.add_argument("relative_path")
     index_text.add_argument("--provider-namespace", required=True)
     index_text.add_argument("--root-id", required=True)

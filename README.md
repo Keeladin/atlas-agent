@@ -465,7 +465,7 @@ atlas-agent/
 ├── atlas_core/               Work, Chat, Advanced runtimes and capability catalog
 ├── atlas_api/                Companion API (auth, Chat, Advanced, Work, SPA)
 ├── companion/                Canonical owner UI
-├── atlas_companion/          Legacy HTTP adapter (non-canonical; tests/migration)
+├── atlas_companion/          Legacy adapter plus provider utilities still used by the API
 ├── atlas_morning/            frozen Morning Workflow implementation
 ├── atlas_mobile/             offline-first Mobile Capture PWA
 ├── config/                   provider overlay examples (no secrets)
@@ -583,7 +583,7 @@ recover      Resolve executions left running by an interrupted process
 approve      Approve one pending authority gate
 deny         Deny one pending authority gate
 result       Render durable work truth as a report
-index-text   Index a UTF-8 text file into local knowledge
+index-text   Request controlled UTF-8 ingestion from a configured local source root
 search       Search local full-text knowledge
 cancel       Cancel a non-terminal work item
 status       Show a work snapshot
@@ -595,10 +595,20 @@ work         List durable work items
 ```bash
 uv run python -m atlas_core \
   --db instance/atlas.db \
-  index-text "Atlas Constitution.md"
+  index-text "Atlas Constitution.md" \
+  --provider-namespace local \
+  --root-id documents \
+  --configuration-revision REVISION
 ```
 
-Search it:
+`index-text` accepts only a configured root-relative path plus the provider,
+root, and configuration revision identities shown above. The stock CLI does
+not yet load a deployment root registry, so this command currently fails
+closed with “no local source roots are configured” unless an embedding
+deployment supplies that registry. Absolute paths and current-working-directory
+path semantics are not supported. Root-loader wiring is future feature work.
+
+Search existing indexed knowledge:
 
 ```bash
 uv run python -m atlas_core \

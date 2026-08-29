@@ -16,8 +16,30 @@ type SystemState = {
   connections: Array<Record<string, unknown>>
   service_bindings: Array<Record<string, unknown>>
   pending_confirmations: ActionOccurrence[]
-  host: Record<string, unknown>
+  host: HostState
 }
+
+type HostStatus = {
+  hostname?: string
+  kernel?: string
+  pid?: number
+  uid?: number
+  invocation_id?: string | null
+  timestamp?: string
+}
+
+type HostResources = {
+  load_1?: number
+  load_5?: number
+  load_15?: number
+  cpu_count?: number | null
+  memory?: Record<string, string | null | undefined>
+  timestamp?: string
+}
+
+type HostFilesystem = { path?: string; total?: number; used?: number; free?: number }
+type HostStorage = { filesystems?: HostFilesystem[]; timestamp?: string }
+type HostState = { status?: HostStatus; resources?: HostResources; storage?: HostStorage }
 
 export function Atlas() {
   const qc = useQueryClient()
@@ -39,8 +61,62 @@ export function Atlas() {
   </Workspace>
 }
 
-function RuntimeOverview({ state }: { state?: SystemState }) {
-  return <Panel title="Runtime"><div className="grid-3"><div><div className="meta">Version</div><strong>{state?.version ?? '—'}</strong></div><div><div className="meta">Policy revision</div><strong>{state?.policy_revision ?? '—'}</strong></div><div><div className="meta">Capabilities</div><strong>{state?.capabilities.length ?? '—'}</strong></div></div><pre className="mono" style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(state?.host ?? {}, null, 2)}</pre></Panel>
+function formatBytes(value?: number) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let amount = value
+  let unit = 0
+  while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1 }
+  return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`
+}
+
+function formatMem(value?: string | null) {
+  if (!value) return '—'
+  const match = value.match(/^([0-9.]+)\s*kB$/i)
+  return match ? formatBytes(Number(match[1]) * 1024) : value
+}
+
+export function RuntimeOverview({ state }: { state?: SystemState }) {
+  const status = state?.host?.status ?? {}
+  const resources = state?.host?.resources ?? {}
+  const storage = state?.host?.storage ?? {}
+  const filesystems = storage.filesystems ?? []
+  const invocation = status.invocation_id ? `${status.invocation_id.slice(0, 12)}…` : '—'
+
+  return <Panel title="Runtime" className="runtime-overview">
+    <div className="grid-3 runtime-kpis">
+      <div><div className="meta">Version</div><strong>{state?.version ?? '—'}</strong></div>
+      <div><div className="meta">Policy revision</div><strong>{state?.policy_revision ?? '—'}</strong></div>
+      <div><div className="meta">Capabilities</div><strong>{state?.capabilities.length ?? '—'}</strong></div>
+    </div>
+    <div className="runtime-grid">
+      <section className="runtime-section">
+        <div className="runtime-section-head"><h3>Process</h3><span className="chip done">live</span></div>
+        <div className="runtime-facts">
+          <div><span>Host</span><strong>{status.hostname ?? '—'}</strong></div>
+          <div><span>Kernel</span><strong>{status.kernel ?? '—'}</strong></div>
+          <div><span>PID / UID</span><strong>{status.pid ?? '—'} / {status.uid ?? '—'}</strong></div>
+          <div title={status.invocation_id ?? undefined}><span>Invocation</span><strong>{invocation}</strong></div>
+        </div>
+      </section>
+      <section className="runtime-section">
+        <div className="runtime-section-head"><h3>Resources</h3><span className="meta">{resources.cpu_count ?? '—'} CPU</span></div>
+        <div className="runtime-facts">
+          <div><span>Load 1 / 5 / 15</span><strong>{[resources.load_1, resources.load_5, resources.load_15].map(v => v == null ? '—' : v.toFixed(2)).join(' / ')}</strong></div>
+          <div><span>Memory available</span><strong>{formatMem(resources.memory?.MemAvailable)}</strong></div>
+          <div><span>Memory total</span><strong>{formatMem(resources.memory?.MemTotal)}</strong></div>
+          <div><span>Swap free</span><strong>{formatMem(resources.memory?.SwapFree)}</strong></div>
+        </div>
+      </section>
+      <section className="runtime-section">
+        <div className="runtime-section-head"><h3>Storage</h3><span className="meta">{filesystems.length} observed</span></div>
+        <div className="runtime-storage">
+          {filesystems.length ? filesystems.map((fs, index) => <div className="runtime-storage-row" key={`${fs.path ?? 'fs'}:${index}`}><strong>{fs.path ?? '—'}</strong><span>{formatBytes(fs.free)} free / {formatBytes(fs.total)}</span></div>) : <div className="meta">No storage telemetry</div>}
+        </div>
+      </section>
+    </div>
+    <details className="inspect runtime-evidence"><summary>Raw host evidence</summary><pre>{JSON.stringify(state?.host ?? {}, null, 2)}</pre></details>
+  </Panel>
 }
 
 function Pending({ items, onDone }: { items: ActionOccurrence[]; onDone: () => Promise<unknown> }) {

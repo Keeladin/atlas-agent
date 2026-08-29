@@ -575,6 +575,88 @@ a.card:hover {
   }
 }
 
+/* —— Runtime policy control: one policy engine, three operator lenses. —— */
+.policy-head {
+  display: grid;
+  gap: 0.8rem;
+  margin-bottom: 1rem;
+}
+
+.policy-head .meta {
+  margin: 0;
+}
+
+.policy-tabs {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.7rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.policy-tab {
+  min-height: 34px;
+  padding: 0.35rem 0.7rem;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.64rem;
+}
+
+.policy-tab span {
+  margin-left: 0.45rem;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 0.62rem;
+}
+
+.policy-tab:hover:not(:disabled),
+.policy-tab.active {
+  border-color: var(--gold-dim);
+  background: var(--gold-wash);
+  color: var(--gold-bright);
+  box-shadow: none;
+}
+
+.policy-tab.active span {
+  color: var(--gold-dim);
+}
+
+.policy-rules {
+  gap: 0;
+}
+
+.policy-row select {
+  width: 9rem;
+}
+
+.policy-add {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 700px) {
+  .policy-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .policy-tab {
+    padding-inline: 0.35rem;
+  }
+
+  .policy-row {
+    grid-template-columns: 1fr;
+  }
+
+  .policy-row select {
+    width: 100%;
+  }
+}
+
 /* —— List row / key-value —— */
 .list-row {
   display: grid;

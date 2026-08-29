@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react'
 import type { ComponentProps } from 'react'
 import { describe, expect, it } from 'vitest'
 import { RuntimeOverview } from './Atlas'
+import { policyLensFor } from './policyLens'
 
 type RuntimeState = NonNullable<ComponentProps<typeof RuntimeOverview>['state']>
 
@@ -32,5 +33,21 @@ describe('RuntimeOverview', () => {
     expect(screen.getByText('16 GiB')).toBeInTheDocument()
     expect(screen.getByText('Raw host evidence')).toBeInTheDocument()
     expect(screen.getByText(/"hostname": "ubuntuserver"/)).not.toBeVisible()
+  })
+})
+
+
+describe('policyLensFor', () => {
+  const servers = [
+    { server_id: 'mail-n8n', kind: 'n8n' },
+    { server_id: 'desktop', kind: 'mcp' },
+  ] as Parameters<typeof policyLensFor>[1]
+
+  it('separates native system policy from n8n and MCP tool policy', () => {
+    expect(policyLensFor({ scope: 'host/service' }, servers)).toBe('system')
+    expect(policyLensFor({ scope: 'mail/connection/google' }, servers)).toBe('system')
+    expect(policyLensFor({ scope: 'mcp/mail-n8n/tool/mail_messages_search' }, servers)).toBe('n8n')
+    expect(policyLensFor({ scope: 'mcp/desktop/tool/read_file' }, servers)).toBe('mcp')
+    expect(policyLensFor({ scope: 'mcp/disconnected/tool/example' }, servers)).toBe('mcp')
   })
 })

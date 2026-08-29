@@ -5,6 +5,7 @@ import type { ActionOccurrence, Capability, Decision, MCPServer, PolicyRule, Pro
 import { ConfirmationCard } from '../ui/ConfirmationCard'
 import { Panel } from '../ui/Panel'
 import { Workspace } from '../ui/Workspace'
+import { policyLensFor, type PolicyLens } from './policyLens'
 
 type SystemState = {
   version: string
@@ -51,7 +52,7 @@ export function Atlas() {
     <div className="stack">
       <RuntimeOverview state={system.data} />
       <Pending items={system.data?.pending_confirmations ?? []} onDone={refresh} />
-      <PolicyPanel rules={policy.data?.rules ?? []} revision={policy.data?.revision ?? 0} onDone={refresh} />
+      <PolicyPanel rules={policy.data?.rules ?? []} servers={system.data?.mcp_servers ?? []} revision={policy.data?.revision ?? 0} onDone={refresh} />
       <Providers providers={system.data?.providers ?? []} onDone={refresh} />
       <Mcp servers={system.data?.mcp_servers ?? []} onDone={refresh} />
       <MailConnections connections={system.data?.connections ?? []} bindings={system.data?.service_bindings ?? []} servers={system.data?.mcp_servers ?? []} onDone={refresh} />
@@ -124,16 +125,37 @@ function Pending({ items, onDone }: { items: ActionOccurrence[]; onDone: () => P
   return <Panel title="Needs you" tone="decision-confirm"><div className="stack">{items.map(item => <ConfirmationCard key={item.occurrence_id} item={item} onDone={onDone} />)}</div></Panel>
 }
 
-function PolicyPanel({ rules, revision, onDone }: { rules: PolicyRule[]; revision: number; onDone: () => Promise<unknown> }) {
+function PolicyPanel({ rules, servers, revision, onDone }: { rules: PolicyRule[]; servers: MCPServer[]; revision: number; onDone: () => Promise<unknown> }) {
+  const [lens, setLens] = useState<PolicyLens>('system')
   const [scope, setScope] = useState('')
   const [operation, setOperation] = useState('')
   const [decision, setDecision] = useState<Decision>('CONFIRM')
   const save = useMutation({ mutationFn: (payload: { scope: string; operation: string; decision: Decision }) => api('/api/policy', { method: 'POST', body: JSON.stringify(payload) }), onSuccess: onDone })
   function submit(event: FormEvent) { event.preventDefault(); save.mutate({ scope, operation, decision }) }
-  return <Panel title={`Control policy · revision ${revision}`}>
-    <p className="meta">Changes apply to the running Atlas immediately. No service restart or MCP reconfiguration is involved.</p>
-    <div className="stack">{rules.map(rule => <div className="list-row" key={`${rule.scope}:${rule.operation}`}><strong>{rule.scope}</strong><div className="meta">{rule.operation}</div><select value={rule.decision} onChange={e => save.mutate({ scope: rule.scope, operation: rule.operation, decision: e.target.value as Decision })}><option>NO</option><option>YES</option><option>CONFIRM</option></select></div>)}</div>
-    <form className="grid-3" onSubmit={submit} style={{ marginTop: '1rem' }}><input value={scope} onChange={e => setScope(e.target.value)} placeholder="resource scope" /><input value={operation} onChange={e => setOperation(e.target.value)} placeholder="operation" /><div className="actions"><select value={decision} onChange={e => setDecision(e.target.value as Decision)}><option>NO</option><option>YES</option><option>CONFIRM</option></select><button className="primary" type="submit">Set</button></div></form>
+
+  const grouped = {
+    system: rules.filter(rule => policyLensFor(rule, servers) === 'system'),
+    n8n: rules.filter(rule => policyLensFor(rule, servers) === 'n8n'),
+    mcp: rules.filter(rule => policyLensFor(rule, servers) === 'mcp'),
+  }
+  const tabs: Array<{ id: PolicyLens; label: string }> = [
+    { id: 'system', label: 'System' },
+    { id: 'n8n', label: 'n8n Tools' },
+    { id: 'mcp', label: 'MCP Tools' },
+  ]
+  const shown = grouped[lens]
+
+  return <Panel title="Policies" className="policy-panel">
+    <div className="policy-head">
+      <p className="meta">Revision {revision} · changes apply immediately to the running Atlas. No service restart or provider reconfiguration.</p>
+      <div className="policy-tabs" role="tablist" aria-label="Policy lenses">
+        {tabs.map(tab => <button key={tab.id} type="button" role="tab" aria-selected={lens === tab.id} className={lens === tab.id ? 'policy-tab active' : 'policy-tab'} onClick={() => setLens(tab.id)}>{tab.label}<span>{grouped[tab.id].length}</span></button>)}
+      </div>
+    </div>
+    <div className="policy-rules stack">
+      {shown.length ? shown.map(rule => <div className="list-row policy-row" key={`${rule.scope}:${rule.operation}`}><div><strong>{rule.scope}</strong><div className="meta">{rule.operation}</div></div><select aria-label={`${rule.scope} ${rule.operation} decision`} value={rule.decision} onChange={e => save.mutate({ scope: rule.scope, operation: rule.operation, decision: e.target.value as Decision })}><option>NO</option><option>YES</option><option>CONFIRM</option></select></div>) : <div className="empty">No {tabs.find(tab => tab.id === lens)?.label.toLowerCase()} policies are currently registered.</div>}
+    </div>
+    <form className="grid-3 policy-add" onSubmit={submit}><input value={scope} onChange={e => setScope(e.target.value)} placeholder="resource scope" /><input value={operation} onChange={e => setOperation(e.target.value)} placeholder="operation" /><div className="actions"><select value={decision} onChange={e => setDecision(e.target.value as Decision)}><option>NO</option><option>YES</option><option>CONFIRM</option></select><button className="primary" type="submit">Set</button></div></form>
   </Panel>
 }
 

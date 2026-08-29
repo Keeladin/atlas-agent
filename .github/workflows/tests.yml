@@ -1,0 +1,43 @@
+name: Atlas tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: companion/package-lock.json
+      - name: Install Python dependencies
+        run: uv sync --frozen
+      - name: Python acceptance suite
+        run: uv run pytest -q
+      - name: Compile Python packages
+        run: uv run python -m compileall -q atlas_api atlas_core scripts tests
+      - name: Install Companion dependencies
+        run: npm ci
+        working-directory: companion
+      - name: Lint Companion
+        run: npm run lint
+        working-directory: companion
+      - name: Test Companion
+        run: npm run test
+        working-directory: companion
+      - name: Build Companion
+        run: npm run build
+        working-directory: companion

@@ -1,0 +1,22 @@
+[Unit]
+Description=Atlas Companion API
+After=network-online.target
+Wants=network-online.target
+Documentation=file:///home/jaco/Projects/atlas-agent/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=/home/jaco/Projects/atlas-agent
+ExecStart=/home/jaco/Projects/atlas-agent/.venv/bin/python3 -m atlas_api --host 127.0.0.1 --port 8080 --instance-root /home/jaco/Projects/atlas-agent-state/production --static-dir /home/jaco/Projects/atlas-agent/companion/dist
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+KillMode=mixed
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+UMask=0007
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

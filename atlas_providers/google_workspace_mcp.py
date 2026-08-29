@@ -56,6 +56,7 @@ class GoogleWorkspaceProvider:
         services: tuple[str, ...],
         workspace: Path,
         config_dir: Path | None = None,
+        credentials_file: Path | None = None,
         keyring_backend: str = "file",
         discovery_timeout_sec: float = 20.0,
         execution_timeout_sec: float = 120.0,
@@ -67,6 +68,9 @@ class GoogleWorkspaceProvider:
         self.config_dir = config_dir.resolve() if config_dir else None
         if self.config_dir is not None:
             self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.credentials_file = credentials_file.resolve(strict=True) if credentials_file else None
+        if self.credentials_file is not None and not self.credentials_file.is_file():
+            raise ValueError("Google Workspace credentials file must be a regular file")
         self.keyring_backend = str(keyring_backend or "file").strip() or "file"
         self.discovery_timeout_sec = discovery_timeout_sec
         self.execution_timeout_sec = execution_timeout_sec
@@ -217,6 +221,8 @@ class GoogleWorkspaceProvider:
             env = {key: os.environ[key] for key in GWS_INHERITED_ENV if key in os.environ}
             if self.config_dir is not None:
                 env["GOOGLE_WORKSPACE_CLI_CONFIG_DIR"] = str(self.config_dir)
+            if self.credentials_file is not None:
+                env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(self.credentials_file)
             env["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = self.keyring_backend
             completed = subprocess.run(
                 command,
@@ -544,7 +550,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--gws", required=True, help="Path or executable name for the current gws CLI")
     parser.add_argument("--services", default=",".join(DEFAULT_SERVICES), help="Comma-separated Google Discovery service names")
     parser.add_argument("--workspace", required=True, help="Provider-local workspace for upload/download paths")
-    parser.add_argument("--config-dir", help="Provider-local gws configuration/credential directory")
+    parser.add_argument("--config-dir", help="Provider-local gws runtime configuration directory")
+    parser.add_argument("--credentials-file", help="Headless authorized-user or service-account credentials JSON passed to gws")
     parser.add_argument("--keyring-backend", default="file", help="gws credential keyring backend for headless execution")
     parser.add_argument("--discovery-timeout", type=float, default=20.0)
     parser.add_argument("--execution-timeout", type=float, default=120.0)
@@ -561,6 +568,7 @@ def main(argv: list[str] | None = None) -> int:
         services=services,
         workspace=Path(args.workspace),
         config_dir=Path(args.config_dir) if args.config_dir else None,
+        credentials_file=Path(args.credentials_file) if args.credentials_file else None,
         keyring_backend=str(args.keyring_backend),
         discovery_timeout_sec=float(args.discovery_timeout),
         execution_timeout_sec=float(args.execution_timeout),

@@ -14,6 +14,7 @@ function renderChat() {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input)
     if (path === '/api/chat/conversations' && (!init?.method || init.method === 'GET')) return Response.json({ conversations: [conversation] })
+    if (path === '/api/actions/pending') return Response.json({ actions: [] })
     if (path === '/api/chat/conversations/conversation_1' && (!init?.method || init.method === 'GET')) return Response.json({ conversation, turns: [
       { turn_id: 'u1', conversation_id: 'conversation_1', role: 'user', content: 'Hello Atlas', metadata: {} },
       { turn_id: 'a1', conversation_id: 'conversation_1', role: 'assistant', content: 'Hello there', metadata: {} },
@@ -54,6 +55,7 @@ it('never sends to a conversation deleted from stale cache', async () => {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input)
     if (path === '/api/chat/conversations' && (!init?.method || init.method === 'GET')) return Response.json({ conversations: list })
+    if (path === '/api/actions/pending') return Response.json({ actions: [] })
     if (path === '/api/chat/conversations/conversation_1' && (!init?.method || init.method === 'GET')) return Response.json({ conversation, turns: [{ turn_id: 'a1', conversation_id: 'conversation_1', role: 'assistant', content: 'Old reply', metadata: {} }] })
     if (path === '/api/chat/conversations/conversation_1' && init?.method === 'DELETE') { list = []; return Response.json({ ok: true }) }
     if (path === '/api/chat/conversations' && init?.method === 'POST') { list = [replacement]; return Response.json(replacement) }
@@ -73,4 +75,27 @@ it('never sends to a conversation deleted from stale cache', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations/conversation_2/messages', expect.objectContaining({ method: 'POST' })))
   expect(fetchMock.mock.calls.some(([input, init]) => String(input) === '/api/chat/conversations/conversation_1/messages' && (init as RequestInit | undefined)?.method === 'POST')).toBe(false)
+})
+
+
+it('does not resurrect a stale embedded confirmation after the runtime has resolved it', async () => {
+  const pending = {
+    occurrence_id: 'action-restart', capability_id: 'host.service.restart', operation: 'restart', scope: 'host/service/atlas-api.service',
+    payload_sha256: 'a'.repeat(64), policy_decision: 'CONFIRM', policy_revision: 1, status: 'pending_confirmation', created_at: 'now',
+  }
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input)
+    if (path === '/api/chat/conversations' && (!init?.method || init.method === 'GET')) return Response.json({ conversations: [conversation] })
+    if (path === '/api/actions/pending') return Response.json({ actions: [] })
+    if (path === '/api/chat/conversations/conversation_1') return Response.json({ conversation, turns: [
+      { turn_id: 'a1', conversation_id: 'conversation_1', role: 'assistant', content: 'Restart user service atlas-api.service', metadata: { requires_confirmation: true, action: pending } },
+    ] })
+    throw new Error(`unexpected fetch ${path}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={client}><Chat /></QueryClientProvider>)
+  expect(await screen.findByText('Restart user service atlas-api.service')).toBeInTheDocument()
+  await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/actions/pending')).toBe(true))
+  expect(screen.queryByText('Confirm exact action')).not.toBeInTheDocument()
 })

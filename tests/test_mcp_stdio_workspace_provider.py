@@ -149,11 +149,14 @@ def test_workspace_provider_maps_google_discovery_methods_to_tools(tmp_path, mon
 
 
 def test_workspace_provider_executes_gws_with_bounded_environment(tmp_path, monkeypatch):
+    credentials_file = tmp_path / "authorized-user.json"
+    credentials_file.write_text('{"type":"authorized_user"}')
     provider = workspace.GoogleWorkspaceProvider(
         gws_command="/opt/gws",
         services=("gmail",),
         workspace=tmp_path / "workspace",
         config_dir=tmp_path / "config",
+        credentials_file=credentials_file,
     )
     binding = workspace.MethodBinding(
         "gmail",
@@ -180,6 +183,7 @@ def test_workspace_provider_executes_gws_with_bounded_environment(tmp_path, monk
     ]
     assert captured["cwd"] == provider.workspace
     assert captured["env"]["GOOGLE_WORKSPACE_CLI_CONFIG_DIR"] == str(provider.config_dir)
+    assert captured["env"]["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] == str(provider.credentials_file)
     assert captured["env"]["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] == "file"
     assert captured["env"]["HTTPS_PROXY"] == "http://proxy.example"
     assert "ATLAS_COMPANION_PASSWORD" not in captured["env"]

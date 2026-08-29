@@ -99,12 +99,14 @@ Old Atlas Work, Chat, Cadence, HostAction, authority-grant and Morning databases
 The production Google Workspace provider is a stdio MCP provider, not an Atlas mail subsystem. Its external runtime files live under the production state root:
 
 ```text
-bin/gws                         current Google Workspace CLI binary
-google-workspace/config/        gws OAuth/config state
-google-workspace/workspace/     bounded provider upload/download workspace
+bin/gws                                      current Google Workspace CLI binary
+google-workspace/headless-authorized-user.json headless authorized-user credential exported from gws
+google-workspace/runtime-config/                Atlas-owned gws token/cache state
+google-workspace/config/                        owner-only legacy interactive OAuth state
+google-workspace/workspace/                     bounded provider upload/download workspace
 ```
 
-The registered `google-workspace` MCP server launches `atlas_providers.google_workspace_mcp`, which derives Gmail, Drive and Calendar tools from Google Discovery and dispatches them through the current `gws` binary. OAuth/config state is technical provider custody; Atlas `NO` / `YES` / `CONFIRM` policy remains the sole discretionary authority.
+The registered `google-workspace` MCP server launches `atlas_providers.google_workspace_mcp`, which derives Gmail, Drive and Calendar tools from Google Discovery and dispatches them through the current `gws` binary. Production uses gws's documented headless credentials-file flow: the exported authorized-user JSON remains outside Git and is readable only by the owner and the `atlas` service account, while gws writes refresh/cache state into an Atlas-owned `runtime-config/` directory. The older interactive config remains owner-only and is not used by the running service. This OAuth/config state is technical provider custody; Atlas `NO` / `YES` / `CONFIRM` policy remains the sole discretionary authority.
 
 ## Persistent Memory
 
@@ -126,7 +128,7 @@ Chat -> Work -> Sources -> Atlas
 
 There is no `Now` page and no Morning UI.
 
-Secrets are never returned to the browser. The UI can replace credentials, but the server stores them only in the encrypted credential boundary.
+Secrets are never returned to the browser. Atlas-managed model/MCP bearer credentials live in the encrypted `CredentialStore`; provider-owned external credentials such as the Google Workspace headless authorized-user file remain under the protected production-state tree and never enter Git or Companion state.
 
 ## Deployment topology
 

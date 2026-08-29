@@ -65,6 +65,20 @@ describe('ConfirmationCard', () => {
     await waitFor(() => expect(onDone).toHaveBeenCalled())
   })
 
+  it('does not offer a second confirmation after a self-restart is dispatched', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ action: { ...item, status: 'uncertain' } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    renderCard(vi.fn(async () => { throw new Error('restart in progress') }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    expect(await screen.findByText('Action dispatched. Waiting for runtime verification…')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
+    expect(screen.getByText('uncertain')).toBeInTheDocument()
+  })
+
   it('surfaces confirmation failures instead of failing silently', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: 'csrf token missing or invalid' }), {
       status: 403,

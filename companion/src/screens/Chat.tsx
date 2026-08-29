@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { api } from '../api/client'
-import type { ChatTurn, Conversation } from '../api/types'
+import type { ActionOccurrence, ChatTurn, Conversation } from '../api/types'
 import { ConfirmationCard } from '../ui/ConfirmationCard'
 import { Workspace, WorkspaceRailSection } from '../ui/Workspace'
 
@@ -52,6 +52,7 @@ export function Chat() {
     queryFn: () => api<{ conversation: Conversation; turns: ChatTurn[] }>(`/api/chat/conversations/${selected}`),
     enabled: selectedValid,
   })
+  const pending = useQuery({ queryKey: ['pending-actions'], queryFn: () => api<{ actions: ActionOccurrence[] }>('/api/actions/pending'), refetchInterval: 5000 })
   const send = useMutation({
     mutationFn: ({ conversationId, text }: SendRequest) => api<{ turn: ChatTurn; action?: Record<string, unknown> }>(`/api/chat/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ message: text }) }),
     onSuccess: async (_data, variables) => {
@@ -64,8 +65,11 @@ export function Chat() {
   const pendingAction = useMemo(() => {
     const turns = detail.data?.turns ?? []
     const meta = turns.at(-1)?.metadata
-    return meta?.requires_confirmation && meta.action && typeof meta.action === 'object' ? meta.action : null
-  }, [detail.data])
+    const embedded = meta?.requires_confirmation && meta.action && typeof meta.action === 'object' ? meta.action as ActionOccurrence : null
+    if (!embedded) return null
+    if (!pending.data) return embedded
+    return pending.data.actions.find(action => action.occurrence_id === embedded.occurrence_id) ?? null
+  }, [detail.data, pending.data])
   useEffect(() => {
     const node = threadEndRef.current
     if (node && typeof node.scrollIntoView === 'function') node.scrollIntoView({ block: 'end' })

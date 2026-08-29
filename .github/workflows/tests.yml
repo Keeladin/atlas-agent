@@ -28,7 +28,7 @@ jobs:
       - name: Python acceptance suite
         run: uv run pytest -q
       - name: Compile Python packages
-        run: uv run python -m compileall -q atlas_api atlas_core scripts tests
+        run: uv run python -m compileall -q atlas_api atlas_core atlas_providers tests
       - name: Install Companion dependencies
         run: npm ci
         working-directory: companion

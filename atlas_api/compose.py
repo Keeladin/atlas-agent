@@ -13,7 +13,6 @@ from atlas_core.evidence import EvidenceStore
 from atlas_core.host import HostRuntime
 from atlas_core.identity import IdentityStore
 from atlas_core.knowledge import KnowledgeRuntime, KnowledgeStore
-from atlas_core.mail import MailRuntime
 from atlas_core.mcp import MCPRuntime, MCPServerStore
 from atlas_core.policy import OwnerPolicy, PolicyStore
 from atlas_core.providers import ProviderRuntime, ProviderSettingsStore
@@ -48,7 +47,6 @@ class AtlasRuntime:
     work: WorkRuntime
     cadence_store: CadenceStore
     cadence: CadenceRuntime
-    mail: MailRuntime
     chat_store: ChatStore
     chat: ChatRuntime
 
@@ -104,18 +102,6 @@ class AtlasRuntime:
                 seeds.append((f"{scope}/{child}", "*", "NO"))
         for server in self.mcp_store.all():
             seeds.append((f"mcp/{server.server_id}", "invoke", "CONFIRM"))
-        for connection in self.identities.connections(owner_principal_id=owner):
-            try:
-                binding = self.identities.service_binding_for(connection.connection_id, "mail")
-            except Exception:
-                continue
-            scope = f"mail/{connection.connection_id}"
-            if "mail.read" in binding.attested_operations:
-                seeds.append((scope, "mail.read", "YES"))
-            if "mail.send" in binding.attested_operations:
-                seeds.append((scope, "mail.send", "CONFIRM"))
-            if "mail.modify" in binding.attested_operations:
-                seeds.append((scope, "mail.modify", "CONFIRM"))
         for scope, operation, decision in seeds:
             self.policy_store.seed_if_absent(
                 principal_id=owner, scope=scope, operation=operation, decision=decision,
@@ -156,14 +142,13 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     cadence_store = CadenceStore(cadence_db); cadence_store.initialize(); cadence = CadenceRuntime(cadence_store, work)
     register_work_capabilities(registry, work)
     register_cadence_capabilities(registry, cadence)
-    mail = MailRuntime(identities, mcp, registry)
     chat_store = ChatStore(chat_db); chat_store.initialize(); chat = ChatRuntime(chat_store, providers, registry, capabilities, knowledge_store)
 
     runtime = AtlasRuntime(
         root, identities, policy_store, policy, actions_store, evidence, registry,
         actions, capabilities, credentials, provider_settings, providers,
         mcp_store, mcp, source_roots, sources, host, knowledge_store, knowledge,
-        work_store, work, cadence_store, cadence, mail, chat_store, chat,
+        work_store, work, cadence_store, cadence, chat_store, chat,
     )
     runtime.seed_policy()
     host.reconcile_self_restart()

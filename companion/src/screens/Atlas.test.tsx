@@ -41,53 +41,55 @@ describe('RuntimeOverview', () => {
 
 describe('policyLensFor', () => {
   const servers = [
-    { server_id: 'mail-n8n', kind: 'n8n' },
-    { server_id: 'desktop', kind: 'mcp' },
+    { server_id: 'automation-n8n', kind: 'n8n' },
+    { server_id: 'google-workspace', kind: 'mcp' },
   ] as Parameters<typeof policyLensFor>[1]
 
   it('separates native system policy from n8n and MCP tool policy', () => {
     expect(policyLensFor({ scope: 'host/service' }, servers)).toBe('system')
-    expect(policyLensFor({ scope: 'mail/connection/google' }, servers)).toBe('system')
-    expect(policyLensFor({ scope: 'mcp/mail-n8n/tool/mail_messages_search' }, servers)).toBe('n8n')
-    expect(policyLensFor({ scope: 'mcp/desktop/tool/read_file' }, servers)).toBe('mcp')
+    expect(policyLensFor({ scope: 'host/filesystem' }, servers)).toBe('system')
+    expect(policyLensFor({ scope: 'mcp/automation-n8n/tool/workflow_status' }, servers)).toBe('n8n')
+    expect(policyLensFor({ scope: 'mcp/google-workspace/tool/gmail_users_messages_send' }, servers)).toBe('mcp')
     expect(policyLensFor({ scope: 'mcp/disconnected/tool/example' }, servers)).toBe('mcp')
   })
 })
 
 
 describe('PolicyPanel', () => {
-  const server = { server_id: 'mail-n8n', display_name: 'Atlas n8n mail', kind: 'n8n', transport: 'streamable_http', url: 'http://n8n/mcp', enabled: true, credential_configured: true, timeout_sec: 30, read_timeout_sec: 30, discovered_tool_count: 4 } as const
-  const makeTool = (id: string, description: string) => ({ id: `mcp.mail-n8n.${id}`, description, operation: 'invoke', effect_class: 'external', source: 'n8n', tags: ['mcp', 'n8n'], available: true, availability_reason: 'available', policy_decision: 'CONFIRM' as const, policy_revision: 36, scope_hint: `mcp/mail-n8n/tool/${id}`, metadata: { server_id: 'mail-n8n', tool_name: id } })
+  const server = { server_id: 'google-workspace', display_name: 'Google Workspace', kind: 'mcp', transport: 'stdio', url: null, command: '/usr/bin/python3', args: ['-m', 'atlas_providers.google_workspace_mcp'], cwd: '/srv/atlas-google', enabled: true, credential_configured: false, timeout_sec: 30, read_timeout_sec: 300, discovered_tool_count: 3 } as const
+  const makeTool = (id: string, description: string, effect = 'external') => ({ id: `mcp.google-workspace.${id}`, description, operation: 'invoke', effect_class: effect, source: 'mcp', tags: ['mcp'], available: true, availability_reason: 'available', policy_decision: 'CONFIRM' as const, policy_revision: 36, scope_hint: `mcp/google-workspace/tool/${id}`, metadata: { server_id: 'google-workspace', tool_name: id } })
   const capabilities = [
     { id: 'host.service.restart', description: 'Restart an exact user-systemd service.', operation: 'restart', effect_class: 'external', source: 'host', tags: ['host'], available: true, availability_reason: 'available', policy_decision: 'CONFIRM' as const, policy_revision: 36, scope_hint: 'host/service', metadata: {} },
-    makeTool('mail_connection_attest', 'Attest the n8n-held Gmail connection.'),
-    makeTool('mail_inbox_count', 'Count unread mail for one n8n-held mail connection.'),
-    makeTool('mail_messages_get', 'Read one bound mail message.'),
-    makeTool('mail_messages_search', 'Search a bound n8n-held mail account.'),
+    makeTool('gmail_users_messages_send', 'gmail.users.messages.send: Sends a message.'),
+    makeTool('gmail_users_messages_delete', 'gmail.users.messages.delete: Permanently deletes a message.', 'destructive'),
+    makeTool('drive_files_list', 'drive.files.list: Lists files.', 'none'),
   ]
   const rules = [{ event_id: 'e1', sequence: 1, principal_id: 'owner', scope: 'host/service', operation: 'restart', decision: 'CONFIRM' as const, created_at: 'now' }]
 
-  it('presents descriptions first and exposes every discovered n8n tool as a policy control', () => {
+  it('presents descriptions first and exposes every discovered Workspace tool as a policy control', () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false }, queries: { retry: false } } })
     render(<QueryClientProvider client={client}><PolicyPanel rules={rules} capabilities={capabilities} servers={[server]} revision={36} onDone={async () => undefined} /></QueryClientProvider>)
     expect(screen.getByText('Restart an exact user-systemd service.')).toBeInTheDocument()
     expect(screen.getByText('host/service · restart')).toHaveClass('policy-syntax')
-    fireEvent.click(screen.getByRole('tab', { name: /n8n Tools/i }))
-    expect(screen.getByText('Atlas n8n mail')).toBeInTheDocument()
-    expect(screen.getByText('4 tools')).toBeInTheDocument()
-    expect(screen.getByText('Attest the n8n-held Gmail connection.')).toBeInTheDocument()
-    expect(screen.getByText('Count unread mail for one n8n-held mail connection.')).toBeInTheDocument()
-    expect(screen.getByText('Read one bound mail message.')).toBeInTheDocument()
-    expect(screen.getByText('Search a bound n8n-held mail account.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: /MCP Tools/i }))
+    expect(screen.getByText('Google Workspace')).toBeInTheDocument()
+    expect(screen.getByText('3 tools')).toBeInTheDocument()
+    expect(screen.getByText('gmail.users.messages.send: Sends a message.')).toBeInTheDocument()
+    expect(screen.getByText('gmail.users.messages.delete: Permanently deletes a message.')).toBeInTheDocument()
+    expect(screen.getByText('drive.files.list: Lists files.')).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('textbox', { name: /filter provider tools/i }), { target: { value: 'delete' } })
+    expect(screen.getByText('gmail.users.messages.delete: Permanently deletes a message.')).toBeInTheDocument()
+    expect(screen.queryByText('gmail.users.messages.send: Sends a message.')).not.toBeInTheDocument()
   })
 })
 
 describe('capabilityLensFor', () => {
-  it('puts discovered n8n tools under n8n Tools while semantic mail remains System', () => {
-    const servers = [{ server_id: 'mail-n8n', kind: 'n8n' }] as Parameters<typeof capabilityLensFor>[1]
-    const base = { description: '', operation: 'invoke', effect_class: 'external', source: 'n8n', tags: [], available: true, availability_reason: 'available', policy_decision: 'CONFIRM' as const, policy_revision: 1, metadata: {} }
-    expect(capabilityLensFor({ ...base, id: 'mail.messages.search', scope_hint: 'mail' }, servers)).toBe('system')
-    expect(capabilityLensFor({ ...base, id: 'mcp.mail-n8n.search', scope_hint: 'mcp/mail-n8n/tool/search', metadata: { server_id: 'mail-n8n' } }, servers)).toBe('n8n')
+  it('classifies discovered tools by their actual MCP provider kind', () => {
+    const servers = [{ server_id: 'automation-n8n', kind: 'n8n' }, { server_id: 'google-workspace', kind: 'mcp' }] as Parameters<typeof capabilityLensFor>[1]
+    const base = { description: '', operation: 'invoke', effect_class: 'external', source: 'mcp', tags: [], available: true, availability_reason: 'available', policy_decision: 'CONFIRM' as const, policy_revision: 1, metadata: {} }
+    expect(capabilityLensFor({ ...base, id: 'host.status', scope_hint: 'host/status' }, servers)).toBe('system')
+    expect(capabilityLensFor({ ...base, id: 'mcp.automation-n8n.status', scope_hint: 'mcp/automation-n8n/tool/status', metadata: { server_id: 'automation-n8n' } }, servers)).toBe('n8n')
+    expect(capabilityLensFor({ ...base, id: 'mcp.google-workspace.gmail_users_messages_send', scope_hint: 'mcp/google-workspace/tool/gmail_users_messages_send', metadata: { server_id: 'google-workspace' } }, servers)).toBe('mcp')
   })
 })
 

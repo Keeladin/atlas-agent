@@ -20,6 +20,13 @@ def test_morning_is_not_embedded_in_atlas_runtime():
     assert "atlas_morning" not in text
 
 
+def test_semantic_mail_runtime_is_absent():
+    assert not (ROOT / "atlas_core" / "mail.py").exists()
+    text = _python_text()
+    assert "MailRuntime" not in text
+    assert "mail/connection" not in text
+
+
 def test_legacy_authority_engines_are_absent():
     text = _python_text()
     for obsolete in (

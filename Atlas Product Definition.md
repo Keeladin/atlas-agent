@@ -88,7 +88,8 @@ The greenfield runtime currently owns:
 - native file and host capabilities;
 - provider configuration and model execution;
 - generic MCP/n8n discovery and invocation;
-- semantic mail identity and operations;
+- generic Streamable HTTP and stdio MCP capability providers;
+- Discovery-driven Google Workspace capabilities for Gmail, Drive and Calendar;
 - runtime owner policy and exact confirmation;
 - evidence and verification state;
 - Companion runtime control.

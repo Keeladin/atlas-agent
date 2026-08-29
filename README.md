@@ -8,7 +8,7 @@ The current implementation is a clean runtime built around one governing boundar
 
 ```text
 intent
-  -> semantic capability
+  -> capability
   -> deterministic scope resolution
   -> owner runtime policy
   -> NO | YES | CONFIRM
@@ -32,7 +32,8 @@ Atlas currently includes:
 - an append-only owner policy with literal `NO`, `YES` and `CONFIRM` decisions;
 - durable exact-action confirmations bound to the normalized payload hash;
 - full discovered MCP and n8n capability inventory;
-- semantic mail over n8n MCP;
+- generic MCP over Streamable HTTP and local stdio transports;
+- a Discovery-driven Google Workspace provider surface for Gmail, Drive and Calendar;
 - runtime-managed model providers and encrypted credentials;
 - hardened enrolled filesystem roots;
 - host observation and user-systemd service operations;
@@ -63,9 +64,11 @@ Authentication, provider attestation, schema validation, filesystem containment 
 
 `CapabilityRegistry` is the complete runtime inventory. Registration and discovery never imply permission.
 
-Native capabilities include knowledge, Work, Cadence, local sources and host operations. Every tool advertised by an enabled MCP server is registered dynamically. n8n is treated as an MCP-backed capability provider and is not restricted to a handcrafted subset.
+Native capabilities include knowledge, Work, Cadence, local sources and host operations. Every tool advertised by an enabled MCP server is registered dynamically. n8n is treated as an MCP-backed capability provider and is not restricted to a handcrafted subset. MCP transport may be Streamable HTTP or a locally spawned stdio provider.
 
-The conversational model selects semantic capabilities and arguments. It does not decide whether the operation is allowed and cannot manufacture confirmation.
+Google Workspace is integrated as a provider rather than a mail subsystem: Google Discovery defines the Gmail, Drive and Calendar method surface, the provider exposes those methods through MCP, and Atlas policy governs each discovered tool. Atlas does not maintain a parallel `mail.read` / `mail.send` semantic API. The provider keeps its `gws` OAuth/config state under the external production-state tree rather than inside the Git checkout.
+
+The conversational model selects capabilities and arguments. It does not decide whether the operation is allowed and cannot manufacture confirmation.
 
 ## Persistence
 
@@ -86,6 +89,18 @@ secrets/            encrypted credential database and master key
 ```
 
 Old Atlas Work, Chat, Cadence, HostAction, authority-grant and Morning databases are not reused by this runtime.
+
+### Google Workspace provider state
+
+The production Google Workspace provider is a stdio MCP provider, not an Atlas mail subsystem. Its external runtime files live under the production state root:
+
+```text
+bin/gws                         current Google Workspace CLI binary
+google-workspace/config/        gws OAuth/config state
+google-workspace/workspace/     bounded provider upload/download workspace
+```
+
+The registered `google-workspace` MCP server launches `atlas_providers.google_workspace_mcp`, which derives Gmail, Drive and Calendar tools from Google Discovery and dispatches them through the current `gws` binary. OAuth/config state is technical provider custody; Atlas `NO` / `YES` / `CONFIRM` policy remains the sole discretionary authority.
 
 ## Companion
 
@@ -153,18 +168,18 @@ atlas_core/
   identity/       principals, account connections and technical bindings
   providers/      model contracts, HTTP adapters and runtime settings
   mcp/            generic MCP/n8n discovery and dispatch
+  mcp_stdio.py     generic local stdio MCP transport
   sources/        hardened local filesystem kernel
   work/           durable work and steps
   cadence/        recurring duties
   chat/           conversational orchestration
   host.py         host observation and user-systemd capabilities
-  mail.py         semantic mail over n8n MCP
   knowledge.py    durable knowledge and memory
   secrets.py      encrypted host-local credential store
 atlas_api/        authenticated Starlette composition/control plane
+atlas_providers/  external capability-provider adapters (Google Workspace)
 companion/        React PWA owner interface
 deploy/           user-systemd and reverse-proxy deployment definitions
-scripts/          one-shot migration and provisioning helpers
 tests/            architecture and acceptance invariants
 ```
 
@@ -174,7 +189,7 @@ The canonical local checks are:
 
 ```bash
 uv run pytest -q
-uv run python -m compileall -q atlas_api atlas_core scripts tests
+uv run python -m compileall -q atlas_api atlas_core atlas_providers tests
 cd companion
 npm run lint
 npm run test

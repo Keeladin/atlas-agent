@@ -338,13 +338,29 @@ async def mcp_put(request: Request) -> JSONResponse:
     if isinstance(gate,JSONResponse):return gate
     try:
         body=await _body(request);rt=_runtime(request);sid=str(body.get("server_id") or "")
-        try:existing=rt.mcp_store.get(sid);credential_ref=existing.credential_ref
-        except KeyError:credential_ref=None
+        try:
+            existing=rt.mcp_store.get(sid);credential_ref=existing.credential_ref;default_transport=existing.transport
+        except KeyError:
+            credential_ref=None;default_transport="streamable-http"
+        transport=str(body.get("transport") or default_transport)
         token=str(body.get("token") or "").strip()
-        if token:
+        if transport=="stdio":
+            if token:raise ValueError("stdio MCP servers do not use Atlas HTTP bearer tokens")
+            if credential_ref:
+                try:rt.credentials.disable(credential_ref)
+                except Exception:pass
+                credential_ref=None
+        elif token:
             if credential_ref:rt.credentials.replace(credential_ref,{"token":token})
             else:credential_ref=rt.credentials.create(kind="mcp_token",secret={"token":token})
-        item=rt.mcp_store.put(server_id=sid,display_name=str(body.get("display_name") or sid),kind=str(body.get("kind") or "mcp"),url=str(body.get("url") or ""),enabled=bool(body.get("enabled",True)),credential_ref=credential_ref,timeout_sec=float(body.get("timeout_sec",30)),read_timeout_sec=float(body.get("read_timeout_sec",300)))
+        raw_args=body.get("args") or []
+        if not isinstance(raw_args,list) or not all(isinstance(item,str) for item in raw_args):raise ValueError("MCP args must be an array of strings")
+        item=rt.mcp_store.put(
+            server_id=sid,display_name=str(body.get("display_name") or sid),kind=str(body.get("kind") or "mcp"),
+            transport=transport,url=body.get("url"),command=body.get("command"),args=raw_args,cwd=body.get("cwd"),
+            enabled=bool(body.get("enabled",True)),credential_ref=credential_ref,
+            timeout_sec=float(body.get("timeout_sec",30)),read_timeout_sec=float(body.get("read_timeout_sec",300)),
+        )
         if item.enabled:rt.mcp.refresh(sid)
         rt.seed_policy();return JSONResponse(item.public())
     except Exception as exc:return _error(exc)
@@ -421,11 +437,3 @@ async def connections_list(request: Request) -> JSONResponse:
     gate=require_session(request)
     if isinstance(gate,JSONResponse):return gate
     rt=_runtime(request);owner=_owner(request,gate);return JSONResponse({"connections":[x.as_dict() for x in rt.identities.connections(owner_principal_id=owner.principal_id)],"service_bindings":[x.as_dict() for x in rt.identities.service_bindings()]})
-
-
-async def mail_attest(request: Request) -> JSONResponse:
-    gate=require_mutation_auth(request)
-    if isinstance(gate,JSONResponse):return gate
-    try:
-        body=await _body(request);rt=_runtime(request);owner=_owner(request,gate);result=rt.mail.attest_connection(server_id=str(body.get("server_id") or ""),connection_ref=str(body.get("connection_ref") or ""),owner_principal_id=owner.principal_id);rt.seed_policy();return JSONResponse(result,status_code=201)
-    except Exception as exc:return _error(exc)

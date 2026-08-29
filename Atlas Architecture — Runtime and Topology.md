@@ -10,7 +10,7 @@ Every consequential action crosses the same boundary:
 Intent / Chat / Work / Control
         |
         v
-Semantic Capability
+Capability
         |
         v
 Schema validation
@@ -49,8 +49,7 @@ The composition order is intentional:
 4. MCP/n8n discovery;
 5. enrolled local sources and host capabilities;
 6. knowledge, Work and Cadence;
-7. semantic mail;
-8. Chat over the resulting live capability inventory.
+7. Chat over the resulting live capability inventory.
 
 `atlas_api` exposes the authenticated HTTP control plane and serves the built Companion PWA. It is not a second engine.
 
@@ -123,7 +122,7 @@ Definitions classify effect (`none`, `internal`, `reversible`, `external`, `dest
 
 ## 7. MCP and n8n
 
-MCP servers are runtime-managed persistent connections. Enabling or refreshing a server discovers every advertised tool and registers it under the server's capability namespace.
+MCP servers are runtime-managed persistent connections. Enabling or refreshing a server discovers every advertised tool and registers it under the server's capability namespace. Atlas supports both Streamable HTTP MCP and locally spawned stdio MCP providers. Transport changes connection mechanics, not policy semantics.
 
 n8n uses the same generic MCP mechanism. A server being of kind `n8n` changes inventory metadata, not authority semantics.
 
@@ -135,19 +134,23 @@ mcp/<server-id>/tool/<advertised-tool-name>
 
 The technical transport can call the remote tool only after Atlas has crossed the policy gate. Discovery and credentials never imply authority.
 
-## 8. Semantic mail
+## 8. External capability providers
 
-Mail is an Atlas semantic layer over the n8n MCP transport. It maps stable operations such as `mail.read`, `mail.send` and `mail.modify` to the corresponding n8n tools.
+Provider-specific functionality should enter Atlas through the generic capability boundary rather than by creating parallel domain runtimes. A provider may translate an external system's discovery/schema surface into MCP tools, but it does not define owner authority.
 
-A mail invocation first resolves an exact connected account. The resulting owner-policy scope is:
+The implemented Google Workspace provider is the first example. It reads Google's Discovery Service for enabled Workspace APIs and exposes the resulting Gmail, Drive and Calendar methods as ordinary MCP tools over stdio. Current `gws` supplies Google authentication and API execution. Its OAuth/config state is provider custody under the external production-state tree; this technical credential state does not grant Atlas discretionary authority. Atlas does not maintain a separate semantic mail layer or a handcrafted list of allowed Gmail functions.
+
+The governing path remains:
 
 ```text
-mail/<connection-id>
+Google Discovery / provider tool
+        -> MCP capability
+        -> exact mcp/<server>/tool/<tool> scope
+        -> NO | YES | CONFIRM
+        -> provider execution
 ```
 
-The service binding must technically attest the requested mail operation. Runtime policy then independently decides whether Atlas may execute it.
-
-Provider responses are checked so credential material is never surfaced as a normal mail result.
+If Google exposes a method and the connected account is technically authorized for it, Atlas can inventory that method. Whether Atlas may invoke it is an owner-policy decision.
 
 ## 9. Local filesystem
 
@@ -255,8 +258,8 @@ If Morning is connected later, it must appear as an explicit external capability
 
 ## 18. Validation
 
-The acceptance suite attacks the governing invariants: policy specificity/default deny, exact confirmation and policy recheck, Work recheck, filesystem containment, MCP inventory, semantic mail, user-systemd dispatch, API authentication/control and deployment-state assumptions.
+The acceptance suite attacks the governing invariants: policy specificity/default deny, exact confirmation and policy recheck, Work recheck, filesystem containment, Streamable HTTP/stdio MCP inventory and dispatch, provider discovery, user-systemd dispatch, API authentication/control and deployment-state assumptions.
 
 Companion has independent lint, unit tests and a production/PWA build.
 
-A green build is necessary but not sufficient for deployment. Live cutover also verifies the actual `atlas` user manager, persisted production state, HTTPS Companion, provider/n8n availability and self-restart reconciliation.
+A green build is necessary but not sufficient for deployment. Live cutover also verifies the actual `atlas` user manager, persisted production state, HTTPS Companion, provider/MCP availability and self-restart reconciliation.

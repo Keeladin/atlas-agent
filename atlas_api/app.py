@@ -82,7 +82,6 @@ def create_app(*, instance_root: str | Path = "instance", static_dir: str | Path
         Route("/api/providers/{provider_key:str}/verify", api.provider_verify, methods=["POST"]),
         Route("/api/providers/{provider_key:str}", api.provider_delete, methods=["DELETE"]),
         Route("/api/connections", api.connections_list, methods=["GET"]),
-        Route("/api/mail/attest", api.mail_attest, methods=["POST"]),
     ]
     resolved_static = (
         Path(static_dir)

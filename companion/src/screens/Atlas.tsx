@@ -96,7 +96,7 @@ export function AtlasModels() {
 
 export function AtlasIntegrations() {
   const { system, refresh } = useAtlasControl()
-  return <AtlasPage title="Connections" subtitle="Technical connections and account custody. Tool authority is managed under Policies."><Mcp servers={system.data?.mcp_servers ?? []} onDone={refresh} /><MailConnections connections={system.data?.connections ?? []} bindings={system.data?.service_bindings ?? []} servers={system.data?.mcp_servers ?? []} onDone={refresh} /></AtlasPage>
+  return <AtlasPage title="Connections" subtitle="Technical connections and account custody. Tool authority is managed under Policies."><Mcp servers={system.data?.mcp_servers ?? []} onDone={refresh} /><ExternalAccounts connections={system.data?.connections ?? []} bindings={system.data?.service_bindings ?? []} /></AtlasPage>
 }
 
 export function AtlasFilesystem() {
@@ -187,18 +187,20 @@ export function PolicyPanel({ rules, capabilities, servers, revision, onDone }: 
   const [scope, setScope] = useState('')
   const [operation, setOperation] = useState('')
   const [decision, setDecision] = useState<Decision>('CONFIRM')
+  const [toolFilter, setToolFilter] = useState('')
   const save = useMutation({ mutationFn: (payload: { scope: string; operation: string; decision: Decision }) => api('/api/policy', { method: 'POST', body: JSON.stringify(payload) }), onSuccess: onDone })
   function submit(event: FormEvent) { event.preventDefault(); save.mutate({ scope, operation, decision }) }
 
   const systemRules = rules.filter(rule => policyLensFor(rule, servers) === 'system')
   const toolCapabilities = capabilities.filter(capability => capabilityLensFor(capability, servers) === lens && capability.scope_hint?.startsWith('mcp/'))
+  const filteredToolCapabilities = toolCapabilities.filter(capability => !toolFilter || `${capability.id} ${capability.description} ${String(capability.metadata?.tool_name ?? '')}`.toLowerCase().includes(toolFilter.toLowerCase()))
   const tabs: Array<{ id: PolicyLens; label: string; count: number }> = [
     { id: 'system', label: 'System', count: systemRules.length },
     { id: 'n8n', label: 'n8n Tools', count: capabilities.filter(capability => capabilityLensFor(capability, servers) === 'n8n' && capability.scope_hint?.startsWith('mcp/')).length },
     { id: 'mcp', label: 'MCP Tools', count: capabilities.filter(capability => capabilityLensFor(capability, servers) === 'mcp' && capability.scope_hint?.startsWith('mcp/')).length },
   ]
-  const toolGroups = servers.filter(server => server.kind === lens).map(server => ({ server, tools: toolCapabilities.filter(capability => capability.metadata?.server_id === server.server_id) })).filter(group => group.tools.length)
-  const disconnectedTools = toolCapabilities.filter(capability => !servers.some(server => server.server_id === capability.metadata?.server_id))
+  const toolGroups = servers.filter(server => server.kind === lens).map(server => ({ server, tools: filteredToolCapabilities.filter(capability => capability.metadata?.server_id === server.server_id) })).filter(group => group.tools.length)
+  const disconnectedTools = filteredToolCapabilities.filter(capability => !servers.some(server => server.server_id === capability.metadata?.server_id))
 
   const decisionSelect = (scopeValue: string, operationValue: string, value: Decision, label: string) => <select className="policy-decision" aria-label={label} value={value} onChange={e => save.mutate({ scope: scopeValue, operation: operationValue, decision: e.target.value as Decision })}><option>NO</option><option>YES</option><option>CONFIRM</option></select>
 
@@ -209,6 +211,8 @@ export function PolicyPanel({ rules, capabilities, servers, revision, onDone }: 
         {tabs.map(tab => <button key={tab.id} type="button" role="tab" aria-selected={lens === tab.id} className={lens === tab.id ? 'policy-tab active' : 'policy-tab'} onClick={() => setLens(tab.id)}>{tab.label}<span>{tab.count}</span></button>)}
       </div>
     </div>
+
+    {lens !== 'system' ? <input value={toolFilter} onChange={e => setToolFilter(e.target.value)} placeholder="Filter provider tools" aria-label="Filter provider tools" /> : null}
 
     {lens === 'system' ? <div className="policy-list">
       {systemRules.map(rule => <div className="policy-item" key={`${rule.scope}:${rule.operation}`}><div className="policy-copy"><strong>{policyDescription(rule, capabilities)}</strong><div className="policy-syntax">{rule.scope} · {rule.operation}</div></div>{decisionSelect(rule.scope, rule.operation, rule.decision, `${rule.scope} ${rule.operation} decision`)}</div>)}
@@ -237,24 +241,22 @@ function Providers({ providers, onDone }: { providers: Provider[]; onDone: () =>
 function Mcp({ servers, onDone }: { servers: MCPServer[]; onDone: () => Promise<unknown> }) {
   const location = useLocation()
   const parentBack = (location.state as { atlasBack?: AtlasBack } | null)?.atlasBack
-  const [serverId, setServerId] = useState(''); const [name, setName] = useState(''); const [kind, setKind] = useState<'mcp' | 'n8n'>('mcp'); const [url, setUrl] = useState(''); const [token, setToken] = useState('')
+  const [serverId, setServerId] = useState(''); const [name, setName] = useState(''); const [kind, setKind] = useState<'mcp' | 'n8n'>('mcp'); const [transport, setTransport] = useState<'streamable-http' | 'stdio'>('streamable-http'); const [url, setUrl] = useState(''); const [token, setToken] = useState(''); const [command, setCommand] = useState(''); const [argsText, setArgsText] = useState(''); const [cwd, setCwd] = useState('')
   const save = useMutation({ mutationFn: (payload: object) => api('/api/mcp', { method: 'POST', body: JSON.stringify(payload) }), onSuccess: onDone })
   const refresh = useMutation({ mutationFn: (id: string) => api(`/api/mcp/${id}/refresh`, { method: 'POST', body: '{}' }), onSuccess: onDone })
   const remove = useMutation({ mutationFn: (id: string) => api(`/api/mcp/${id}`, { method: 'DELETE' }), onSuccess: onDone })
-  function submit(event: FormEvent) { event.preventDefault(); save.mutate({ server_id: serverId, display_name: name || serverId, kind, url, token: token || undefined, enabled: true }) }
-  return <Panel title="MCP & n8n connections"><p className="meta">Configure technical provider connections here. Discovered tools and NO / YES / CONFIRM controls live under Policies.</p><div className="stack">{servers.map(item => <div className="list-row" key={item.server_id}><div><strong>{item.display_name}</strong><div className="actions" style={{ marginTop: '0.35rem' }}><span className="chip">{item.kind}</span><span className="chip">{item.enabled ? 'enabled' : 'disabled'}</span></div><div className="meta">{item.url}</div></div>{item.last_error ? <p className="offline-banner">{item.last_error}</p> : null}<div className="actions"><Link className="settings-link" to="/atlas/policies" state={{ atlasBack: { path: location.pathname, parent: parentBack ?? { path: '/atlas' } } }}>Tools & policy</Link><button onClick={() => refresh.mutate(item.server_id)}>Refresh discovery</button><button className="danger" onClick={() => remove.mutate(item.server_id)}>Remove</button></div></div>)}</div>
-    <form className="grid-3" onSubmit={submit} style={{ marginTop: '1rem' }}><input value={serverId} onChange={e => setServerId(e.target.value)} placeholder="server id" /><input value={name} onChange={e => setName(e.target.value)} placeholder="display name" /><select value={kind} onChange={e => setKind(e.target.value as 'mcp' | 'n8n')}><option value="mcp">MCP</option><option value="n8n">n8n</option></select><input value={url} onChange={e => setUrl(e.target.value)} placeholder="Streamable HTTP URL" /><input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="Bearer token (optional)" /><button className="primary" type="submit">Save server</button></form>
+  function submit(event: FormEvent) { event.preventDefault(); save.mutate({ server_id: serverId, display_name: name || serverId, kind, transport, url: transport === 'streamable-http' ? url : null, token: transport === 'streamable-http' ? token || undefined : undefined, command: transport === 'stdio' ? command : null, args: transport === 'stdio' ? argsText.split('\n').map(item => item.trim()).filter(Boolean) : [], cwd: transport === 'stdio' ? cwd || null : null, enabled: true }) }
+  return <Panel title="MCP & n8n connections"><p className="meta">Configure technical provider connections here. Discovered tools and NO / YES / CONFIRM controls live under Policies.</p><div className="stack">{servers.map(item => <div className="list-row" key={item.server_id}><div><strong>{item.display_name}</strong><div className="actions" style={{ marginTop: '0.35rem' }}><span className="chip">{item.kind}</span><span className="chip">{item.transport}</span><span className="chip">{item.enabled ? 'enabled' : 'disabled'}</span></div><div className="meta">{item.transport === 'stdio' ? [item.command, ...(item.args ?? [])].filter(Boolean).join(' ') : item.url}</div></div>{item.last_error ? <p className="offline-banner">{item.last_error}</p> : null}<div className="actions"><Link className="settings-link" to="/atlas/policies" state={{ atlasBack: { path: location.pathname, parent: parentBack ?? { path: '/atlas' } } }}>Tools & policy</Link><button onClick={() => refresh.mutate(item.server_id)}>Refresh discovery</button><button className="danger" onClick={() => remove.mutate(item.server_id)}>Remove</button></div></div>)}</div>
+    <form className="grid-3" onSubmit={submit} style={{ marginTop: '1rem' }}><input value={serverId} onChange={e => setServerId(e.target.value)} placeholder="server id" /><input value={name} onChange={e => setName(e.target.value)} placeholder="display name" /><select value={kind} onChange={e => setKind(e.target.value as 'mcp' | 'n8n')}><option value="mcp">MCP</option><option value="n8n">n8n</option></select><select value={transport} onChange={e => setTransport(e.target.value as 'streamable-http' | 'stdio')}><option value="streamable-http">Streamable HTTP</option><option value="stdio">stdio</option></select>{transport === 'streamable-http' ? <><input value={url} onChange={e => setUrl(e.target.value)} placeholder="Streamable HTTP URL" /><input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="Bearer token (optional)" /></> : <><input value={command} onChange={e => setCommand(e.target.value)} placeholder="command / executable" /><textarea value={argsText} onChange={e => setArgsText(e.target.value)} placeholder={'one argument per line'} /><input value={cwd} onChange={e => setCwd(e.target.value)} placeholder="working directory (optional)" /></>}<button className="primary" type="submit">Save server</button></form>
   </Panel>
 }
 
-function MailConnections({ connections, bindings, servers, onDone }: { connections: Array<Record<string, unknown>>; bindings: Array<Record<string, unknown>>; servers: MCPServer[]; onDone: () => Promise<unknown> }) {
-  const [serverId, setServerId] = useState(''); const [connectionRef, setConnectionRef] = useState('')
-  const attest = useMutation({ mutationFn: () => api('/api/mail/attest', { method: 'POST', body: JSON.stringify({ server_id: serverId, connection_ref: connectionRef }) }), onSuccess: onDone })
-  return <Panel title="External accounts"><div className="grid-2"><div><h3>Connections</h3>{connections.map((item, i) => <div className="list-row" key={String(item.connection_id ?? i)}><strong>{String(item.display_name ?? item.canonical_address ?? item.connection_id)}</strong><div className="meta">{String(item.provider_id ?? '')} · {String(item.status ?? '')}</div></div>)}</div><div><h3>Technical service bindings</h3>{bindings.map((item, i) => <div className="list-row" key={String(item.binding_id ?? i)}><strong>{String(item.service ?? '')}</strong><div className="meta">{String(item.channel ?? '')}</div><div>{Array.isArray(item.attested_operations) ? item.attested_operations.join(', ') : ''}</div></div>)}</div></div>
-    <div className="grid-3" style={{ marginTop: '1rem' }}><select value={serverId} onChange={e => setServerId(e.target.value)}><option value="">n8n server</option>{servers.filter(s => s.kind === 'n8n').map(s => <option key={s.server_id} value={s.server_id}>{s.display_name}</option>)}</select><input value={connectionRef} onChange={e => setConnectionRef(e.target.value)} placeholder="n8n connection_ref" /><button className="primary" onClick={() => attest.mutate()} disabled={!serverId || !connectionRef}>Attest mail account</button></div>
-    {attest.isError ? <p className="offline-banner">{attest.error.message}</p> : null}
-  </Panel>
+
+function ExternalAccounts({ connections, bindings }: { connections: Array<Record<string, unknown>>; bindings: Array<Record<string, unknown>> }) {
+  if (!connections.length && !bindings.length) return null
+  return <Panel title="External accounts"><div className="grid-2"><div><h3>Connections</h3>{connections.map((item, i) => <div className="list-row" key={String(item.connection_id ?? i)}><strong>{String(item.display_name ?? item.canonical_address ?? item.connection_id)}</strong><div className="meta">{String(item.provider_id ?? '')} · {String(item.status ?? '')}</div></div>)}</div><div><h3>Technical service bindings</h3>{bindings.map((item, i) => <div className="list-row" key={String(item.binding_id ?? i)}><strong>{String(item.service ?? '')}</strong><div className="meta">{String(item.channel ?? '')}</div><div>{Array.isArray(item.attested_operations) ? item.attested_operations.join(', ') : ''}</div></div>)}</div></div></Panel>
 }
+
 
 function Roots({ roots, onDone }: { roots: SourceRoot[]; onDone: () => Promise<unknown> }) {
   const [id, setId] = useState(''); const [path, setPath] = useState(''); const [name, setName] = useState('')

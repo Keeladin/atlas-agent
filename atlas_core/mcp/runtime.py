@@ -4,6 +4,7 @@ from typing import Any
 from atlas_core.actions import ActionResult
 from atlas_core.capabilities import CapabilityDefinition,CapabilityRegistration,CapabilityRegistry,ScopeResolution
 from atlas_core.mcp_http import StreamableHTTPMCPClient
+from atlas_core.mcp_stdio import StdioMCPClient
 from atlas_core.secrets import CredentialStore
 from .models import MCPServer,MCPTool
 from .store import MCPServerStore
@@ -55,11 +56,15 @@ class MCPRuntime:
         if s.last_error:return False,s.last_error
         return True,"available"
     def _client(self,server:MCPServer):
+        if server.transport=="stdio":
+            if not server.command:raise RuntimeError("stdio MCP server has no command")
+            return StdioMCPClient(server.command,args=server.args,cwd=server.cwd,timeout_sec=server.timeout_sec,read_timeout_sec=server.read_timeout_sec)
         headers={}
         if server.credential_ref:
             secret=self.secrets.retrieve(server.credential_ref);token=str(secret.get("token") or secret.get("api_key") or "").strip()
             if not token:raise RuntimeError("MCP credential has no token")
             headers["Authorization"]=f"Bearer {token}"
+        if not server.url:raise RuntimeError("Streamable HTTP MCP server has no URL")
         return StreamableHTTPMCPClient(server.url,headers=headers,timeout_sec=server.timeout_sec,read_timeout_sec=server.read_timeout_sec)
     def _call(self,server_id:str,name:str,payload:dict[str,Any])->ActionResult:
         server=self.store.get(server_id)

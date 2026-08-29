@@ -36,6 +36,21 @@ describe('ConfirmationCard', () => {
     expect(screen.getByText('a'.repeat(64))).toBeInTheDocument()
   })
 
+  it('states the exact application-level purge guarantee and its boundary', () => {
+    const memoryPurge = {
+      ...item,
+      capability_id: 'memory.purge',
+      operation: 'purge',
+      scope: 'atlas/memory/memory_ab12',
+      summary: 'Purge memory memory_ab12',
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><ConfirmationCard item={memoryPurge} onDone={async () => undefined} /></QueryClientProvider>)
+    expect(screen.getByText(/Guaranteed\. After memory\.purge succeeds, within atlas-work\.db, in one transaction or not at all:/)).toBeInTheDocument()
+    expect(screen.getByText(/Not guaranteed\. The originating chat turns in atlas-chat\.db/)).toBeInTheDocument()
+    expect(screen.getByText('Purge is application-level suppression plus content redaction. It is not forensic erasure of the storage medium.')).toBeInTheDocument()
+  })
+
   it('confirms the durable occurrence through the canonical endpoint', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ action: { ...item, status: 'succeeded' } }), {
       status: 200,
@@ -48,5 +63,16 @@ describe('ConfirmationCard', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/actions/action-1/confirm')
     expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe('POST')
     await waitFor(() => expect(onDone).toHaveBeenCalled())
+  })
+
+  it('surfaces confirmation failures instead of failing silently', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: 'csrf token missing or invalid' }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    renderCard()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    expect(await screen.findByText('csrf token missing or invalid')).toBeInTheDocument()
   })
 })

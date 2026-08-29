@@ -48,8 +48,8 @@ The composition order is intentional:
 3. encrypted credentials and provider settings;
 4. MCP/n8n discovery;
 5. enrolled local sources and host capabilities;
-6. knowledge, Work and Cadence;
-7. Chat over the resulting live capability inventory.
+6. Knowledge, first-class Memory, Work and Cadence;
+7. Chat over the resulting live capability inventory and separate Knowledge/Memory recall stores.
 
 `atlas_api` exposes the authenticated HTTP control plane and serves the built Companion PWA. It is not a second engine.
 
@@ -104,6 +104,8 @@ Immediately before execution, policy is resolved again:
 - current `YES` -> execution proceeds.
 
 The model and clients cannot bypass this by supplying a confirmation flag.
+
+The confirm→execute payload is immutable. The one deliberately separate terminal-history mutation is governed `memory.purge` redaction: it can only strip content from non-executing memory occurrences, never introduces executable values, never recomputes `payload_sha256`, and its SQL guard excludes `pending_confirmation` and `executing`. `ActionStore.transition()` remains closed to payload updates.
 
 ## 6. Capability registry
 
@@ -194,11 +196,35 @@ Enabled providers are attempted in runtime priority order. Transport/provider fa
 
 The model receives a bounded capability shortlist and can request a wider capability search. It returns either a conversational reply, a semantic capability selection or a capability-search request. Authorization is never delegated to the model.
 
-## 13. Knowledge and Chat
+## 13. Memory, Knowledge and Chat
 
-Knowledge is durable owner context stored separately from conversation history and searchable with SQLite FTS.
+Memory and Knowledge are separate runtime responsibilities. `KnowledgeStore` contains durable references and notes. `MemoryStore` contains owner-scoped persistent memory with its own `memory_items` table, FTS index, supersession chain and active/retracted state. Memory never enters `knowledge_items`, so `knowledge.search` cannot retain or return memory content.
 
-Chat persists conversations and turns. Relevant durable knowledge and recent turns are assembled for each model decision rather than treating the full chat history as the runtime state.
+Memory FTS uses the same `item_id UNINDEXED, title, content` column order as Knowledge. Recall orders by raw `bm25(memory_fts) ASC, updated_at DESC`; the raw score is intentionally not normalized because SQLite FTS5 bm25 is lower-is-better and scores are not comparable across queries.
+
+Chat persists conversations and turns in `atlas-chat.db`. For each model decision it independently retrieves relevant active Memory and Knowledge, then combines those with bounded recent conversation and the live capability shortlist. The whole conversation history is not treated as runtime state.
+
+After a conversational reply is already stored, Chat may run owner-turn memory reconciliation. That process produces a proposal only; it is not a capability and has no authority of its own. A proposed remember/update must be grounded in an exact substring of the authenticated owner turn, and update/retract targets must resolve to an existing owner memory candidate. Reconciliation then invokes the ordinary `memory.remember`, `memory.update` or `memory.retract` capability through `CapabilityRuntime`. `NO` therefore produces a blocked occurrence, `CONFIRM` produces an ordinary pending exact confirmation, and `YES` executes. There is no `memory.capture` operation and no policy pre-check in Chat. A capture outcome never rewrites or hijacks the reply already produced.
+
+Memory policy is operation-specific. The visible initial policy is search `YES`, remember `YES`, update `YES`, retract `YES`, restore `CONFIRM`, purge `CONFIRM`. One operation never grants another.
+
+### Governed memory purge
+
+`MemoryStore`, `ActionStore` and evidence are physically co-located in `atlas-work.db` so purge has one real SQLite transaction boundary. `MemoryRuntime` refuses construction when the memory and action stores do not point to the same database. The runtime opens the transaction; each store owns SQL for its own table and accepts the caller-owned connection without committing or closing it. Any exception rolls the entire unit back before the executor returns failure.
+
+The target supersession chain is resolved with a cycle-safe iterative breadth-first walk following `supersedes` in both directions. Rows are deleted explicitly rather than relying on foreign-key cascade behavior. FTS delete triggers execute inside the same transaction.
+
+Purge matching is deliberately wider than item id alone but narrow to this principal's `atlas/memory` action history. For every memory in the chain Atlas builds hashes as `sha256(NFC -> collapse whitespace -> strip -> casefold)` over `content` and `grounding_excerpt`. A non-executing memory occurrence matches when it carries a chain item id anywhere in its stored JSON/summary or when a content-bearing `content`, `title`, `grounding_excerpt`, `text` or summary string has one of those normalized hashes. This reaches blocked/failed writes that never received an item id. Matching payload/result/receipt content and summary are replaced with `[purged]` and marked redacted; matching evidence content is scrubbed too. Action identity, state, timestamps, policy decision/revision and the original `payload_sha256` remain. A content-free `memory_purge_redaction` evidence row records occurrence id, match basis and redacted field names.
+
+The purge occurrence itself persists only the target `item_id`; principal context comes from trusted invocation provenance at execution time and is not added to the attested payload. Because the purge occurrence is `executing` while the transaction runs, the terminal-status guard also prevents it from redacting itself.
+
+Guaranteed. After memory.purge succeeds, within atlas-work.db, in one transaction or not at all: every memory_items row in the target supersession chain is deleted with its FTS entries; every action_occurrences row for this principal under atlas/memory in a terminal status that carries a chain item id or matching normalized content has its content-bearing fields and summary replaced; evidence rows for those occurrences are scrubbed the same way. Atlas will not surface that content again through recall, chat context assembly, capability results or the control plane.
+
+Not guaranteed. The originating chat turns in atlas-chat.db (delete the conversation separately); text already sent to a model provider, subject to that provider's retention; payload_sha256, kept deliberately as attestation — a hash, not a copy; SQLite WAL frames, freelist pages and page slack (no VACUUM); any backup taken before the purge; any copy made outside Atlas.
+
+Purge is application-level suppression plus content redaction. It is not forensic erasure of the storage medium.
+
+Atlas deliberately does not run `VACUUM` or advertise `PRAGMA secure_delete` as part of this guarantee: neither can turn the cross-database/provider/backup boundary into atomic forensic erasure. Companion links source memories to the existing conversation-delete path so the owner can remove originating chat turns separately.
 
 Tool outcomes are fed back into the conversational turn. Blocked and failed actions are grounded from the durable occurrence rather than rewritten as model speculation.
 
@@ -212,7 +238,8 @@ atlas-identity.db
   MCP servers, source roots, append-only policy events
 
 atlas-work.db
-  Work, steps, governed action occurrences, evidence, knowledge
+  Work, steps, governed action occurrences, evidence,
+  Knowledge references/notes, first-class Memory + Memory FTS
 
 atlas-chat.db
   conversations and turns
@@ -232,7 +259,7 @@ The v3 migration imports selected configuration and custody state only. Legacy a
 
 Companion's primary navigation is Chat, Work, Sources and Atlas. Pending `CONFIRM` occurrences are also surfaced through the global `Needs you` affordance.
 
-The Atlas screen exposes live policy, providers, MCP/n8n connections, external-account bindings, source roots, host state and capability inventory from the same runtime used for execution.
+The Memory screen is a secondary durable-context surface reached from Sources; it exposes owner memory, grounding, retract/restore/purge controls and the exact purge guarantee. The Atlas screen exposes live policy, providers, MCP/n8n connections, external-account bindings, source roots, host state and capability inventory from the same runtime used for execution.
 
 The UI contains no parallel permission state.
 
@@ -258,7 +285,7 @@ If Morning is connected later, it must appear as an explicit external capability
 
 ## 18. Validation
 
-The acceptance suite attacks the governing invariants: policy specificity/default deny, exact confirmation and policy recheck, Work recheck, filesystem containment, Streamable HTTP/stdio MCP inventory and dispatch, provider discovery, user-systemd dispatch, API authentication/control and deployment-state assumptions.
+The acceptance suite attacks the governing invariants: policy specificity/default deny, exact confirmation and policy recheck, Work recheck, memory operation-level authority, owner-grounded post-reply capture, atomic purge rollback, hash-based redaction without item ids, untouchable confirmation windows, cycle-safe supersession purge, raw lower-is-better bm25 recall, filesystem containment, Streamable HTTP/stdio MCP inventory and dispatch, provider discovery, user-systemd dispatch, API authentication/control and deployment-state assumptions.
 
 Companion has independent lint, unit tests and a production/PWA build.
 

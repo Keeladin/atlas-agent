@@ -18,8 +18,6 @@ class CapabilityRuntime:
         except SchemaValidationError as exc:raise ValueError(f"capability input invalid: {exc}") from exc
         resolved=registration.resolve_scope(dict(payload))
         normalized=dict(resolved.payload)
-        if registration.metadata.get("requires_owner_context"):
-            normalized["__owner_principal_id"]=provenance.principal_id
         return self.actions.submit(ActionRequest(capability_id=capability_id,operation=registration.definition.operation,scope=resolved.scope,payload=normalized,provenance=provenance,work_id=work_id,step_id=step_id,summary=resolved.summary))
     def snapshot(self,*,principal_id:str)->tuple[CapabilitySnapshot,...]:
         rows=[]

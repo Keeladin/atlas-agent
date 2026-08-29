@@ -208,6 +208,15 @@ async def conversation_detail(request: Request) -> JSONResponse:
     except KeyError: return _error(KeyError("conversation not found"), 404)
 
 
+async def conversation_delete(request: Request) -> JSONResponse:
+    gate = require_mutation_auth(request)
+    if isinstance(gate, JSONResponse): return gate
+    try:
+        _runtime(request).chat_store.delete_conversation(request.path_params["conversation_id"])
+        return JSONResponse({"ok": True})
+    except KeyError: return _error(KeyError("conversation not found"), 404)
+
+
 async def conversation_send(request: Request) -> JSONResponse:
     gate = require_mutation_auth(request)
     if isinstance(gate, JSONResponse): return gate
@@ -324,6 +333,37 @@ async def knowledge_delete(request: Request) -> JSONResponse:
     gate=require_mutation_auth(request)
     if isinstance(gate,JSONResponse):return gate
     try:_runtime(request).knowledge_store.delete(request.path_params["item_id"]);return JSONResponse({"ok":True})
+    except Exception as exc:return _error(exc)
+
+
+async def memory_list(request: Request) -> JSONResponse:
+    gate=require_session(request)
+    if isinstance(gate,JSONResponse):return gate
+    rt=_runtime(request);owner=_owner(request,gate);q=request.query_params.get("q")
+    rows=rt.memory_store.search(owner.principal_id,q,limit=100) if q else rt.memory_store.recent(owner.principal_id,limit=200,include_history=True)
+    return JSONResponse({"items":list(rows)})
+
+
+async def memory_detail(request: Request) -> JSONResponse:
+    gate=require_session(request)
+    if isinstance(gate,JSONResponse):return gate
+    try:
+        rt=_runtime(request);owner=_owner(request,gate);item=rt.memory_store.get(owner.principal_id,request.path_params["item_id"])
+        with rt.memory_store._db() as db:chain=rt.memory_store.chain(owner.principal_id,item["item_id"],db=db)
+        return JSONResponse({"item":item,"chain":list(chain)})
+    except KeyError:return _error(KeyError("memory not found"),404)
+
+
+async def memory_action(request: Request) -> JSONResponse:
+    gate=require_mutation_auth(request)
+    if isinstance(gate,JSONResponse):return gate
+    try:
+        rt=_runtime(request);owner=_owner(request,gate);action=request.path_params["action"]
+        if action not in {"purge","restore","retract"}:return _error(ValueError("unsupported memory action"),404)
+        from atlas_core.provenance import InvocationProvenance
+        occurrence=rt.capabilities.invoke(f"memory.{action}",{"item_id":request.path_params["item_id"]},provenance=InvocationProvenance(owner.principal_id,"human","control"))
+        status=200 if occurrence.status=="succeeded" else 202 if occurrence.status in {"pending_confirmation","uncertain"} else 409
+        return JSONResponse({"action":occurrence.public()},status_code=status)
     except Exception as exc:return _error(exc)
 
 

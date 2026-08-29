@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 
 /** Shared bottom-sheet modal: mobile home for anything a side rail would show on desktop. */
 export function Sheet({
@@ -10,7 +11,7 @@ export function Sheet({
   onClose: () => void
   children: ReactNode
 }) {
-  return (
+  return createPortal(
     <div className="workspace-sheet" role="dialog" aria-modal="true">
       <button
         type="button"
@@ -27,6 +28,7 @@ export function Sheet({
         </div>
         <div className="workspace-sheet-body">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

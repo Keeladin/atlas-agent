@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Shell } from './Shell'
@@ -39,5 +39,13 @@ describe('Atlas shell', () => {
   it('surfaces the generic runtime confirmation affordance', async () => {
     renderShell()
     expect(await screen.findByRole('button', { name: /Needs you/i })).toBeInTheDocument()
+  })
+
+  it('mounts the Needs You sheet outside shell stacking contexts', async () => {
+    renderShell()
+    const trigger = await screen.findByRole('button', { name: /Needs you/i })
+    fireEvent.click(trigger)
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.parentElement).toBe(document.body)
   })
 })

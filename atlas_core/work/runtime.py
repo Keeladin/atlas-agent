@@ -43,5 +43,5 @@ def register_work_capabilities(registry, runtime:WorkRuntime)->None:
         owner=payload.pop("__owner_principal_id",None)
         if not owner:return ActionResult(False,error_code="owner_context_missing",error="owner principal unavailable")
         work=runtime.create(payload["objective"],payload["steps"],owner_principal_id=owner);result=runtime.run(work.work_id) if payload.get("run",True) else runtime.detail(work.work_id);return ActionResult(True,result,{"ok":True,"operation":"work.create","work_id":work.work_id})
-    # owner context is injected by Chat before invocation; Work create is also available via its direct control API.
+    # owner context is trusted execution context injected after the occurrence payload has been attested.
     registry.register(CapabilityRegistration(CapabilityDefinition("work.create","Create durable Work from an objective and explicit capability steps.","create","internal",schema,source="work",tags=("work",)),resolve,execute,metadata={"scope_hint":"atlas/work","requires_owner_context":True}),replace=True)

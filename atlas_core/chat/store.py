@@ -60,6 +60,14 @@ class ChatStore:
             raise KeyError(cid)
         return dict(row)
 
+    def delete_conversation(self, cid: str) -> None:
+        with self._db() as db:
+            exists = db.execute("SELECT 1 FROM conversations WHERE conversation_id=?", (cid,)).fetchone()
+            if exists is None:
+                raise KeyError(cid)
+            db.execute("DELETE FROM chat_turns WHERE conversation_id=?", (cid,))
+            db.execute("DELETE FROM conversations WHERE conversation_id=?", (cid,))
+
     def conversations(self, limit: int = 100) -> tuple[dict[str, Any], ...]:
         with self._db() as db:
             rows = db.execute(
@@ -82,7 +90,7 @@ class ChatStore:
     def turns(self, cid: str, limit: int = 100) -> tuple[dict[str, Any], ...]:
         with self._db() as db:
             rows = db.execute(
-                "SELECT * FROM (SELECT * FROM chat_turns WHERE conversation_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?) ORDER BY created_at, rowid",
+                "SELECT * FROM (SELECT rowid AS turn_order, * FROM chat_turns WHERE conversation_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?) ORDER BY created_at, turn_order",
                 (cid, limit),
             ).fetchall()
         return tuple({

@@ -1,9 +1,10 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ComponentProps } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, expect, it } from 'vitest'
-import { AtlasPage, PolicyPanel, RuntimeOverview } from './Atlas'
+import { describe, expect, it, vi } from 'vitest'
+import type { Provider } from '../api/types'
+import { AtlasPage, PolicyPanel, Providers, RuntimeOverview } from './Atlas'
 import { capabilityLensFor, policyLensFor } from './policyLens'
 
 type RuntimeState = NonNullable<ComponentProps<typeof RuntimeOverview>['state']>
@@ -35,6 +36,22 @@ describe('RuntimeOverview', () => {
     expect(screen.getByText('16 GiB')).toBeInTheDocument()
     expect(screen.getByText('Raw host evidence')).toBeInTheDocument()
     expect(screen.getByText(/"hostname": "ubuntuserver"/)).not.toBeVisible()
+  })
+})
+
+describe('Providers', () => {
+  it('lets the operator save an explicit provider priority', async () => {
+    const providers: Provider[] = [{ key: 'xai:expert', kind: 'openai_compatible', model: 'grok-test', base_url: 'https://api.x.ai', enabled: true, local: false, priority: 50, credential_configured: true, metadata: {}, updated_at: 'now' }]
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false }, queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><Providers providers={providers} onDone={async () => undefined} /></QueryClientProvider>)
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Priority for xai:expert' }), { target: { value: '100' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect(JSON.parse(String(init.body))).toMatchObject({ key: 'xai:expert', priority: 100 })
+    vi.unstubAllGlobals()
   })
 })
 

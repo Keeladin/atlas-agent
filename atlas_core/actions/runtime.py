@@ -11,7 +11,7 @@ from .models import ActionOccurrence, ActionRequest, ActionResult
 from .store import ActionStore
 
 Executor = Callable[[dict], ActionResult]
-ExecutorResolver = Callable[[str], Executor]
+ExecutorResolver = Callable[[str, str | None], Executor]
 CONFIRM_MAX_AGE = timedelta(minutes=5)
 
 
@@ -67,7 +67,7 @@ class ActionRuntime:
         if occurrence.executed_at is None:
             occurrence=self.store.transition(occurrence.occurrence_id, from_status=("executing",), to_status="executing", executed_at=_iso())
         try:
-            executor=self.executor_resolver(occurrence.capability_id)
+            executor=self.executor_resolver(occurrence.capability_id, occurrence.principal_id)
             result=executor(dict(occurrence.payload))
         except Exception as exc:
             result=ActionResult(False, error_code="executor_exception", error=str(exc), receipt={"ok":False})

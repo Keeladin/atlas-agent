@@ -37,7 +37,7 @@ Atlas currently includes:
 - runtime-managed model providers and encrypted credentials;
 - hardened enrolled filesystem roots;
 - host observation and user-systemd service operations;
-- durable knowledge / memory;
+- durable Knowledge for references/notes and first-class persistent Memory with supersession, retraction and governed purge;
 - action receipts, evidence and restart reconciliation;
 - the Companion PWA and runtime-control surface.
 
@@ -64,7 +64,7 @@ Authentication, provider attestation, schema validation, filesystem containment 
 
 `CapabilityRegistry` is the complete runtime inventory. Registration and discovery never imply permission.
 
-Native capabilities include knowledge, Work, Cadence, local sources and host operations. Every tool advertised by an enabled MCP server is registered dynamically. n8n is treated as an MCP-backed capability provider and is not restricted to a handcrafted subset. MCP transport may be Streamable HTTP or a locally spawned stdio provider.
+Native capabilities include Knowledge, Memory, Work, Cadence, local sources and host operations. Every tool advertised by an enabled MCP server is registered dynamically. n8n is treated as an MCP-backed capability provider and is not restricted to a handcrafted subset. MCP transport may be Streamable HTTP or a locally spawned stdio provider.
 
 Google Workspace is integrated as a provider rather than a mail subsystem: Google Discovery defines the Gmail, Drive and Calendar method surface, the provider exposes those methods through MCP, and Atlas policy governs each discovered tool. Atlas does not maintain a parallel `mail.read` / `mail.send` semantic API. The provider keeps its `gws` OAuth/config state under the external production-state tree rather than inside the Git checkout.
 
@@ -82,7 +82,7 @@ The fresh stores are:
 
 ```text
 atlas-identity.db   identity, provider settings, MCP servers, source roots, policy
-atlas-work.db       work, steps, action occurrences, evidence, knowledge
+atlas-work.db       work, steps, action occurrences, evidence, Knowledge, Memory
 atlas-chat.db       conversations and chat turns
 atlas-cadence.db    recurring cadence definitions
 secrets/            encrypted credential database and master key
@@ -101,6 +101,14 @@ google-workspace/workspace/     bounded provider upload/download workspace
 ```
 
 The registered `google-workspace` MCP server launches `atlas_providers.google_workspace_mcp`, which derives Gmail, Drive and Calendar tools from Google Discovery and dispatches them through the current `gws` binary. OAuth/config state is technical provider custody; Atlas `NO` / `YES` / `CONFIRM` policy remains the sole discretionary authority.
+
+## Persistent Memory
+
+Memory is a first-class runtime responsibility, not a `knowledge_items` subtype. `MemoryStore` keeps owner-scoped `memory_items` and FTS state in `atlas-work.db`; `KnowledgeStore` contains only references and notes. Chat recalls both stores independently.
+
+Owner-turn auto-capture runs only after the conversational reply is already produced. It reconciles an exact owner-grounded excerpt into the existing governed `memory.remember`, `memory.update` or `memory.retract` capabilities. There is no `memory.capture` authority shortcut: each real operation resolves its own live `NO` / `YES` / `CONFIRM` policy.
+
+`memory.purge` is application-level suppression plus content redaction. It deletes the whole supersession chain and its FTS rows and scrubs matching terminal `atlas/memory` action/evidence content in one `atlas-work.db` transaction. It deliberately retains action identity, state, policy history and the original `payload_sha256` attestation. The originating conversation is stored separately in `atlas-chat.db` and must be deleted separately if the owner wants those source turns removed. Atlas does not claim forensic storage erasure.
 
 ## Companion
 
@@ -174,7 +182,8 @@ atlas_core/
   cadence/        recurring duties
   chat/           conversational orchestration
   host.py         host observation and user-systemd capabilities
-  knowledge.py    durable knowledge and memory
+  memory/         persistent owner memory, supersession, recall and atomic purge
+  knowledge.py    durable references and notes
   secrets.py      encrypted host-local credential store
 atlas_api/        authenticated Starlette composition/control plane
 atlas_providers/  external capability-provider adapters (Google Workspace)

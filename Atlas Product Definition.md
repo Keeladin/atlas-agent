@@ -13,7 +13,7 @@ Atlas persists the state that matters across sessions:
 - conversations;
 - Work and Work steps;
 - recurring Cadence duties;
-- knowledge and memory;
+- Knowledge references/notes and first-class persistent Memory;
 - external account identity/bindings;
 - provider and MCP configuration;
 - source enrollment;
@@ -25,6 +25,8 @@ The state is explicit and queryable rather than reconstructed from prompt histor
 ### Done means
 
 A restart does not erase the owner's work, configuration, policy or evidence, and the UI reads the same persistent truth used by execution.
+
+Persistent Memory is structurally separate from Knowledge. Owner-turn capture is grounded in the authenticated owner turn and dispatches the same governed remember/update/retract operations available everywhere else. Purge is atomic inside `atlas-work.db` and states its application-level, non-forensic boundary explicitly.
 
 ## Responsibility 2 — Own governed work
 
@@ -70,7 +72,7 @@ The UI and Chat can explain what happened from persisted runtime evidence rather
 
 ## Responsibility 6 — Remain useful across interfaces
 
-Companion is the canonical owner interface today. Its primary surfaces are Chat, Work, Sources and Atlas control.
+Companion is the canonical owner interface today. Its primary surfaces are Chat, Work, Sources and Atlas control. Memory is a secondary durable-context surface reached from Sources.
 
 The interface may evolve, but authority and durable state remain backend/runtime responsibilities rather than UI-local state.
 
@@ -84,7 +86,7 @@ The greenfield runtime currently owns:
 
 - Chat and durable conversation state;
 - Work and Cadence;
-- knowledge / memory;
+- Knowledge references/notes and first-class owner Memory with supersession, retraction, recall and governed purge;
 - native file and host capabilities;
 - provider configuration and model execution;
 - generic MCP/n8n discovery and invocation;

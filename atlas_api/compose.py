@@ -14,6 +14,7 @@ from atlas_core.host import HostRuntime
 from atlas_core.identity import IdentityStore
 from atlas_core.knowledge import KnowledgeRuntime, KnowledgeStore
 from atlas_core.mcp import MCPRuntime, MCPServerStore
+from atlas_core.memory import MemoryRuntime, MemoryStore
 from atlas_core.policy import OwnerPolicy, PolicyStore
 from atlas_core.providers import ProviderRuntime, ProviderSettingsStore
 from atlas_core.secrets import CredentialStore
@@ -43,6 +44,8 @@ class AtlasRuntime:
     host: HostRuntime
     knowledge_store: KnowledgeStore
     knowledge: KnowledgeRuntime
+    memory_store: MemoryStore
+    memory: MemoryRuntime
     work_store: WorkStore
     work: WorkRuntime
     cadence_store: CadenceStore
@@ -69,7 +72,12 @@ class AtlasRuntime:
         owner = self.identities.current_owner().principal_id
         seeds = [
             ("atlas/knowledge", "search", "YES"),
+            ("atlas/memory", "search", "YES"),
             ("atlas/memory", "remember", "YES"),
+            ("atlas/memory", "update", "YES"),
+            ("atlas/memory", "retract", "YES"),
+            ("atlas/memory", "restore", "CONFIRM"),
+            ("atlas/memory", "purge", "CONFIRM"),
             ("atlas/work", "create", "YES"),
             ("atlas/cadence", "create", "YES"),
             ("host/status", "inspect", "YES"),
@@ -138,16 +146,17 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     sources = SourceRuntime(source_roots, registry)
     host = HostRuntime(registry, actions_store)
     knowledge_store = KnowledgeStore(work_db); knowledge_store.initialize(); knowledge = KnowledgeRuntime(knowledge_store, registry)
+    memory_store = MemoryStore(work_db); memory_store.initialize(); memory = MemoryRuntime(memory_store, registry, actions_store)
     work_store = WorkStore(work_db); work_store.initialize(); work = WorkRuntime(work_store, capabilities, actions_store)
     cadence_store = CadenceStore(cadence_db); cadence_store.initialize(); cadence = CadenceRuntime(cadence_store, work)
     register_work_capabilities(registry, work)
     register_cadence_capabilities(registry, cadence)
-    chat_store = ChatStore(chat_db); chat_store.initialize(); chat = ChatRuntime(chat_store, providers, registry, capabilities, knowledge_store)
+    chat_store = ChatStore(chat_db); chat_store.initialize(); chat = ChatRuntime(chat_store, providers, registry, capabilities, knowledge_store, memory_store, identities)
 
     runtime = AtlasRuntime(
         root, identities, policy_store, policy, actions_store, evidence, registry,
         actions, capabilities, credentials, provider_settings, providers,
-        mcp_store, mcp, source_roots, sources, host, knowledge_store, knowledge,
+        mcp_store, mcp, source_roots, sources, host, knowledge_store, knowledge, memory_store, memory,
         work_store, work, cadence_store, cadence, chat_store, chat,
     )
     runtime.seed_policy()

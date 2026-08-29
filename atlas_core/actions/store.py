@@ -15,12 +15,15 @@ class ActionStore:
         self.path = Path(path)
 
     @contextmanager
-    def _db(self):
+    def _db(self, db: sqlite3.Connection | None = None):
+        if db is not None:
+            yield db
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(self.path); db.row_factory = sqlite3.Row; db.execute("PRAGMA busy_timeout=5000")
+        conn = sqlite3.connect(self.path); conn.row_factory = sqlite3.Row; conn.execute("PRAGMA busy_timeout=5000")
         try:
-            with db: yield db
-        finally: db.close()
+            with conn: yield conn
+        finally: conn.close()
 
     def initialize(self) -> None:
         with self._db() as db:
@@ -82,6 +85,120 @@ class ActionStore:
             changed=db.execute(f"UPDATE action_occurrences SET {','.join(assignments)} WHERE occurrence_id=? AND status IN ({placeholders})", values).rowcount
         if changed != 1: raise ValueError("action occurrence state changed or is not eligible")
         return self.get(occurrence_id)
+
+    def redact_memory_content(self, db: sqlite3.Connection, *, principal_id: str, item_ids: set[str], content_hashes: set[str]) -> list[dict[str, Any]]:
+        """Strip target memory content from terminal memory occurrences inside a caller-owned transaction."""
+        from atlas_core.memory.store import memory_content_hash
+
+        content_keys = {"content", "title", "grounding_excerpt", "text"}
+
+        def strings(value: Any):
+            if isinstance(value, dict):
+                for child in value.values():
+                    yield from strings(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from strings(child)
+            elif isinstance(value, str):
+                yield value
+
+        def content_values(value: Any, key: str | None = None):
+            if isinstance(value, dict):
+                for child_key, child in value.items():
+                    yield from content_values(child, str(child_key))
+            elif isinstance(value, list):
+                for child in value:
+                    yield from content_values(child, key)
+            elif isinstance(value, str) and key in content_keys:
+                yield value
+
+        def direct_item_match(value: dict[str, Any]) -> bool:
+            for child in value.values():
+                if isinstance(child, str) and any(item_id in child for item_id in item_ids):
+                    return True
+            return False
+
+        def redact(value: Any, path: str = "", *, mark_root: bool = False) -> tuple[Any, list[str]]:
+            fields: list[str] = []
+            if isinstance(value, dict):
+                target_dict = direct_item_match(value)
+                out: dict[str, Any] = {}
+                for key, child in value.items():
+                    child_path = f"{path}.{key}" if path else str(key)
+                    if str(key) in content_keys and isinstance(child, str) and (target_dict or memory_content_hash(child) in content_hashes):
+                        out[key] = "[purged]"
+                        fields.append(child_path)
+                    else:
+                        out[key], nested = redact(child, child_path)
+                        fields.extend(nested)
+                if fields or mark_root:
+                    out["__redacted"] = True
+                return out, fields
+            if isinstance(value, list):
+                rows = []
+                for index, child in enumerate(value):
+                    redacted, nested = redact(child, f"{path}[{index}]")
+                    rows.append(redacted)
+                    fields.extend(nested)
+                return rows, fields
+            return value, fields
+
+        rows = db.execute(
+            """SELECT occurrence_id,payload_json,result_json,receipt_json,summary,status
+            FROM action_occurrences
+            WHERE principal_id=? AND (scope='atlas/memory' OR scope LIKE 'atlas/memory/%')
+              AND status NOT IN ('pending_confirmation','executing')
+            ORDER BY created_at,occurrence_id""",
+            (principal_id,),
+        ).fetchall()
+        redacted_rows: list[dict[str, Any]] = []
+        for row in rows:
+            decoded: dict[str, Any] = {}
+            for column in ("payload_json", "result_json", "receipt_json"):
+                raw = row[column]
+                try:
+                    decoded[column] = None if raw is None else json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    decoded[column] = raw
+            item_match = any(
+                any(item_id in text for item_id in item_ids)
+                for value in decoded.values() for text in strings(value)
+            )
+            hash_match = any(
+                memory_content_hash(text) in content_hashes
+                for value in decoded.values() for text in content_values(value)
+            )
+            summary = row["summary"]
+            if isinstance(summary, str):
+                item_match = item_match or any(item_id in summary for item_id in item_ids)
+                hash_match = hash_match or memory_content_hash(summary) in content_hashes
+            if not (item_match or hash_match):
+                continue
+
+            fields: list[str] = []
+            encoded: dict[str, str | None] = {}
+            for column, value in decoded.items():
+                if value is None:
+                    encoded[column] = None
+                    continue
+                redacted, nested = redact(value, column, mark_root=(column == "payload_json" and isinstance(value, dict)))
+                fields.extend(nested)
+                encoded[column] = json.dumps(redacted, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            fields.append("summary")
+            changed = db.execute(
+                """UPDATE action_occurrences SET payload_json=?,result_json=?,receipt_json=?,summary='[purged]'
+                WHERE occurrence_id=? AND status NOT IN ('pending_confirmation','executing')""",
+                (encoded["payload_json"], encoded["result_json"], encoded["receipt_json"], row["occurrence_id"]),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("memory redaction lost its terminal-status guard")
+            matched = []
+            if item_match:
+                matched.append("item_id")
+            if hash_match:
+                matched.append("content_hash")
+            redacted_rows.append({"occurrence_id": row["occurrence_id"], "matched_by": matched, "fields": sorted(set(fields))})
+        return redacted_rows
 
 
 def _load(value: str | None, default: Any) -> Any:

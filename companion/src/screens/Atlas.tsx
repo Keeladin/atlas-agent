@@ -57,7 +57,7 @@ export function AtlasPage({ title, subtitle, children }: { title: string; subtit
   const navigate = useNavigate()
   const back = (location.state as { atlasBack?: AtlasBack } | null)?.atlasBack
   const goBack = () => back ? navigate(back.path, { state: back.parent ? { atlasBack: back.parent } : null }) : navigate('/atlas')
-  return <Workspace title={title} subtitle={subtitle} crumb={<button type="button" className="atlas-back" onClick={goBack}><span aria-hidden>←</span> Back</button>}><div className="stack">{children}</div></Workspace>
+  return <Workspace className="atlas-control-workspace" title={title} subtitle={subtitle} crumb={<button type="button" className="atlas-back" onClick={goBack}><span aria-hidden>←</span> Back</button>}><div className="stack">{children}</div></Workspace>
 }
 
 export function Atlas() {
@@ -226,15 +226,36 @@ export function PolicyPanel({ rules, capabilities, servers, revision, onDone }: 
   </Panel>
 }
 
-function Providers({ providers, onDone }: { providers: Provider[]; onDone: () => Promise<unknown> }) {
+export function Providers({ providers, onDone }: { providers: Provider[]; onDone: () => Promise<unknown> }) {
   const [key, setKey] = useState(''); const [kind, setKind] = useState('openai_compatible'); const [model, setModel] = useState(''); const [base, setBase] = useState(''); const [secret, setSecret] = useState(''); const [priority, setPriority] = useState(50)
+  const [replacementKeys, setReplacementKeys] = useState<Record<string, string>>({})
+  const [providerPriorities, setProviderPriorities] = useState<Record<string, number>>({})
   const save = useMutation({ mutationFn: (payload: object) => api('/api/providers', { method: 'POST', body: JSON.stringify(payload) }), onSuccess: onDone })
+  const update = useMutation({
+    mutationFn: ({ item, apiKey, enabled, priority: nextPriority }: { item: Provider; apiKey?: string; enabled?: boolean; priority?: number }) => api('/api/providers', {
+      method: 'POST',
+      body: JSON.stringify({ key: item.key, kind: item.kind, model: item.model, base_url: item.base_url ?? null, api_key: apiKey || undefined, enabled: enabled ?? item.enabled, local: item.local, priority: nextPriority ?? item.priority, metadata: item.metadata }),
+    }),
+    onSuccess: async (_data, variables) => { setReplacementKeys(current => ({ ...current, [variables.item.key]: '' })); await onDone() },
+  })
   const verify = useMutation({ mutationFn: (providerKey: string) => api(`/api/providers/${providerKey}/verify`, { method: 'POST', body: '{}' }) })
   const remove = useMutation({ mutationFn: (providerKey: string) => api(`/api/providers/${providerKey}`, { method: 'DELETE' }), onSuccess: onDone })
   function submit(event: FormEvent) { event.preventDefault(); save.mutate({ key, kind, model, base_url: base || null, api_key: secret || undefined, enabled: true, local: kind === 'openai_compatible' && base.includes('127.0.0.1'), priority }) }
-  return <Panel title="Models & providers"><div className="stack">{providers.map(item => <div className="list-row" key={item.key}><strong>{item.key} · {item.model}</strong><span className="chip">{item.enabled ? 'enabled' : 'disabled'}</span><div className="meta">{item.kind} · priority {item.priority} · {item.base_url || 'default endpoint'}</div><div className="actions"><button onClick={() => verify.mutate(item.key)}>Verify</button><button className="danger" onClick={() => remove.mutate(item.key)}>Remove</button></div></div>)}</div>
-    <form className="grid-3" onSubmit={submit} style={{ marginTop: '1rem' }}><input value={key} onChange={e => setKey(e.target.value)} placeholder="provider key" /><select value={kind} onChange={e => setKind(e.target.value)}><option value="openai_compatible">OpenAI compatible</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option></select><input value={model} onChange={e => setModel(e.target.value)} placeholder="model" /><input value={base} onChange={e => setBase(e.target.value)} placeholder="base URL (optional)" /><input type="password" value={secret} onChange={e => setSecret(e.target.value)} placeholder="API key (optional)" /><input type="number" value={priority} onChange={e => setPriority(Number(e.target.value))} /><button className="primary" type="submit">Save provider</button></form>
-    {verify.data ? <pre className="mono">{JSON.stringify(verify.data, null, 2)}</pre> : null}
+  const ordered = [...providers].sort((a, b) => b.priority - a.priority || a.key.localeCompare(b.key))
+  return <Panel title="Models & providers" className="providers-panel"><p className="meta provider-help">Higher priority runs first. If it fails, Atlas tries the next enabled provider.</p><div className="provider-list">{ordered.map(item => {
+    const draftPriority = providerPriorities[item.key] ?? item.priority
+    return <div className="provider-row" key={item.key}>
+      <div className="provider-copy"><div className="provider-title"><strong>{item.key}</strong><span className={`chip ${item.enabled ? 'done' : ''}`}>{item.enabled ? 'enabled' : 'disabled'}</span></div><div className="meta">{item.model} · {item.kind} · {item.base_url || 'default endpoint'} · {item.credential_configured ? 'credential configured' : 'no credential'}</div></div>
+      <div className="provider-priority"><label><span>Priority</span><input type="number" aria-label={`Priority for ${item.key}`} value={draftPriority} onChange={e => setProviderPriorities(current => ({ ...current, [item.key]: Number(e.target.value) }))} /></label><button type="button" disabled={draftPriority === item.priority || update.isPending} onClick={() => update.mutate({ item, priority: draftPriority })}>Save</button></div>
+      <div className="provider-actions"><button onClick={() => verify.mutate(item.key)}>Verify</button><button onClick={() => update.mutate({ item, enabled: !item.enabled })}>{item.enabled ? 'Disable' : 'Enable'}</button><button className="danger" onClick={() => remove.mutate(item.key)}>Remove</button></div>
+      <details className="provider-credential"><summary>{item.credential_configured ? 'Replace API key' : 'Add API key'}</summary><div className="provider-key-row"><input type="password" aria-label={`Replace API key for ${item.key}`} value={replacementKeys[item.key] ?? ''} onChange={e => setReplacementKeys(current => ({ ...current, [item.key]: e.target.value }))} placeholder="API key" /><button type="button" disabled={!replacementKeys[item.key]?.trim() || update.isPending} onClick={() => update.mutate({ item, apiKey: replacementKeys[item.key].trim(), enabled: true })}>Save key & enable</button></div></details>
+    </div>
+  })}</div>
+    {update.isError ? <p className="offline-banner">{update.error.message}</p> : null}
+    {save.isError ? <p className="offline-banner">{save.error.message}</p> : null}
+    <details className="inspect provider-add"><summary>Add provider</summary><form className="grid-3" onSubmit={submit} style={{ marginTop: '1rem' }}><input value={key} onChange={e => setKey(e.target.value)} placeholder="provider key" /><select value={kind} onChange={e => setKind(e.target.value)}><option value="openai_compatible">OpenAI compatible</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option></select><input value={model} onChange={e => setModel(e.target.value)} placeholder="model" /><input value={base} onChange={e => setBase(e.target.value)} placeholder="base URL (optional)" /><input type="password" value={secret} onChange={e => setSecret(e.target.value)} placeholder="API key (optional)" /><input type="number" value={priority} onChange={e => setPriority(Number(e.target.value))} aria-label="New provider priority" /><button className="primary" type="submit">Save provider</button></form></details>
+    {verify.data ? <pre className="mono provider-verify-result">{JSON.stringify(verify.data, null, 2)}</pre> : null}
+    {verify.isError ? <p className="offline-banner">{verify.error.message}</p> : null}
   </Panel>
 }
 

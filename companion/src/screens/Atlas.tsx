@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState, type FormEvent } from 'react'
+import { useState, type FormEvent, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import type { ActionOccurrence, Capability, Decision, MCPServer, PolicyRule, Provider, SourceRoot } from '../api/types'
 import { ConfirmationCard } from '../ui/ConfirmationCard'
 import { Panel } from '../ui/Panel'
 import { Workspace } from '../ui/Workspace'
-import { policyLensFor, type PolicyLens } from './policyLens'
+import { capabilityLensFor, policyLensFor, type PolicyLens } from './policyLens'
 
 type SystemState = {
   version: string
@@ -42,24 +43,65 @@ type HostFilesystem = { path?: string; total?: number; used?: number; free?: num
 type HostStorage = { filesystems?: HostFilesystem[]; timestamp?: string }
 type HostState = { status?: HostStatus; resources?: HostResources; storage?: HostStorage }
 
-export function Atlas() {
+function useAtlasControl() {
   const qc = useQueryClient()
   const system = useQuery({ queryKey: ['system'], queryFn: () => api<SystemState>('/api/system'), refetchInterval: 10000 })
   const policy = useQuery({ queryKey: ['policy'], queryFn: () => api<{ revision: number; rules: PolicyRule[] }>('/api/policy') })
   const refresh = async () => { await Promise.all([qc.invalidateQueries({ queryKey: ['system'] }), qc.invalidateQueries({ queryKey: ['policy'] }), qc.invalidateQueries({ queryKey: ['pending-actions'] })]) }
+  return { system, policy, refresh }
+}
 
-  return <Workspace title="Atlas" subtitle="Runtime truth and control. Capability is infrastructure; authority is live NO / YES / CONFIRM policy.">
-    <div className="stack">
-      <RuntimeOverview state={system.data} />
-      <Pending items={system.data?.pending_confirmations ?? []} onDone={refresh} />
-      <PolicyPanel rules={policy.data?.rules ?? []} servers={system.data?.mcp_servers ?? []} revision={policy.data?.revision ?? 0} onDone={refresh} />
-      <Providers providers={system.data?.providers ?? []} onDone={refresh} />
-      <Mcp servers={system.data?.mcp_servers ?? []} onDone={refresh} />
-      <MailConnections connections={system.data?.connections ?? []} bindings={system.data?.service_bindings ?? []} servers={system.data?.mcp_servers ?? []} onDone={refresh} />
-      <Roots roots={system.data?.source_roots ?? []} onDone={refresh} />
-      <Capabilities items={system.data?.capabilities ?? []} />
-    </div>
+function AtlasPage({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
+  return <Workspace title={title} subtitle={subtitle} crumb={<Link to="/atlas">Atlas</Link>}><div className="stack">{children}</div></Workspace>
+}
+
+export function Atlas() {
+  const { system } = useAtlasControl()
+  const state = system.data
+  const enabledProviders = state?.providers.filter(provider => provider.enabled).length ?? 0
+  const availableCapabilities = state?.capabilities.filter(capability => capability.available).length ?? 0
+  const pending = state?.pending_confirmations.length ?? 0
+  const cards = [
+    { to: '/atlas/runtime', eyebrow: 'Observe', title: 'Runtime', description: 'Process, resources, storage and pending confirmations.', metric: state ? `${state.version} · ${pending} pending` : 'Loading…' },
+    { to: '/atlas/policies', eyebrow: 'Control', title: 'Policies', description: 'Owner authority for System, n8n tools and MCP tools.', metric: state ? `revision ${state.policy_revision}` : 'Loading…' },
+    { to: '/atlas/models', eyebrow: 'Configure', title: 'Models & Providers', description: 'Model endpoints, credentials, priority and verification.', metric: state ? `${enabledProviders}/${state.providers.length} enabled` : 'Loading…' },
+    { to: '/atlas/connections', eyebrow: 'Connect', title: 'Connections', description: 'MCP/n8n servers, external identities and technical bindings.', metric: state ? `${state.mcp_servers.length} services · ${state.connections.length} accounts` : 'Loading…' },
+    { to: '/atlas/filesystem', eyebrow: 'Configure', title: 'Filesystem', description: 'Enrolled roots and deterministic source boundaries.', metric: state ? `${state.source_roots.length} roots` : 'Loading…' },
+    { to: '/atlas/capabilities', eyebrow: 'Inspect', title: 'Capabilities', description: 'The complete live toolbox Atlas can currently see.', metric: state ? `${availableCapabilities}/${state.capabilities.length} available` : 'Loading…' },
+  ]
+  return <Workspace title="Atlas" subtitle="Runtime truth and control. Choose a control surface instead of scrolling through one long settings document.">
+    <div className="atlas-dashboard-grid">{cards.map(card => <Link className="atlas-dashboard-card" to={card.to} key={card.to}><span className="eyebrow">{card.eyebrow}</span><div className="atlas-dashboard-card-head"><h2>{card.title}</h2><span aria-hidden>→</span></div><p>{card.description}</p><strong>{card.metric}</strong></Link>)}</div>
   </Workspace>
+}
+
+export function AtlasRuntime() {
+  const { system, refresh } = useAtlasControl()
+  return <AtlasPage title="Runtime" subtitle="Live process and host truth. This page observes Atlas; it does not grant authority."><RuntimeOverview state={system.data} /><Pending items={system.data?.pending_confirmations ?? []} onDone={refresh} /></AtlasPage>
+}
+
+export function AtlasPolicies() {
+  const { system, policy, refresh } = useAtlasControl()
+  return <AtlasPage title="Policies" subtitle="The live owner authority surface. Description first; exact scope and operation remain visible as evidence."><PolicyPanel rules={policy.data?.rules ?? []} capabilities={system.data?.capabilities ?? []} servers={system.data?.mcp_servers ?? []} revision={policy.data?.revision ?? 0} onDone={refresh} /></AtlasPage>
+}
+
+export function AtlasModels() {
+  const { system, refresh } = useAtlasControl()
+  return <AtlasPage title="Models & Providers" subtitle="Technical model capability: endpoints, credentials, ordering and verification."><Providers providers={system.data?.providers ?? []} onDone={refresh} /></AtlasPage>
+}
+
+export function AtlasIntegrations() {
+  const { system, refresh } = useAtlasControl()
+  return <AtlasPage title="Connections" subtitle="Technical connections and account custody. Tool authority is managed under Policies."><Mcp servers={system.data?.mcp_servers ?? []} onDone={refresh} /><MailConnections connections={system.data?.connections ?? []} bindings={system.data?.service_bindings ?? []} servers={system.data?.mcp_servers ?? []} onDone={refresh} /></AtlasPage>
+}
+
+export function AtlasFilesystem() {
+  const { system, refresh } = useAtlasControl()
+  return <AtlasPage title="Filesystem" subtitle="Enroll deterministic roots here; read/write/delete authority remains a runtime policy decision."><Roots roots={system.data?.source_roots ?? []} onDone={refresh} /></AtlasPage>
+}
+
+export function AtlasCapabilities() {
+  const { system } = useAtlasControl()
+  return <AtlasPage title="Capability Inventory" subtitle="Every native, provider and discovered tool Atlas can currently see."><Capabilities items={system.data?.capabilities ?? []} /></AtlasPage>
 }
 
 function formatBytes(value?: number) {
@@ -125,7 +167,17 @@ function Pending({ items, onDone }: { items: ActionOccurrence[]; onDone: () => P
   return <Panel title="Needs you" tone="decision-confirm"><div className="stack">{items.map(item => <ConfirmationCard key={item.occurrence_id} item={item} onDone={onDone} />)}</div></Panel>
 }
 
-function PolicyPanel({ rules, servers, revision, onDone }: { rules: PolicyRule[]; servers: MCPServer[]; revision: number; onDone: () => Promise<unknown> }) {
+function policyDescription(rule: PolicyRule, capabilities: Capability[]) {
+  const matching = capabilities.filter(capability => capability.operation === rule.operation && capability.scope_hint)
+  const exact = matching.find(capability => capability.scope_hint === rule.scope)
+  const related = matching.find(capability => rule.scope.startsWith(capability.scope_hint ?? '') || (capability.scope_hint ?? '').startsWith(rule.scope))
+  if (exact?.description) return exact.description
+  if (related?.description) return related.description
+  const operation = rule.operation.replace(/[._-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
+  return `${operation} on this resource`
+}
+
+export function PolicyPanel({ rules, capabilities, servers, revision, onDone }: { rules: PolicyRule[]; capabilities: Capability[]; servers: MCPServer[]; revision: number; onDone: () => Promise<unknown> }) {
   const [lens, setLens] = useState<PolicyLens>('system')
   const [scope, setScope] = useState('')
   const [operation, setOperation] = useState('')
@@ -133,29 +185,35 @@ function PolicyPanel({ rules, servers, revision, onDone }: { rules: PolicyRule[]
   const save = useMutation({ mutationFn: (payload: { scope: string; operation: string; decision: Decision }) => api('/api/policy', { method: 'POST', body: JSON.stringify(payload) }), onSuccess: onDone })
   function submit(event: FormEvent) { event.preventDefault(); save.mutate({ scope, operation, decision }) }
 
-  const grouped = {
-    system: rules.filter(rule => policyLensFor(rule, servers) === 'system'),
-    n8n: rules.filter(rule => policyLensFor(rule, servers) === 'n8n'),
-    mcp: rules.filter(rule => policyLensFor(rule, servers) === 'mcp'),
-  }
-  const tabs: Array<{ id: PolicyLens; label: string }> = [
-    { id: 'system', label: 'System' },
-    { id: 'n8n', label: 'n8n Tools' },
-    { id: 'mcp', label: 'MCP Tools' },
+  const systemRules = rules.filter(rule => policyLensFor(rule, servers) === 'system')
+  const toolCapabilities = capabilities.filter(capability => capabilityLensFor(capability, servers) === lens && capability.scope_hint?.startsWith('mcp/'))
+  const tabs: Array<{ id: PolicyLens; label: string; count: number }> = [
+    { id: 'system', label: 'System', count: systemRules.length },
+    { id: 'n8n', label: 'n8n Tools', count: capabilities.filter(capability => capabilityLensFor(capability, servers) === 'n8n' && capability.scope_hint?.startsWith('mcp/')).length },
+    { id: 'mcp', label: 'MCP Tools', count: capabilities.filter(capability => capabilityLensFor(capability, servers) === 'mcp' && capability.scope_hint?.startsWith('mcp/')).length },
   ]
-  const shown = grouped[lens]
+  const toolGroups = servers.filter(server => server.kind === lens).map(server => ({ server, tools: toolCapabilities.filter(capability => capability.metadata?.server_id === server.server_id) })).filter(group => group.tools.length)
+  const disconnectedTools = toolCapabilities.filter(capability => !servers.some(server => server.server_id === capability.metadata?.server_id))
+
+  const decisionSelect = (scopeValue: string, operationValue: string, value: Decision, label: string) => <select className="policy-decision" aria-label={label} value={value} onChange={e => save.mutate({ scope: scopeValue, operation: operationValue, decision: e.target.value as Decision })}><option>NO</option><option>YES</option><option>CONFIRM</option></select>
 
   return <Panel title="Policies" className="policy-panel">
     <div className="policy-head">
       <p className="meta">Revision {revision} · changes apply immediately to the running Atlas. No service restart or provider reconfiguration.</p>
       <div className="policy-tabs" role="tablist" aria-label="Policy lenses">
-        {tabs.map(tab => <button key={tab.id} type="button" role="tab" aria-selected={lens === tab.id} className={lens === tab.id ? 'policy-tab active' : 'policy-tab'} onClick={() => setLens(tab.id)}>{tab.label}<span>{grouped[tab.id].length}</span></button>)}
+        {tabs.map(tab => <button key={tab.id} type="button" role="tab" aria-selected={lens === tab.id} className={lens === tab.id ? 'policy-tab active' : 'policy-tab'} onClick={() => setLens(tab.id)}>{tab.label}<span>{tab.count}</span></button>)}
       </div>
     </div>
-    <div className="policy-rules stack">
-      {shown.length ? shown.map(rule => <div className="list-row policy-row" key={`${rule.scope}:${rule.operation}`}><div><strong>{rule.scope}</strong><div className="meta">{rule.operation}</div></div><select aria-label={`${rule.scope} ${rule.operation} decision`} value={rule.decision} onChange={e => save.mutate({ scope: rule.scope, operation: rule.operation, decision: e.target.value as Decision })}><option>NO</option><option>YES</option><option>CONFIRM</option></select></div>) : <div className="empty">No {tabs.find(tab => tab.id === lens)?.label.toLowerCase()} policies are currently registered.</div>}
-    </div>
-    <form className="grid-3 policy-add" onSubmit={submit}><input value={scope} onChange={e => setScope(e.target.value)} placeholder="resource scope" /><input value={operation} onChange={e => setOperation(e.target.value)} placeholder="operation" /><div className="actions"><select value={decision} onChange={e => setDecision(e.target.value as Decision)}><option>NO</option><option>YES</option><option>CONFIRM</option></select><button className="primary" type="submit">Set</button></div></form>
+
+    {lens === 'system' ? <div className="policy-list">
+      {systemRules.map(rule => <div className="policy-item" key={`${rule.scope}:${rule.operation}`}><div className="policy-copy"><strong>{policyDescription(rule, capabilities)}</strong><div className="policy-syntax">{rule.scope} · {rule.operation}</div></div>{decisionSelect(rule.scope, rule.operation, rule.decision, `${rule.scope} ${rule.operation} decision`)}</div>)}
+    </div> : <div className="policy-tool-groups">
+      {toolGroups.map(({ server, tools }) => <section className="policy-tool-group" key={server.server_id}><div className="policy-tool-group-head"><div><span className="eyebrow">{server.kind}</span><h3>{server.display_name}</h3></div><span className="chip">{tools.length} tools</span></div><div className="policy-list">{tools.map(tool => <div className="policy-item" key={tool.id}><div className="policy-copy"><strong>{tool.description}</strong><div className="policy-syntax">{tool.id}</div><div className="policy-syntax">{tool.scope_hint} · {tool.operation}</div></div>{decisionSelect(tool.scope_hint ?? '', tool.operation, tool.policy_decision, `${tool.id} decision`)}</div>)}</div></section>)}
+      {disconnectedTools.length ? <section className="policy-tool-group"><div className="policy-tool-group-head"><div><span className="eyebrow">Stored</span><h3>Disconnected tools</h3></div><span className="chip">{disconnectedTools.length}</span></div><div className="policy-list">{disconnectedTools.map(tool => <div className="policy-item" key={tool.id}><div className="policy-copy"><strong>{tool.description}</strong><div className="policy-syntax">{tool.id}</div><div className="policy-syntax">{tool.scope_hint} · {tool.operation}</div></div>{decisionSelect(tool.scope_hint ?? '', tool.operation, tool.policy_decision, `${tool.id} decision`)}</div>)}</div></section> : null}
+      {!toolGroups.length && !disconnectedTools.length ? <div className="empty">No {lens === 'n8n' ? 'n8n' : 'MCP'} tools are currently discovered.</div> : null}
+    </div>}
+
+    <details className="inspect policy-advanced"><summary>Advanced policy override</summary><form className="grid-3 policy-add" onSubmit={submit}><input value={scope} onChange={e => setScope(e.target.value)} placeholder="resource scope" /><input value={operation} onChange={e => setOperation(e.target.value)} placeholder="operation" /><div className="actions"><select value={decision} onChange={e => setDecision(e.target.value as Decision)}><option>NO</option><option>YES</option><option>CONFIRM</option></select><button className="primary" type="submit">Set</button></div></form></details>
   </Panel>
 }
 
@@ -177,7 +235,7 @@ function Mcp({ servers, onDone }: { servers: MCPServer[]; onDone: () => Promise<
   const refresh = useMutation({ mutationFn: (id: string) => api(`/api/mcp/${id}/refresh`, { method: 'POST', body: '{}' }), onSuccess: onDone })
   const remove = useMutation({ mutationFn: (id: string) => api(`/api/mcp/${id}`, { method: 'DELETE' }), onSuccess: onDone })
   function submit(event: FormEvent) { event.preventDefault(); save.mutate({ server_id: serverId, display_name: name || serverId, kind, url, token: token || undefined, enabled: true }) }
-  return <Panel title="MCP & n8n"><p className="meta">Every tool advertised by an enabled server is registered. Discovery is capability inventory, never authority.</p><div className="stack">{servers.map(item => <div className="list-row" key={item.server_id}><strong>{item.display_name}</strong><span className="chip">{item.kind}</span><span className="chip">{item.discovered_tool_count} tools</span><div className="meta">{item.url}</div>{item.last_error ? <p className="offline-banner">{item.last_error}</p> : null}<div className="actions"><button onClick={() => refresh.mutate(item.server_id)}>Refresh tools</button><button className="danger" onClick={() => remove.mutate(item.server_id)}>Remove</button></div></div>)}</div>
+  return <Panel title="MCP & n8n connections"><p className="meta">Configure technical provider connections here. Discovered tools and NO / YES / CONFIRM controls live under Policies.</p><div className="stack">{servers.map(item => <div className="list-row" key={item.server_id}><div><strong>{item.display_name}</strong><div className="actions" style={{ marginTop: '0.35rem' }}><span className="chip">{item.kind}</span><span className="chip">{item.enabled ? 'enabled' : 'disabled'}</span></div><div className="meta">{item.url}</div></div>{item.last_error ? <p className="offline-banner">{item.last_error}</p> : null}<div className="actions"><Link className="settings-link" to="/atlas/policies">Tools & policy</Link><button onClick={() => refresh.mutate(item.server_id)}>Refresh discovery</button><button className="danger" onClick={() => remove.mutate(item.server_id)}>Remove</button></div></div>)}</div>
     <form className="grid-3" onSubmit={submit} style={{ marginTop: '1rem' }}><input value={serverId} onChange={e => setServerId(e.target.value)} placeholder="server id" /><input value={name} onChange={e => setName(e.target.value)} placeholder="display name" /><select value={kind} onChange={e => setKind(e.target.value as 'mcp' | 'n8n')}><option value="mcp">MCP</option><option value="n8n">n8n</option></select><input value={url} onChange={e => setUrl(e.target.value)} placeholder="Streamable HTTP URL" /><input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="Bearer token (optional)" /><button className="primary" type="submit">Save server</button></form>
   </Panel>
 }

@@ -484,6 +484,79 @@ a.card:hover {
   }
 }
 
+/* —— Atlas control dashboard: category-first settings navigation. —— */
+.atlas-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.85rem;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.atlas-dashboard-card {
+  min-height: 190px;
+  padding: 1.15rem 1.2rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+}
+
+.atlas-dashboard-card:hover {
+  border-color: var(--gold-dim);
+  background: var(--surface-hover);
+  transform: translateY(-1px);
+}
+
+.atlas-dashboard-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.atlas-dashboard-card h2 {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 1.05rem;
+  font-weight: 400;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.atlas-dashboard-card-head > span {
+  color: var(--gold-dim);
+  font-size: 1.15rem;
+}
+
+.atlas-dashboard-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  flex: 1 1 auto;
+}
+
+.atlas-dashboard-card > strong {
+  color: var(--gold-bright);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+@media (max-width: 1100px) {
+  .atlas-dashboard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 680px) {
+  .atlas-dashboard-grid { grid-template-columns: 1fr; }
+  .atlas-dashboard-card { min-height: 150px; }
+}
+
 /* —— Atlas runtime truth: compact operator view; raw evidence stays available on demand. —— */
 .runtime-kpis {
   padding-bottom: 1rem;
@@ -624,19 +697,86 @@ a.card:hover {
   color: var(--gold-dim);
 }
 
-.policy-rules {
+.policy-list {
+  display: grid;
   gap: 0;
+  max-width: 980px;
 }
 
-.policy-row select {
-  width: 9rem;
+.policy-item {
+  display: grid;
+  grid-template-columns: minmax(0, 700px) 9.5rem;
+  justify-content: start;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.8rem 0;
+  border-bottom: 1px solid var(--line);
 }
 
-.policy-add {
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--line);
+.policy-item:first-child { padding-top: 0; }
+.policy-item:last-child { border-bottom: 0; padding-bottom: 0; }
+
+.policy-copy { min-width: 0; }
+.policy-copy strong {
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.45;
 }
+
+.policy-syntax {
+  margin-top: 0.18rem;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  overflow-wrap: anywhere;
+}
+
+.policy-decision { width: 9.5rem; }
+
+.settings-link {
+  min-height: var(--touch);
+  padding: 0 1rem;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.8rem;
+}
+.settings-link:hover { border-color: var(--gold-dim); color: var(--gold-bright); }
+
+.policy-tool-groups { display: grid; gap: 1.1rem; }
+.policy-tool-group {
+  max-width: 1040px;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(4, 4, 4, 0.2);
+}
+
+.policy-tool-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0.75rem;
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.policy-tool-group-head h3 {
+  margin: 0.15rem 0 0;
+  color: var(--text);
+  font-size: 0.82rem;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.policy-advanced { max-width: 980px; margin-top: 1rem; }
+.policy-add { margin-top: 0.75rem; }
 
 @media (max-width: 700px) {
   .policy-tabs {
@@ -644,17 +784,9 @@ a.card:hover {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .policy-tab {
-    padding-inline: 0.35rem;
-  }
-
-  .policy-row {
-    grid-template-columns: 1fr;
-  }
-
-  .policy-row select {
-    width: 100%;
-  }
+  .policy-tab { padding-inline: 0.35rem; }
+  .policy-item { grid-template-columns: 1fr; gap: 0.55rem; }
+  .policy-decision { width: 100%; }
 }
 
 /* —— List row / key-value —— */

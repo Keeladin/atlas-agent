@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AUTH_EXPIRED_EVENT, loadSession, logout } from './api/client'
-import { Atlas } from './screens/Atlas'
+import { Atlas, AtlasCapabilities, AtlasFilesystem, AtlasIntegrations, AtlasModels, AtlasPolicies, AtlasRuntime } from './screens/Atlas'
 import { CadenceList } from './screens/Cadence'
 import { Chat } from './screens/Chat'
 import { Login } from './screens/Login'
@@ -20,5 +20,5 @@ export default function App() {
   useEffect(() => { const expired = () => { queryClient.clear(); setAuthed(false) }; window.addEventListener(AUTH_EXPIRED_EVENT, expired); return () => window.removeEventListener(AUTH_EXPIRED_EVENT, expired) }, [])
   if (!ready) return <div className="empty" style={{ padding: '2rem' }}>Loading Atlas…</div>
   if (!authed) return <Login onAuthed={() => setAuthed(true)} />
-  return <QueryClientProvider client={queryClient}><BrowserRouter><Routes><Route element={<Shell onLogout={() => { void logout().then(() => { queryClient.clear(); setAuthed(false) }) }} />}><Route path="/" element={<Navigate to="/chat" replace />} /><Route path="/chat" element={<Chat />} /><Route path="/work" element={<WorkList />} /><Route path="/work/:workId" element={<WorkDetail />} /><Route path="/cadence" element={<CadenceList />} /><Route path="/sources" element={<Sources />} /><Route path="/atlas" element={<Atlas />} /><Route path="*" element={<Navigate to="/chat" replace />} /></Route></Routes></BrowserRouter></QueryClientProvider>
+  return <QueryClientProvider client={queryClient}><BrowserRouter><Routes><Route element={<Shell onLogout={() => { void logout().then(() => { queryClient.clear(); setAuthed(false) }) }} />}><Route path="/" element={<Navigate to="/chat" replace />} /><Route path="/chat" element={<Chat />} /><Route path="/work" element={<WorkList />} /><Route path="/work/:workId" element={<WorkDetail />} /><Route path="/cadence" element={<CadenceList />} /><Route path="/sources" element={<Sources />} /><Route path="/atlas" element={<Atlas />} /><Route path="/atlas/runtime" element={<AtlasRuntime />} /><Route path="/atlas/policies" element={<AtlasPolicies />} /><Route path="/atlas/models" element={<AtlasModels />} /><Route path="/atlas/connections" element={<AtlasIntegrations />} /><Route path="/atlas/filesystem" element={<AtlasFilesystem />} /><Route path="/atlas/capabilities" element={<AtlasCapabilities />} /><Route path="*" element={<Navigate to="/chat" replace />} /></Route></Routes></BrowserRouter></QueryClientProvider>
 }

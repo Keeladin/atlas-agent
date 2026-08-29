@@ -31,6 +31,21 @@ export type PolicyRule = { event_id: string; sequence: number; principal_id: str
 export type Provider = { key: string; kind: string; model: string; base_url?: string | null; enabled: boolean; local: boolean; priority: number; credential_configured: boolean; metadata: Record<string, unknown>; updated_at: string }
 export type MCPServer = { server_id: string; display_name: string; kind: 'mcp' | 'n8n'; transport: 'streamable-http' | 'stdio'; url?: string | null; command?: string | null; args: readonly string[]; cwd?: string | null; enabled: boolean; credential_configured: boolean; timeout_sec: number; read_timeout_sec: number; last_error?: string | null; last_discovered_at?: string | null; discovered_tool_count: number }
 export type SourceRoot = { root_id: string; provider_namespace: string; host_path: string; display_name: string; quarantine_relative_path?: string | null; enabled: boolean; updated_at: string }
-export type Capability = { id: string; description: string; operation: string; effect_class: string; source: string; tags: string[]; available: boolean; availability_reason: string; policy_decision: Decision; policy_revision: number; scope_hint?: string | null; metadata: Record<string, unknown> }
+export type JsonSchema = {
+  type?: string | string[]
+  title?: string
+  description?: string
+  format?: string
+  enum?: unknown[]
+  default?: unknown
+  properties?: Record<string, JsonSchema>
+  required?: string[]
+  items?: JsonSchema
+  oneOf?: JsonSchema[]
+  anyOf?: JsonSchema[]
+  additionalProperties?: boolean | JsonSchema
+  [key: string]: unknown
+}
+export type Capability = { id: string; description: string; operation: string; effect_class: string; input_schema: JsonSchema; source: string; tags: string[]; available: boolean; availability_reason: string; policy_decision: Decision; policy_revision: number; scope_hint?: string | null; metadata: Record<string, unknown> }
 
 export type MemoryItem = { item_id: string; principal_id: string; title: string; content: string; grounding_excerpt?: string | null; source_ref?: string | null; metadata: Record<string, unknown>; state: 'active' | 'superseded' | 'retracted'; supersedes?: string | null; created_at: string; updated_at: string; retracted_at?: string | null; score?: number }

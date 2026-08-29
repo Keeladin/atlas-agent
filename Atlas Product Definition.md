@@ -46,7 +46,7 @@ Availability, capability and authority are separate facts. A connected tool may 
 
 ### Done means
 
-Connecting or refreshing an MCP server updates the live capability inventory without adding a parallel permission mechanism or requiring a code deployment for each tool.
+Connecting or refreshing an MCP server updates both the live capability inventory and the Companion capability browser without adding a parallel permission mechanism or requiring a code deployment for each tool. Discovered input schemas are rendered generically, with raw JSON as the fallback rather than provider-specific UI code.
 
 ## Responsibility 4 — Act under literal owner policy
 

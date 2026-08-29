@@ -6,6 +6,7 @@ import type { ActionOccurrence, Capability, Decision, MCPServer, PolicyRule, Pro
 import { ConfirmationCard } from '../ui/ConfirmationCard'
 import { Panel } from '../ui/Panel'
 import { Workspace } from '../ui/Workspace'
+import { CapabilityBrowser } from './CapabilityBrowser'
 import { capabilityLensFor, policyLensFor, type PolicyLens } from './policyLens'
 
 type SystemState = {
@@ -105,8 +106,8 @@ export function AtlasFilesystem() {
 }
 
 export function AtlasCapabilities() {
-  const { system } = useAtlasControl()
-  return <AtlasPage title="Capability Inventory" subtitle="Every native, provider and discovered tool Atlas can currently see."><Capabilities items={system.data?.capabilities ?? []} /></AtlasPage>
+  const { system, refresh } = useAtlasControl()
+  return <AtlasPage title="Capabilities" subtitle="Live capability discovery drives navigation, input controls, authority and execution."><CapabilityBrowser items={system.data?.capabilities ?? []} servers={system.data?.mcp_servers ?? []} onDone={refresh} /></AtlasPage>
 }
 
 function formatBytes(value?: number) {
@@ -284,10 +285,4 @@ function Roots({ roots, onDone }: { roots: SourceRoot[]; onDone: () => Promise<u
   const save = useMutation({ mutationFn: () => api('/api/sources/roots', { method: 'POST', body: JSON.stringify({ root_id: id, host_path: path, display_name: name || id, enabled: true, quarantine_relative_path: '.atlas-quarantine' }) }), onSuccess: onDone })
   const remove = useMutation({ mutationFn: (rootId: string) => api(`/api/sources/roots/${rootId}`, { method: 'DELETE' }), onSuccess: onDone })
   return <Panel title="Filesystem roots"><p className="meta">Enrollment exposes the kernel capability. Read/write/delete authority is controlled only by the runtime policy above.</p><div className="stack">{roots.map(root => <div className="list-row" key={root.root_id}><strong>{root.display_name}</strong><span className="chip">{root.enabled ? 'enabled' : 'disabled'}</span><div className="meta">{root.host_path}</div><button className="danger" onClick={() => remove.mutate(root.root_id)}>Remove</button></div>)}</div><div className="grid-3" style={{ marginTop: '1rem' }}><input value={id} onChange={e => setId(e.target.value)} placeholder="root id" /><input value={name} onChange={e => setName(e.target.value)} placeholder="display name" /><input value={path} onChange={e => setPath(e.target.value)} placeholder="absolute host path" /><button className="primary" onClick={() => save.mutate()} disabled={!id || !path}>Enroll root</button></div></Panel>
-}
-
-function Capabilities({ items }: { items: Capability[] }) {
-  const [filter, setFilter] = useState('')
-  const shown = items.filter(item => !filter || `${item.id} ${item.description} ${item.source}`.toLowerCase().includes(filter.toLowerCase()))
-  return <Panel title={`Capability inventory · ${items.length}`}><input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter capabilities" /><div className="stack" style={{ marginTop: '1rem' }}>{shown.map(item => <div className="list-row" key={item.id}><strong>{item.id}</strong><span className="chip">{item.source}</span><span className="chip">{item.effect_class}</span><span className="chip">{item.available ? 'available' : 'unavailable'}</span><div>{item.description}</div>{!item.available ? <div className="meta">{item.availability_reason}</div> : null}</div>)}</div></Panel>
 }

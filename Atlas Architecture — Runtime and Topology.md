@@ -122,6 +122,8 @@ Definitions classify effect (`none`, `internal`, `reversible`, `external`, `dest
 
 `CapabilityRuntime.invoke()` validates input, resolves the exact scope and normalized payload, and submits the attested request to `ActionRuntime`. If an executor needs trusted owner context, `ActionRuntime` binds the occurrence principal only when resolving the executor; that context is not added to the stored or hashed payload.
 
+`CapabilityDefinition.input_schema` is also owner-facing runtime truth. Companion may render controls from it, but the backend validates the submitted payload again before scope resolution. A generated form therefore improves usability without becoming an enforcement boundary.
+
 ## 7. MCP and n8n
 
 MCP servers are runtime-managed persistent connections. Enabling or refreshing a server discovers every advertised tool and registers it under the server's capability namespace. Atlas supports both Streamable HTTP MCP and locally spawned stdio MCP providers. Transport changes connection mechanics, not policy semantics.
@@ -262,6 +264,8 @@ The v3 migration imports selected configuration and custody state only. Legacy a
 Companion's primary navigation is Chat, Work, Sources and Atlas. Pending `CONFIRM` occurrences are also surfaced through the global `Needs you` affordance.
 
 The Memory screen is a secondary durable-context surface reached from Sources; it exposes owner memory, grounding, retract/restore/purge controls and the exact purge guarantee. The Atlas screen exposes live policy, providers, MCP/n8n connections, external-account bindings, source roots, host state and capability inventory from the same runtime used for execution.
+
+The Capabilities surface is generated from that live inventory rather than from provider-specific frontend modules. Server metadata creates provider groups, discovered tool names/metadata create presentation categories, and `input_schema` renders common string, number, boolean, enum, array and object inputs. Complex schemas retain a raw JSON fallback. Invocation still crosses `/api/capabilities/<id>/invoke`, so normalization, exact scope resolution, `NO` / `YES` / `CONFIRM`, evidence and verification remain runtime responsibilities. The UI treats non-exact native `scope_hint` values as hints rather than final authorization decisions; exact MCP tool scopes can expose direct policy controls.
 
 The UI contains no parallel permission state.
 

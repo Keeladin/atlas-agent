@@ -74,9 +74,9 @@ describe('policyLensFor', () => {
 
 describe('PolicyPanel', () => {
   const server = { server_id: 'google-workspace', display_name: 'Google Workspace', kind: 'mcp', transport: 'stdio', url: null, command: '/usr/bin/python3', args: ['-m', 'atlas_providers.google_workspace_mcp'], cwd: '/srv/atlas-google', enabled: true, credential_configured: false, timeout_sec: 30, read_timeout_sec: 300, discovered_tool_count: 3 } as const
-  const makeTool = (id: string, description: string, effect = 'external') => ({ id: `mcp.google-workspace.${id}`, description, operation: 'invoke', effect_class: effect, source: 'mcp', tags: ['mcp'], available: true, availability_reason: 'available', policy_decision: 'CONFIRM' as const, policy_revision: 36, scope_hint: `mcp/google-workspace/tool/${id}`, metadata: { server_id: 'google-workspace', tool_name: id } })
+  const makeTool = (id: string, description: string, effect = 'external') => ({ id: `mcp.google-workspace.${id}`, description, operation: 'invoke', effect_class: effect, input_schema: {}, source: 'mcp', tags: ['mcp'], available: true, availability_reason: 'available', policy_decision: 'CONFIRM' as const, policy_revision: 36, scope_hint: `mcp/google-workspace/tool/${id}`, metadata: { server_id: 'google-workspace', tool_name: id } })
   const capabilities = [
-    { id: 'host.service.restart', description: 'Restart an exact user-systemd service.', operation: 'restart', effect_class: 'external', source: 'host', tags: ['host'], available: true, availability_reason: 'available', policy_decision: 'CONFIRM' as const, policy_revision: 36, scope_hint: 'host/service', metadata: {} },
+    { id: 'host.service.restart', description: 'Restart an exact user-systemd service.', operation: 'restart', effect_class: 'external', input_schema: {}, source: 'host', tags: ['host'], available: true, availability_reason: 'available', policy_decision: 'CONFIRM' as const, policy_revision: 36, scope_hint: 'host/service', metadata: {} },
     makeTool('gmail_users_messages_send', 'gmail.users.messages.send: Sends a message.'),
     makeTool('gmail_users_messages_delete', 'gmail.users.messages.delete: Permanently deletes a message.', 'destructive'),
     makeTool('drive_files_list', 'drive.files.list: Lists files.', 'none'),
@@ -103,7 +103,7 @@ describe('PolicyPanel', () => {
 describe('capabilityLensFor', () => {
   it('classifies discovered tools by their actual MCP provider kind', () => {
     const servers = [{ server_id: 'automation-n8n', kind: 'n8n' }, { server_id: 'google-workspace', kind: 'mcp' }] as Parameters<typeof capabilityLensFor>[1]
-    const base = { description: '', operation: 'invoke', effect_class: 'external', source: 'mcp', tags: [], available: true, availability_reason: 'available', policy_decision: 'CONFIRM' as const, policy_revision: 1, metadata: {} }
+    const base = { description: '', operation: 'invoke', effect_class: 'external', input_schema: {}, source: 'mcp', tags: [], available: true, availability_reason: 'available', policy_decision: 'CONFIRM' as const, policy_revision: 1, metadata: {} }
     expect(capabilityLensFor({ ...base, id: 'host.status', scope_hint: 'host/status' }, servers)).toBe('system')
     expect(capabilityLensFor({ ...base, id: 'mcp.automation-n8n.status', scope_hint: 'mcp/automation-n8n/tool/status', metadata: { server_id: 'automation-n8n' } }, servers)).toBe('n8n')
     expect(capabilityLensFor({ ...base, id: 'mcp.google-workspace.gmail_users_messages_send', scope_hint: 'mcp/google-workspace/tool/gmail_users_messages_send', metadata: { server_id: 'google-workspace' } }, servers)).toBe('mcp')

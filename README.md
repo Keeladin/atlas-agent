@@ -66,6 +66,8 @@ Authentication, provider attestation, schema validation, filesystem containment 
 
 Native capabilities include Knowledge, Memory, Work, Cadence, local sources and host operations. Every tool advertised by an enabled MCP server is registered dynamically. n8n is treated as an MCP-backed capability provider and is not restricted to a handcrafted subset. MCP transport may be Streamable HTTP or a locally spawned stdio provider.
 
+Each capability definition carries its discovered input schema. Companion consumes that same live inventory to group tools by provider/category, render common schema fields, expose availability and authority, and invoke the generic capability endpoint. Unsupported or unusually complex schemas fall back to editable JSON rather than requiring a provider-specific screen.
+
 Production n8n is connected through n8n's built-in instance MCP endpoint as `n8n-runtime`. Atlas inventories the complete tool surface advertised by that server and applies the same runtime policy to each exact tool scope. The MCP bearer credential is technical provider custody in Atlas's encrypted credential store; it is not authority. The obsolete mail-only n8n connector is not registered in Atlas.
 
 Google Workspace is integrated as a provider rather than a mail subsystem: Google Discovery defines the Gmail, Drive and Calendar method surface, the provider exposes those methods through MCP, and Atlas policy governs each discovered tool. Atlas does not maintain a parallel `mail.read` / `mail.send` semantic API. The provider keeps its `gws` OAuth/config state under the external production-state tree rather than inside the Git checkout.
@@ -120,7 +122,7 @@ The primary Companion navigation is:
 Chat -> Work -> Sources -> Atlas
 ```
 
-`Atlas` is the final control surface. It shows and edits the live runtime configuration: policy, providers, MCP/n8n servers, external account bindings, source roots, host state, pending confirmations and capability inventory.
+`Atlas` is the final control surface. It shows and edits the live runtime configuration: policy, providers, MCP/n8n servers, external account bindings, source roots, host state, pending confirmations and capability inventory. The Capabilities surface is runtime-driven: newly discovered tools appear without a frontend code change, and their advertised schemas drive the generic input form and execution controls.
 
 There is no `Now` page and no Morning UI.
 

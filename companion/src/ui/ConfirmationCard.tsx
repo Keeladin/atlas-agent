@@ -3,7 +3,7 @@ import { api } from '../api/client'
 import type { ActionOccurrence } from '../api/types'
 import { Panel } from './Panel'
 
-export function ConfirmationCard({ item, onDone }: { item: ActionOccurrence; onDone: () => Promise<unknown> }) {
+export function ConfirmationCard({ item, onDone, onResolved }: { item: ActionOccurrence; onDone: () => Promise<unknown>; onResolved?: (item: ActionOccurrence) => void }) {
   const [busy, setBusy] = useState<'confirm' | 'cancel' | null>(null)
   const [message, setMessage] = useState<string | null>(null)
 
@@ -14,6 +14,7 @@ export function ConfirmationCard({ item, onDone }: { item: ActionOccurrence; onD
     try {
       const result = await api<{ action: ActionOccurrence }>(`/api/actions/${item.occurrence_id}/${action}`, { method: 'POST', body: '{}' })
       setMessage(`Action ${result.action.status}.`)
+      onResolved?.(result.action)
       await onDone()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))

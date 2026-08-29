@@ -120,13 +120,15 @@ The confirm→execute payload is immutable. The one deliberately separate termin
 
 Definitions classify effect (`none`, `internal`, `reversible`, `external`, `destructive`) but do not encode owner permission.
 
-`CapabilityRuntime.invoke()` validates input, resolves the exact scope and normalized payload, adds required owner execution context, and submits the result to `ActionRuntime`.
+`CapabilityRuntime.invoke()` validates input, resolves the exact scope and normalized payload, and submits the attested request to `ActionRuntime`. If an executor needs trusted owner context, `ActionRuntime` binds the occurrence principal only when resolving the executor; that context is not added to the stored or hashed payload.
 
 ## 7. MCP and n8n
 
 MCP servers are runtime-managed persistent connections. Enabling or refreshing a server discovers every advertised tool and registers it under the server's capability namespace. Atlas supports both Streamable HTTP MCP and locally spawned stdio MCP providers. Transport changes connection mechanics, not policy semantics.
 
-n8n uses the same generic MCP mechanism. A server being of kind `n8n` changes inventory metadata, not authority semantics.
+n8n uses the same generic MCP mechanism. A server being of kind `n8n` changes inventory metadata, not authority semantics. Production connects to n8n's built-in instance MCP server (`/mcp-server/http`) as the runtime-managed `n8n-runtime` provider. Atlas stores its bearer credential only in `CredentialStore` and registers every tool the n8n server advertises; there is no mail-specific or workflow-specific Atlas wrapper layer.
+
+The pre-v3 mail-only n8n MCP registration is not part of the live Atlas inventory. Its legacy n8n workflows were unpublished during cutover, while n8n itself remains an independent automation service that Atlas can operate through the generic MCP boundary.
 
 Each discovered raw tool resolves to a scope shaped like:
 

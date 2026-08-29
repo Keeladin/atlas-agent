@@ -840,6 +840,36 @@ a.card:hover {
   color: var(--gold-bright);
 }
 
+
+.atlas-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: fit-content;
+  min-height: 32px;
+  padding: 0.25rem 0.5rem;
+  margin-left: -0.5rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  transition: color 0.2s ease, background 0.2s ease;
+}
+
+.atlas-back:hover:not(:disabled) {
+  color: var(--gold-bright);
+  background: var(--gold-wash);
+  border: 0;
+  box-shadow: none;
+}
+
+.atlas-back span {
+  color: var(--gold-dim);
+  font-size: 0.9rem;
+}
+
 .row-head {
   display: flex;
   justify-content: space-between;

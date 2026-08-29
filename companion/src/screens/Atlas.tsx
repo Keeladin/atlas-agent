@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, type FormEvent, type ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import type { ActionOccurrence, Capability, Decision, MCPServer, PolicyRule, Provider, SourceRoot } from '../api/types'
 import { ConfirmationCard } from '../ui/ConfirmationCard'
@@ -42,6 +42,7 @@ type HostResources = {
 type HostFilesystem = { path?: string; total?: number; used?: number; free?: number }
 type HostStorage = { filesystems?: HostFilesystem[]; timestamp?: string }
 type HostState = { status?: HostStatus; resources?: HostResources; storage?: HostStorage }
+type AtlasBack = { path: string; parent?: AtlasBack }
 
 function useAtlasControl() {
   const qc = useQueryClient()
@@ -51,8 +52,12 @@ function useAtlasControl() {
   return { system, policy, refresh }
 }
 
-function AtlasPage({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
-  return <Workspace title={title} subtitle={subtitle} crumb={<Link to="/atlas">Atlas</Link>}><div className="stack">{children}</div></Workspace>
+export function AtlasPage({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const back = (location.state as { atlasBack?: AtlasBack } | null)?.atlasBack
+  const goBack = () => back ? navigate(back.path, { state: back.parent ? { atlasBack: back.parent } : null }) : navigate('/atlas')
+  return <Workspace title={title} subtitle={subtitle} crumb={<button type="button" className="atlas-back" onClick={goBack}><span aria-hidden>←</span> Back</button>}><div className="stack">{children}</div></Workspace>
 }
 
 export function Atlas() {
@@ -70,7 +75,7 @@ export function Atlas() {
     { to: '/atlas/capabilities', eyebrow: 'Inspect', title: 'Capabilities', description: 'The complete live toolbox Atlas can currently see.', metric: state ? `${availableCapabilities}/${state.capabilities.length} available` : 'Loading…' },
   ]
   return <Workspace title="Atlas" subtitle="Runtime truth and control. Choose a control surface instead of scrolling through one long settings document.">
-    <div className="atlas-dashboard-grid">{cards.map(card => <Link className="atlas-dashboard-card" to={card.to} key={card.to}><span className="eyebrow">{card.eyebrow}</span><div className="atlas-dashboard-card-head"><h2>{card.title}</h2><span aria-hidden>→</span></div><p>{card.description}</p><strong>{card.metric}</strong></Link>)}</div>
+    <div className="atlas-dashboard-grid">{cards.map(card => <Link className="atlas-dashboard-card" to={card.to} state={{ atlasBack: { path: '/atlas' } }} key={card.to}><span className="eyebrow">{card.eyebrow}</span><div className="atlas-dashboard-card-head"><h2>{card.title}</h2><span aria-hidden>→</span></div><p>{card.description}</p><strong>{card.metric}</strong></Link>)}</div>
   </Workspace>
 }
 
@@ -230,12 +235,14 @@ function Providers({ providers, onDone }: { providers: Provider[]; onDone: () =>
 }
 
 function Mcp({ servers, onDone }: { servers: MCPServer[]; onDone: () => Promise<unknown> }) {
+  const location = useLocation()
+  const parentBack = (location.state as { atlasBack?: AtlasBack } | null)?.atlasBack
   const [serverId, setServerId] = useState(''); const [name, setName] = useState(''); const [kind, setKind] = useState<'mcp' | 'n8n'>('mcp'); const [url, setUrl] = useState(''); const [token, setToken] = useState('')
   const save = useMutation({ mutationFn: (payload: object) => api('/api/mcp', { method: 'POST', body: JSON.stringify(payload) }), onSuccess: onDone })
   const refresh = useMutation({ mutationFn: (id: string) => api(`/api/mcp/${id}/refresh`, { method: 'POST', body: '{}' }), onSuccess: onDone })
   const remove = useMutation({ mutationFn: (id: string) => api(`/api/mcp/${id}`, { method: 'DELETE' }), onSuccess: onDone })
   function submit(event: FormEvent) { event.preventDefault(); save.mutate({ server_id: serverId, display_name: name || serverId, kind, url, token: token || undefined, enabled: true }) }
-  return <Panel title="MCP & n8n connections"><p className="meta">Configure technical provider connections here. Discovered tools and NO / YES / CONFIRM controls live under Policies.</p><div className="stack">{servers.map(item => <div className="list-row" key={item.server_id}><div><strong>{item.display_name}</strong><div className="actions" style={{ marginTop: '0.35rem' }}><span className="chip">{item.kind}</span><span className="chip">{item.enabled ? 'enabled' : 'disabled'}</span></div><div className="meta">{item.url}</div></div>{item.last_error ? <p className="offline-banner">{item.last_error}</p> : null}<div className="actions"><Link className="settings-link" to="/atlas/policies">Tools & policy</Link><button onClick={() => refresh.mutate(item.server_id)}>Refresh discovery</button><button className="danger" onClick={() => remove.mutate(item.server_id)}>Remove</button></div></div>)}</div>
+  return <Panel title="MCP & n8n connections"><p className="meta">Configure technical provider connections here. Discovered tools and NO / YES / CONFIRM controls live under Policies.</p><div className="stack">{servers.map(item => <div className="list-row" key={item.server_id}><div><strong>{item.display_name}</strong><div className="actions" style={{ marginTop: '0.35rem' }}><span className="chip">{item.kind}</span><span className="chip">{item.enabled ? 'enabled' : 'disabled'}</span></div><div className="meta">{item.url}</div></div>{item.last_error ? <p className="offline-banner">{item.last_error}</p> : null}<div className="actions"><Link className="settings-link" to="/atlas/policies" state={{ atlasBack: { path: location.pathname, parent: parentBack ?? { path: '/atlas' } } }}>Tools & policy</Link><button onClick={() => refresh.mutate(item.server_id)}>Refresh discovery</button><button className="danger" onClick={() => remove.mutate(item.server_id)}>Remove</button></div></div>)}</div>
     <form className="grid-3" onSubmit={submit} style={{ marginTop: '1rem' }}><input value={serverId} onChange={e => setServerId(e.target.value)} placeholder="server id" /><input value={name} onChange={e => setName(e.target.value)} placeholder="display name" /><select value={kind} onChange={e => setKind(e.target.value as 'mcp' | 'n8n')}><option value="mcp">MCP</option><option value="n8n">n8n</option></select><input value={url} onChange={e => setUrl(e.target.value)} placeholder="Streamable HTTP URL" /><input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="Bearer token (optional)" /><button className="primary" type="submit">Save server</button></form>
   </Panel>
 }

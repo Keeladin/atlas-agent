@@ -1,8 +1,9 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ComponentProps } from 'react'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
-import { PolicyPanel, RuntimeOverview } from './Atlas'
+import { AtlasPage, PolicyPanel, RuntimeOverview } from './Atlas'
 import { capabilityLensFor, policyLensFor } from './policyLens'
 
 type RuntimeState = NonNullable<ComponentProps<typeof RuntimeOverview>['state']>
@@ -87,5 +88,25 @@ describe('capabilityLensFor', () => {
     const base = { description: '', operation: 'invoke', effect_class: 'external', source: 'n8n', tags: [], available: true, availability_reason: 'available', policy_decision: 'CONFIRM' as const, policy_revision: 1, metadata: {} }
     expect(capabilityLensFor({ ...base, id: 'mail.messages.search', scope_hint: 'mail' }, servers)).toBe('system')
     expect(capabilityLensFor({ ...base, id: 'mcp.mail-n8n.search', scope_hint: 'mcp/mail-n8n/tool/search', metadata: { server_id: 'mail-n8n' } }, servers)).toBe('n8n')
+  })
+})
+
+
+describe('Atlas local navigation', () => {
+  it('walks back through Atlas pages and stops at the dashboard', () => {
+    render(
+      <MemoryRouter initialEntries={[{ pathname: '/atlas/policies', state: { atlasBack: { path: '/atlas/connections', parent: { path: '/atlas' } } } }]}>
+        <Routes>
+          <Route path="/atlas/policies" element={<AtlasPage title="Policies" subtitle="policy"><div>Policy page</div></AtlasPage>} />
+          <Route path="/atlas/connections" element={<AtlasPage title="Connections" subtitle="connections"><div>Connections page</div></AtlasPage>} />
+          <Route path="/atlas" element={<div>Atlas dashboard</div>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /back/i }))
+    expect(screen.getByText('Connections page')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /back/i }))
+    expect(screen.getByText('Atlas dashboard')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /back/i })).not.toBeInTheDocument()
   })
 })

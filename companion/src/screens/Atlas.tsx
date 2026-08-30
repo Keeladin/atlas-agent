@@ -49,7 +49,7 @@ function useAtlasControl() {
   const qc = useQueryClient()
   const system = useQuery({ queryKey: ['system'], queryFn: () => api<SystemState>('/api/system'), refetchInterval: 10000 })
   const policy = useQuery({ queryKey: ['policy'], queryFn: () => api<{ revision: number; rules: PolicyRule[] }>('/api/policy') })
-  const refresh = async () => { await Promise.all([qc.invalidateQueries({ queryKey: ['system'] }), qc.invalidateQueries({ queryKey: ['policy'] }), qc.invalidateQueries({ queryKey: ['pending-actions'] })]) }
+  const refresh = async () => { await Promise.all([qc.invalidateQueries({ queryKey: ['system'] }), qc.invalidateQueries({ queryKey: ['policy'] }), qc.invalidateQueries({ queryKey: ['pending-actions'] }), qc.invalidateQueries({ queryKey: ['knowledge-generations'] })]) }
   return { system, policy, refresh }
 }
 
@@ -80,9 +80,48 @@ export function Atlas() {
   </Workspace>
 }
 
+type Generation = {
+  generation_id: string
+  extractor_config_id: string
+  segmenter_config_id: string
+  mechanisms: string[]
+  state: 'building' | 'verifying' | 'candidate' | 'active' | 'retired' | 'failed'
+  verification: { passages?: number; sources?: number; ok?: boolean } | null
+  created_at: string
+  activated_at: string | null
+}
+
+function KnowledgeGenerations({ onDone }: { onDone: () => Promise<unknown> }) {
+  const generations = useQuery({ queryKey: ['knowledge-generations'], queryFn: () => api<{ generations: Generation[] }>('/api/knowledge/generations') })
+  const [message, setMessage] = useState<string | null>(null)
+  const [pending, setPending] = useState<ActionOccurrence | null>(null)
+  const activate = useMutation({
+    mutationFn: (generationId: string) => api<{ action: ActionOccurrence }>('/api/capabilities/knowledge.activate_generation/invoke', { method: 'POST', body: JSON.stringify({ input: { generation_id: generationId } }) }),
+    onSuccess: async ({ action }) => {
+      setPending(action.status === 'pending_confirmation' ? action : null)
+      setMessage(action.status === 'pending_confirmation' ? 'Confirm to make this the default retrieval corpus.' : `Activation ${action.status}.`)
+      await onDone()
+    },
+    onError: error => setMessage(error instanceof Error ? error.message : String(error)),
+  })
+  const rows = generations.data?.generations ?? []
+  return <Panel title="Knowledge generations">
+    <p className="meta">Indexed knowledge is served from one active generation. Passages and provenance are durable; the physical index is rebuildable.</p>
+    {!rows.length ? <div className="empty-state compact"><strong>No generations yet</strong><span>Indexing an extracted artifact creates the first generation.</span></div> : null}
+    <div className="stack">{rows.map(row => <article className="knowledge-item" key={row.generation_id}>
+      <div className="row-head"><strong className="mono">{row.generation_id.slice(0, 22)}…</strong><span className={`chip ${row.state === 'active' ? 'done' : ''}`}>{row.state}</span></div>
+      <div className="meta mono">{row.extractor_config_id} · {row.segmenter_config_id} · {row.mechanisms.join(', ')}</div>
+      {row.verification ? <div className="meta">{row.verification.passages ?? 0} passages across {row.verification.sources ?? 0} sources · verification {row.verification.ok ? 'passed' : 'failed'}</div> : <div className="meta">Not yet verified.</div>}
+      {row.state === 'candidate' ? <div className="actions"><button type="button" disabled={activate.isPending} onClick={() => activate.mutate(row.generation_id)}>Activate</button></div> : null}
+    </article>)}</div>
+    {message ? <p className="meta">{message}</p> : null}
+    {pending ? <ConfirmationCard item={pending} onDone={async () => { setPending(null); setMessage(null); await onDone() }} /> : null}
+  </Panel>
+}
+
 export function AtlasRuntime() {
   const { system, refresh } = useAtlasControl()
-  return <AtlasPage title="Runtime" subtitle="Live process and host truth. This page observes Atlas; it does not grant authority."><RuntimeOverview state={system.data} /><Pending items={system.data?.pending_confirmations ?? []} onDone={refresh} /></AtlasPage>
+  return <AtlasPage title="Runtime" subtitle="Live process and host truth. This page observes Atlas; it does not grant authority."><RuntimeOverview state={system.data} /><Pending items={system.data?.pending_confirmations ?? []} onDone={refresh} /><KnowledgeGenerations onDone={refresh} /></AtlasPage>
 }
 
 export function AtlasPolicies() {

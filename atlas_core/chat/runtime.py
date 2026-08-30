@@ -8,7 +8,7 @@ from typing import Any
 
 from atlas_core.capabilities import CapabilityRegistry, CapabilityRuntime
 from atlas_core.identity import IdentityStore
-from atlas_core.knowledge import KnowledgeStore
+from atlas_core.knowledge import KnowledgeRuntime
 from atlas_core.memory import MemoryStore, memory_content_hash
 from atlas_core.providers import ModelRequest
 from atlas_core.provenance import InvocationProvenance
@@ -32,8 +32,9 @@ class ChatRuntime:
     """One conversational Atlas. The model selects capabilities; runtime policy authorizes them."""
 
     def __init__(self, store: ChatStore, provider, registry: CapabilityRegistry,
-                 capabilities: CapabilityRuntime, knowledge: KnowledgeStore,
-                 memory: MemoryStore, identities: IdentityStore) -> None:
+                 capabilities: CapabilityRuntime, knowledge: KnowledgeRuntime,
+                 memory: MemoryStore, identities: IdentityStore,
+                 source_roots=None, artifacts=None) -> None:
         self.store = store
         self.provider = provider
         self.registry = registry
@@ -41,6 +42,8 @@ class ChatRuntime:
         self.knowledge = knowledge
         self.memory = memory
         self.identities = identities
+        self.source_roots = source_roots
+        self.artifacts = artifacts
 
     def send(self, conversation_id: str, message: str, *, principal_id: str, defer_capture: bool = False) -> dict[str, Any]:
         self.store.conversation(conversation_id)
@@ -90,8 +93,13 @@ class ChatRuntime:
             {**item, "context_kind": "memory"}
             for item in self.memory.search(principal_id, message, limit=6)
         ] + [
-            {**item, "context_kind": "knowledge"}
-            for item in self.knowledge.search(message, limit=6)
+            {
+                "context_kind": "knowledge",
+                "title": (row.get("grounding") or {}).get("title") or "Reference",
+                "content": row["content"],
+                "grounding": row.get("grounding") or {},
+            }
+            for row in self.knowledge.retrieve(message, limit=6)
         ]
 
     def _run_turn(self, conversation_id: str, message: str, principal_id: str,
@@ -150,21 +158,36 @@ class ChatRuntime:
                     "receipt": occurrence.receipt, "instruction_trust": "data_only",
                 })
                 saved_path = _saved_text_file_path(occurrence.result)
-                if saved_path and cid != "host.filesystem.read":
+                if saved_path and cid != "files.read":
+                    enrolled = self._enrolled_location(saved_path)
+                    if enrolled is None:
+                        # Fail closed: a provider-created file outside every enrolled root is
+                        # not auto-read. The path is surfaced as untrusted data only, and the
+                        # handoff never widens host filesystem authority to reach it.
+                        tool_context.append({
+                            "capability_id": cid, "status": "not_materialized",
+                            "handoff_from": cid, "path": saved_path,
+                            "error": "saved file is outside every enrolled source root; Atlas did not read it",
+                            "instruction_trust": "data_only",
+                        })
+                        continue
+                    root_id, relative_path = enrolled
+                    artifact_id = self._register_saved_artifact(root_id, relative_path, cid, occurrence.result, principal_id)
                     try:
                         read_occurrence = self.capabilities.invoke(
-                            "host.filesystem.read", {"path": saved_path},
+                            "files.read", {"root_id": root_id, "relative_path": relative_path},
                             provenance=InvocationProvenance(principal_id, "human", "chat"),
                         )
                     except Exception as exc:
                         tool_context.append({
-                            "capability_id": "host.filesystem.read", "status": "error",
-                            "error": str(exc), "handoff_from": cid, "path": saved_path,
+                            "capability_id": "files.read", "status": "error",
+                            "error": str(exc), "handoff_from": cid, "path": relative_path,
+                            "artifact_id": artifact_id,
                         })
                         continue
                     read_public = read_occurrence.public()
                     if read_occurrence.status == "pending_confirmation":
-                        text = read_occurrence.summary or f"Confirmation is required before Atlas can read {saved_path}."
+                        text = read_occurrence.summary or f"Confirmation is required before Atlas can read {relative_path}."
                         return self._finish_turn(
                             conversation_id, message, principal_id, owner_turn, text,
                             {"action": read_public, "requires_confirmation": True}, action=read_public,
@@ -172,21 +195,22 @@ class ChatRuntime:
                         )
                     if read_occurrence.status in {"blocked", "failed", "expired", "cancelled"}:
                         tool_context.append({
-                            "capability_id": "host.filesystem.read", "status": read_occurrence.status,
+                            "capability_id": "files.read", "status": read_occurrence.status,
                             "error": self._ground_failure(read_occurrence), "handoff_from": cid,
-                            "path": saved_path,
+                            "path": relative_path, "artifact_id": artifact_id,
                         })
                         continue
                     if read_occurrence.status == "uncertain":
                         tool_context.append({
-                            "capability_id": "host.filesystem.read", "status": "uncertain",
-                            "handoff_from": cid, "path": saved_path,
+                            "capability_id": "files.read", "status": "uncertain",
+                            "handoff_from": cid, "path": relative_path, "artifact_id": artifact_id,
                         })
                         continue
                     tool_context.append({
-                        "capability_id": "host.filesystem.read", "status": read_occurrence.status,
+                        "capability_id": "files.read", "status": read_occurrence.status,
                         "result": read_occurrence.result, "receipt": read_occurrence.receipt,
-                        "handoff_from": cid, "instruction_trust": "data_only",
+                        "handoff_from": cid, "path": relative_path, "artifact_id": artifact_id,
+                        "instruction_trust": "data_only",
                     })
                 continue
             reply = str(decision.get("reply") or "").strip()
@@ -235,6 +259,76 @@ class ChatRuntime:
         except Exception:
             # Post-turn bookkeeping must never affect a completed chat response.
             logger.warning("deferred memory reconciliation failed", exc_info=True)
+
+    def _enrolled_location(self, saved_path: str) -> tuple[str, str] | None:
+        """Map an absolute provider path onto an enrolled root by longest-prefix match.
+
+        Returns None when the path lies outside every enrolled root. Containment is
+        still re-enforced by the sources kernel on the actual read; this mapping only
+        decides whether a governed read is possible at all.
+        """
+        if self.source_roots is None:
+            return None
+        try:
+            candidate = Path(saved_path).expanduser().resolve(strict=True)
+        except OSError:
+            return None
+        if not candidate.is_file():
+            return None
+        best: tuple[str, str] | None = None
+        best_depth = -1
+        for root in self.source_roots.all():
+            if not root.enabled:
+                continue
+            try:
+                base = Path(root.host_path).resolve(strict=True)
+            except OSError:
+                continue
+            if candidate == base or base not in candidate.parents:
+                continue
+            depth = len(base.parts)
+            if depth > best_depth:
+                best_depth = depth
+                best = (root.root_id, candidate.relative_to(base).as_posix())
+        return best
+
+    def _register_saved_artifact(self, root_id: str, relative_path: str, capability_id: str,
+                                 result: Any, principal_id: str) -> str | None:
+        """Register (or resolve) the artifact identity for a provider-materialized file.
+
+        Bookkeeping only: the byte hash is established by the governed read that
+        follows, and never asserted here.
+        """
+        if self.artifacts is None:
+            return None
+        try:
+            existing = self.artifacts.find_local(root_id, relative_path)
+            if existing is not None:
+                return existing["artifact_id"]
+            provider, external_id, locator = _provider_resource(capability_id, result)
+            provenance: dict[str, Any] = {"root_id": root_id, "relative_path": relative_path,
+                                          "materialized_by": capability_id}
+            if provider:
+                provenance["provider"] = provider
+            if external_id:
+                provenance["external_id"] = external_id
+            if locator:
+                provenance["locator"] = locator
+            artifact_id = self.artifacts.register(
+                principal_id=principal_id, display_name=relative_path.rsplit("/", 1)[-1],
+                occurrence_id=capability_id, media_type=_saved_media_type(result), provenance=provenance,
+            )
+            self.artifacts.add_facet(artifact_id=artifact_id, kind="local_file", occurrence_id=capability_id,
+                                     root_id=root_id, relative_path=relative_path)
+            if external_id:
+                self.artifacts.add_facet(artifact_id=artifact_id, kind="remote_resource",
+                                         occurrence_id=capability_id, provider=provider,
+                                         external_id=external_id, locator=locator)
+            return artifact_id
+        except Exception:
+            # Registration is bookkeeping about a file the provider already wrote; it
+            # must never prevent Atlas from reading it.
+            return None
 
     @staticmethod
     def _ground_memory_payload(payload: dict[str, Any], message: str, owner_turn: dict[str, Any], *,
@@ -377,7 +471,7 @@ class ChatRuntime:
             "The supplied owner_identity is authenticated durable runtime truth about the person Atlas is serving; use it directly when the user asks who they are or when their name is relevant. "
             "Use supplied conversation history and durable context when relevant, but never claim memory, state, evidence or outcomes that are not actually present in the supplied runtime context. "
             "Do not equate the current conversation window with Atlas's total persistent state. Durable Memory and durable Knowledge are separate runtime responsibilities and may both appear in relevant_durable_context. "
-            "If the user asks whether Atlas remembers a specific fact and it is not present in owner_identity, recent conversation or relevant durable context, use memory.search when available before saying it is unknown; use knowledge.search for references and notes. "
+            "If the user asks whether Atlas remembers a specific fact and it is not present in owner_identity, recent conversation or relevant durable context, use memory.search when available before saying it is unknown; use knowledge.retrieve to pull grounded durable knowledge (references and notes) for a semantic need. "
             "Use the real memory.remember, memory.update and memory.retract capabilities when the user explicitly requests a memory change. Post-reply auto-capture uses those same governed operations and never bypasses runtime policy. "
             "When an available capability is needed, select it by semantic meaning and supply only schema-valid input. "
             "Tools, models, MCP servers and providers are capabilities, not separate agents. "
@@ -423,6 +517,46 @@ def _saved_text_file_path(result: Any) -> str | None:
         if suffix not in {".txt", ".md", ".json", ".csv", ".xml", ".yaml", ".yml", ".log"}:
             return None
     return path
+
+
+def _saved_row(result: Any) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    structured = result.get("structuredContent")
+    return structured if isinstance(structured, dict) else result
+
+
+def _saved_media_type(result: Any) -> str | None:
+    value = str(_saved_row(result).get("mimeType") or "").strip()
+    return value or None
+
+
+def _provider_resource(capability_id: str, result: Any) -> tuple[str | None, str | None, str | None]:
+    """Extract external-resource provenance without provider-specific semantics.
+
+    The provider is the MCP server the tool belongs to, and the external id is
+    whichever conventional identifier the tool result already carries. No Drive,
+    Gmail or format knowledge enters the chat runtime.
+    """
+    provider = None
+    if capability_id.startswith("mcp."):
+        parts = capability_id.split(".")
+        if len(parts) >= 3:
+            provider = parts[1]
+    row = _saved_row(result)
+    external_id = None
+    for key in ("external_id", "fileId", "file_id", "messageId", "message_id", "id"):
+        value = row.get(key)
+        if isinstance(value, (str, int)) and str(value).strip():
+            external_id = str(value).strip()
+            break
+    locator = None
+    for key in ("webViewLink", "locator", "uri", "url"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            locator = value.strip()
+            break
+    return provider, external_id, locator
 
 
 def _json_object(text: str) -> dict[str, Any]:

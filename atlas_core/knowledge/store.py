@@ -7,9 +7,6 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from atlas_core.actions import ActionResult
-from atlas_core.capabilities import CapabilityDefinition, CapabilityRegistration, CapabilityRegistry, ScopeResolution
-
 
 class KnowledgeStore:
     """Durable references and notes. Persistent owner memory has its own runtime."""
@@ -78,16 +75,3 @@ class KnowledgeStore:
     def delete(self, item_id: str) -> None:
         with self._db() as db: db.execute("DELETE FROM knowledge_items WHERE item_id=?", (item_id,))
 
-
-class KnowledgeRuntime:
-    def __init__(self, store: KnowledgeStore, registry: CapabilityRegistry) -> None:
-        self.store = store; self.registry = registry; self._register()
-
-    def _register(self) -> None:
-        schema = {"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": False}
-        self.registry.register(CapabilityRegistration(
-            CapabilityDefinition("knowledge.search", "Search durable Atlas references and notes.", "search", "none", schema, source="knowledge", tags=("knowledge",)),
-            lambda p: ScopeResolution("atlas/knowledge", dict(p), "Search durable knowledge"),
-            lambda p: ActionResult(True, list(self.store.search(p["query"], limit=int(p.get("limit") or 10))), {"ok": True, "operation": "search"}),
-            metadata={"scope_hint": "atlas/knowledge"},
-        ), replace=True)

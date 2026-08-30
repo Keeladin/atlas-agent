@@ -9,6 +9,7 @@ from typing import Any
 from atlas_core.actions import ActionResult
 from atlas_core.capabilities import CapabilityDefinition,CapabilityRegistration,CapabilityRegistry,ScopeResolution
 from .errors import LocalSourceError
+from .extractors import DERIVED_RELATIVE_PATH,EXTRACTORS,extractor_for
 from .local import LocalRootConfig,LocalRootRegistry,LocalSourceKernel,validate_component,validate_relative_path
 
 _RENAME_NOREPLACE=1
@@ -54,8 +55,8 @@ class SourceRootStore:
 
 class SourceRuntime:
     """Hardened local-files capability provider. Runtime policy, not root config, owns authority."""
-    def __init__(self,store:SourceRootStore,capabilities:CapabilityRegistry)->None:
-        self.store=store;self.capabilities=capabilities;self.registry:LocalRootRegistry|None=None;self.kernel:LocalSourceKernel|None=None;self.reload()
+    def __init__(self,store:SourceRootStore,capabilities:CapabilityRegistry,artifacts=None)->None:
+        self.store=store;self.capabilities=capabilities;self.artifacts=artifacts;self.registry:LocalRootRegistry|None=None;self.kernel:LocalSourceKernel|None=None;self.reload()
     def reload(self)->None:
         if self.registry is not None:self.registry.close()
         self.capabilities.unregister_prefix("files.");registry=LocalRootRegistry()
@@ -63,7 +64,10 @@ class SourceRuntime:
             if not row.enabled:continue
             # read_allowed/mutation_allowed are technical enrollment only here: every enrolled root
             # exposes both classes of kernel operation. Owner discretion is exclusively policy.
-            registry.register(LocalRootConfig(root_id=row.root_id,provider_namespace=row.provider_namespace,host_path=row.host_path,display_name=row.display_name,read_allowed=True,mutation_allowed=True,allow_cross_mounts=False,configuration_revision=f"runtime-{hashlib.sha256((row.host_path+row.updated_at).encode()).hexdigest()}",quarantine_relative_path=row.quarantine_relative_path))
+            derived=os.path.join(row.host_path,DERIVED_RELATIVE_PATH)
+            os.makedirs(derived,mode=0o700,exist_ok=True)
+            if os.path.islink(derived):raise ValueError("managed derived area must not be a symlink")
+            registry.register(LocalRootConfig(root_id=row.root_id,provider_namespace=row.provider_namespace,host_path=row.host_path,display_name=row.display_name,read_allowed=True,mutation_allowed=True,allow_cross_mounts=False,configuration_revision=f"runtime-{hashlib.sha256((row.host_path+row.updated_at).encode()).hexdigest()}",quarantine_relative_path=row.quarantine_relative_path,derived_relative_path=DERIVED_RELATIVE_PATH))
         self.registry=registry;self.kernel=LocalSourceKernel(registry);self._register_capabilities()
     def public_state(self)->tuple[dict[str,Any],...]:return tuple(r.public() for r in self.store.all())
     def _root(self,payload:dict[str,Any]):
@@ -87,6 +91,8 @@ class SourceRuntime:
         for op in ("list","stat","hash","read"):
             schema=schemas["list"] if op=="list" else schemas["read"]
             self.capabilities.register(CapabilityRegistration(CapabilityDefinition(f"files.{op}",f"{op.title()} content from an enrolled local source.",op,"none",schema,source="files",tags=("files","local")),lambda p,_op=op:self._scope(p,f"{_op.title()} local source"),lambda p,_op=op:self._read_execute(_op,p),metadata={"scope_hint":"files"}),replace=True)
+        extract_schema={"type":"object","required":["root_id","relative_path"],"properties":{"root_id":{"type":"string"},"relative_path":{"type":"string"},"extractor":{"type":"string","enum":list(EXTRACTORS)}},"additionalProperties":False}
+        self.capabilities.register(CapabilityRegistration(CapabilityDefinition("files.extract_text","Extract deterministic text from an enrolled source file into the managed derived area.","extract_text","internal",extract_schema,source="files",tags=("files","local","extraction")),lambda p:self._scope(p,"Extract text from local source"),lambda p:self._extract_text(p),metadata={"scope_hint":"files","requires_owner_context":True}),replace=True)
         self.capabilities.register(CapabilityRegistration(CapabilityDefinition("files.copy","Copy a regular file without overwriting an existing destination.","copy","reversible",schemas["copy"],source="files",tags=("files","local")),lambda p:self._mutation_scope(p,"copy"),lambda p:self._copy(p),metadata={"scope_hint":"files"}),replace=True)
         self.capabilities.register(CapabilityRegistration(CapabilityDefinition("files.move","Move a regular file within one enrolled root without overwrite.","move","reversible",schemas["move"],source="files",tags=("files","local")),lambda p:self._mutation_scope(p,"move"),lambda p:self._move(p),metadata={"scope_hint":"files"}),replace=True)
         self.capabilities.register(CapabilityRegistration(CapabilityDefinition("files.rename","Rename a regular file within one enrolled root without overwrite.","rename","reversible",schemas["move"],source="files",tags=("files","local")),lambda p:self._mutation_scope(p,"rename"),lambda p:self._move(p,rename_only=True),metadata={"scope_hint":"files"}),replace=True)
@@ -101,9 +107,58 @@ class SourceRuntime:
             elif op=="stat":out=k.stat(row.provider_namespace,row.root_id,rel,**kw).to_dict()
             elif op=="hash":out=k.hash(row.provider_namespace,row.root_id,rel,**kw).to_dict()
             else:out=k.read(row.provider_namespace,row.root_id,rel,**kw).to_dict()
+            if op in {"stat","hash","read"}:self._verify_facet(row,rel,out.get("observation") if isinstance(out,dict) else {})
             return ActionResult(True,out,{"ok":True,"provider":"local_files","operation":op,"root_id":row.root_id,"relative_path":rel})
         except LocalSourceError as exc:return ActionResult(False,receipt={"ok":False,"provider":"local_files"},error_code=exc.code,error=exc.message)
         except Exception as exc:return ActionResult(False,receipt={"ok":False,"provider":"local_files"},error_code="files_error",error=str(exc))
+    def _ensure_artifact(self,row:SourceRoot,relative:str,*,occurrence_hint:str,byte_sha256:str|None,byte_size:int|None,principal_id:str,media_type:str|None=None,provenance:dict[str,Any]|None=None)->str:
+        """Register (or reuse) the artifact identity for one governed local path."""
+        facet=self.artifacts.find_local(row.root_id,relative)
+        if facet is not None:return facet["artifact_id"]
+        artifact_id=self.artifacts.register(principal_id=principal_id,display_name=relative.rsplit("/",1)[-1],occurrence_id=occurrence_hint,media_type=media_type,provenance=provenance or {"root_id":row.root_id,"relative_path":relative})
+        self.artifacts.add_facet(artifact_id=artifact_id,kind="local_file",occurrence_id=occurrence_hint,root_id=row.root_id,relative_path=relative,byte_sha256=byte_sha256,byte_size=byte_size)
+        return artifact_id
+
+    def _verify_facet(self,row:SourceRoot,relative:str,observation:dict[str,Any])->None:
+        """Passive verification: every governed observation refreshes or stales a known facet."""
+        if self.artifacts is None:return
+        try:
+            facet=self.artifacts.find_local(row.root_id,relative)
+            if facet is None:return
+            observed_hash=observation.get("byte_sha256");observed_at=str(observation.get("observed_at") or "")
+            if observed_hash is None:
+                if observation.get("object_type")=="missing":self.artifacts.set_facet_state(facet["facet_id"],"missing")
+                return
+            if facet.get("byte_sha256") and facet["byte_sha256"]!=observed_hash:
+                self.artifacts.set_facet_state(facet["facet_id"],"stale");return
+            self.artifacts.facet_verified(facet["facet_id"],observed_at=observed_at,byte_sha256=observed_hash,byte_size=observation.get("byte_size"))
+        except Exception:
+            # Verification is bookkeeping about a read that already succeeded; it must never fail the read.
+            pass
+
+    def _extract_text(self,payload:dict[str,Any])->ActionResult:
+        principal_id=str(payload.pop("__owner_principal_id","") or "");payload.pop("__invocation_surface",None)
+        try:
+            if self.artifacts is None:raise ValueError("artifact registry unavailable")
+            if not principal_id:raise ValueError("owner principal unavailable")
+            row,rel=self._root(payload)
+            if rel==".":raise ValueError("relative_path must name a file")
+            extractor=str(payload.get("extractor") or extractor_for(rel))
+            result=self.kernel.extract_text(row.provider_namespace,row.root_id,rel,extractor=extractor,configuration_revision=self._revision(row))
+            observation=result["observation"]
+            source_artifact_id=self._ensure_artifact(row,rel,occurrence_hint="files.extract_text",byte_sha256=observation.get("byte_sha256"),byte_size=observation.get("byte_size"),principal_id=principal_id,media_type=observation.get("media_type"))
+            self._verify_facet(row,rel,observation)
+            derived_rel=result["derived_relative_path"]
+            extraction_artifact_id=self.artifacts.register(
+                principal_id=principal_id,display_name=f"{rel.rsplit('/',1)[-1]} · text",occurrence_id="files.extract_text",media_type="text/plain",
+                provenance={"parents":[source_artifact_id],"relation":"extracted_from","extractor_config_id":f"extractor:{extractor}","source_byte_sha256":result.get("source_byte_sha256")},
+            )
+            self.artifacts.add_facet(artifact_id=extraction_artifact_id,kind="local_file",occurrence_id="files.extract_text",root_id=row.root_id,relative_path=derived_rel,byte_sha256=result["text_sha256"],byte_size=result["byte_length"])
+            out={"artifact_id":source_artifact_id,"extraction_artifact_id":extraction_artifact_id,"root_id":row.root_id,"derived_relative_path":derived_rel,"text_sha256":result["text_sha256"],"byte_length":result["byte_length"],"extractor_config_id":f"extractor:{extractor}"}
+            return ActionResult(True,out,{"ok":True,"operation":"extract_text","root_id":row.root_id,"relative_path":rel,"extractor":extractor,"extraction_artifact_id":extraction_artifact_id})
+        except LocalSourceError as exc:return ActionResult(False,receipt={"ok":False,"operation":"extract_text"},error_code=exc.code,error=exc.message)
+        except Exception as exc:return ActionResult(False,receipt={"ok":False,"operation":"extract_text"},error_code="files_extract_text_failed",error=str(exc))
+
     def _mutation_scope(self,payload:dict[str,Any],op:str)->ScopeResolution:
         row,src=self._root(payload);dst=validate_relative_path(str(payload.get("destination_path") or ""));clean={"root_id":row.root_id,"relative_path":src,"destination_path":dst};return ScopeResolution(f"files/{row.provider_namespace}/{row.root_id}/{src}",clean,f"{op.title()} {src} to {dst}")
     def _restore_scope(self,payload:dict[str,Any])->ScopeResolution:

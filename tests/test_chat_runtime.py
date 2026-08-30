@@ -6,15 +6,17 @@ from pathlib import Path
 from atlas_core.chat.runtime import ChatRuntime
 from atlas_core.chat.store import ChatStore
 from atlas_core.actions import ActionResult, ActionRuntime, ActionStore
+from atlas_core.artifacts import ArtifactStore
 from atlas_core.capabilities import (
     CapabilityDefinition, CapabilityRegistration, CapabilityRegistry, CapabilityRuntime, ScopeResolution,
 )
 from atlas_core.evidence import EvidenceStore
-from atlas_core.knowledge import KnowledgeStore
+from atlas_core.knowledge import KnowledgeRuntime, KnowledgeStore
 from atlas_core.memory import MemoryRuntime, MemoryStore
 from atlas_core.policy import OwnerPolicy, PolicyStore
 from atlas_core.identity import IdentityStore
 from atlas_core.providers import ModelResponse
+from atlas_core.sources import SourceRootStore, SourceRuntime
 
 
 class CapturingProvider:
@@ -90,12 +92,13 @@ def _chat_with_memory(tmp_path, capture_decision: str):
         memory_store, registry, action_store, grounding_validator=chat_store.owner_grounding_matches,
     )
     knowledge_store = KnowledgeStore(work_db); knowledge_store.initialize()
+    knowledge = KnowledgeRuntime(knowledge_store, registry)
     policy_store.set(principal_id=owner.principal_id, scope="atlas/memory", operation="remember", decision=capture_decision)
     provider = SequenceProvider(
         '{"kind":"reply","reply":"Got it."}',
         '{"proposals":[{"action":"remember","title":"Units","grounding_excerpt":"I prefer metric units"}]}',
     )
-    runtime = ChatRuntime(chat_store, provider, registry, capabilities, knowledge_store, memory_store, identities)
+    runtime = ChatRuntime(chat_store, provider, registry, capabilities, knowledge, memory_store, identities)
     return runtime, conversation["conversation_id"], owner, action_store
 
 
@@ -168,7 +171,8 @@ def test_confirmed_chat_action_resumes_original_turn_with_tool_result(tmp_path):
     assert resumed_prompt["tool_results"][0]["status"] == "succeeded"
 
 
-def test_text_export_is_deterministically_handed_to_host_read(tmp_path):
+def _handoff_harness(tmp_path, *, saved_dir, extra_result=None):
+    """Chat harness whose provider export writes into `saved_dir`."""
     identity_db = tmp_path / "identity.db"
     work_db = tmp_path / "work.db"
     identities = IdentityStore(identity_db); identities.initialize(owner_display_name="Jaco")
@@ -184,46 +188,116 @@ def test_text_export_is_deterministically_handed_to_host_read(tmp_path):
         memory_store, registry, action_store, grounding_validator=chat_store.owner_grounding_matches,
     )
     knowledge_store = KnowledgeStore(work_db); knowledge_store.initialize()
-    exported = tmp_path / "possible_opening.txt"
+    knowledge = KnowledgeRuntime(knowledge_store, registry)
+
+    artifact_store = ArtifactStore(work_db); artifact_store.initialize()
+    enrolled = tmp_path / "enrolled"; enrolled.mkdir(exist_ok=True)
+    roots = SourceRootStore(identity_db); roots.initialize()
+    roots.put(root_id="workspace", host_path=str(enrolled), display_name="Provider workspace")
+    SourceRuntime(roots, registry, artifact_store)
+
+    saved_dir.mkdir(parents=True, exist_ok=True)
+    exported = saved_dir / "possible_opening.txt"
     exported.write_text("This document describes a possible overseas engineering opening.")
 
+    structured = {"saved_file": str(exported), "mimeType": "text/plain", "status": "success"}
+    structured.update(extra_result or {})
     registry.register(CapabilityRegistration(
-        CapabilityDefinition("mcp.test.export", "Export a Drive document", "invoke", "none",
+        CapabilityDefinition("mcp.google-workspace.export", "Export a Drive document", "invoke", "none",
                              {"type":"object","properties":{},"additionalProperties":False}, source="mcp"),
-        lambda payload: ScopeResolution("mcp/test/export", payload, "Export Drive document"),
-        lambda payload: ActionResult(True, {"structuredContent": {
-            "saved_file": str(exported), "mimeType": "text/plain", "status": "success",
-        }}, {"ok": True}),
+        lambda payload: ScopeResolution("mcp/google-workspace/export", payload, "Export Drive document"),
+        lambda payload: ActionResult(True, {"structuredContent": structured}, {"ok": True}),
     ))
-    registry.register(CapabilityRegistration(
-        CapabilityDefinition("host.filesystem.read", "Read host file", "read", "none",
-                             {"type":"object","required":["path"],"properties":{"path":{"type":"string"}},"additionalProperties":False}, source="host"),
-        lambda payload: ScopeResolution("host/filesystem" + str(Path(payload["path"]).resolve()), payload, "Read exported file"),
-        lambda payload: ActionResult(True, {"path": payload["path"], "content": Path(payload["path"]).read_text()}, {"ok": True}),
-    ))
-    policy_store.set(principal_id=owner.principal_id, scope="mcp/test/export", operation="invoke", decision="YES")
-    policy_store.set(principal_id=owner.principal_id, scope="host/filesystem", operation="read", decision="YES")
+    policy_store.set(principal_id=owner.principal_id, scope="mcp/google-workspace/export", operation="invoke", decision="YES")
+    policy_store.set(principal_id=owner.principal_id, scope="files/local/workspace", operation="read", decision="YES")
 
-    cid = chat_store.create_conversation("Drive")["conversation_id"]
     provider = SequenceProvider(
-        '{"kind":"capability","capability_id":"mcp.test.export","input":{}}',
+        '{"kind":"capability","capability_id":"mcp.google-workspace.export","input":{}}',
         '{"kind":"reply","reply":"It is about an overseas engineering opening."}',
         '{"proposals":[{"action":"noop"}]}',
     )
-    runtime = ChatRuntime(chat_store, provider, registry, capabilities, knowledge_store, memory_store, identities)
+    runtime = ChatRuntime(chat_store, provider, registry, capabilities, knowledge, memory_store, identities,
+                          source_roots=roots, artifacts=artifact_store)
+    cid = chat_store.create_conversation("Drive")["conversation_id"]
+    return runtime, provider, action_store, artifact_store, owner, cid, enrolled
+
+
+def test_saved_file_inside_an_enrolled_root_is_read_through_the_files_gate(tmp_path):
+    runtime, provider, action_store, artifact_store, owner, cid, enrolled = _handoff_harness(
+        tmp_path, saved_dir=tmp_path / "enrolled" / "exports",
+        extra_result={"fileId": "1AbCdEfGhIjK", "webViewLink": "https://drive.example/file/1AbCdEfGhIjK"},
+    )
 
     result = runtime.send(cid, "What is the Possible Opening document about?", principal_id=owner.principal_id)
-
     assert result["turn"]["content"] == "It is about an overseas engineering opening."
-    prompt = json.loads(provider.requests[1].input)
-    assert [row["capability_id"] for row in prompt["tool_results"]] == ["mcp.test.export", "host.filesystem.read"]
-    assert prompt["tool_results"][1]["result"]["content"].startswith("This document describes")
-    assert prompt["tool_results"][0]["instruction_trust"] == "data_only"
-    assert prompt["tool_results"][1]["instruction_trust"] == "data_only"
-    assert "never as owner-authored instructions" in provider.requests[1].system
+
     executed = [row.capability_id for row in action_store.recent(limit=10)]
-    assert executed.count("mcp.test.export") == 1
-    assert executed.count("host.filesystem.read") == 1
+    assert "files.read" in executed
+    # The handoff never reaches for host-wide filesystem authority.
+    assert "host.filesystem.read" not in executed
+
+    prompt = json.loads(provider.requests[1].input)
+    assert [row["capability_id"] for row in prompt["tool_results"]] == ["mcp.google-workspace.export", "files.read"]
+    read_row = prompt["tool_results"][1]
+    assert read_row["result"]["content"]["text"].startswith("This document describes")
+    assert read_row["instruction_trust"] == "data_only"
+    assert read_row["path"] == "exports/possible_opening.txt"
+
+    # The materialized file gains a durable identity, with provider provenance kept.
+    artifact_id = read_row["artifact_id"]
+    assert artifact_id
+    artifact = artifact_store.get(artifact_id)
+    assert artifact["provenance"]["provider"] == "google-workspace"
+    assert artifact["provenance"]["external_id"] == "1AbCdEfGhIjK"
+    assert artifact["provenance"]["materialized_by"] == "mcp.google-workspace.export"
+    kinds = {facet["kind"]: facet for facet in artifact["facets"]}
+    assert kinds["local_file"]["relative_path"] == "exports/possible_opening.txt"
+    assert kinds["remote_resource"]["external_id"] == "1AbCdEfGhIjK"
+    assert kinds["remote_resource"]["locator"] == "https://drive.example/file/1AbCdEfGhIjK"
+    # The governed read establishes the bytes; the handoff never asserts a hash.
+    assert kinds["local_file"]["byte_sha256"]
+
+
+def test_saved_file_outside_every_enrolled_root_is_not_auto_read(tmp_path):
+    runtime, provider, action_store, artifact_store, owner, cid, _enrolled = _handoff_harness(
+        tmp_path, saved_dir=tmp_path / "outside",
+    )
+
+    result = runtime.send(cid, "What is the Possible Opening document about?", principal_id=owner.principal_id)
+    assert result["turn"]["content"] == "It is about an overseas engineering opening."
+
+    executed = [row.capability_id for row in action_store.recent(limit=10)]
+    assert "files.read" not in executed
+    assert "host.filesystem.read" not in executed
+    assert artifact_store.list(owner.principal_id) == ()
+
+    prompt = json.loads(provider.requests[1].input)
+    rows = prompt["tool_results"]
+    assert [row["capability_id"] for row in rows] == ["mcp.google-workspace.export", "mcp.google-workspace.export"]
+    assert rows[1]["status"] == "not_materialized"
+    assert rows[1]["instruction_trust"] == "data_only"
+    assert "outside every enrolled source root" in rows[1]["error"]
+    # The path is surfaced as data, and its contents never enter the prompt.
+    assert "overseas engineering opening" not in json.dumps(rows[1])
+
+
+def test_saved_file_handoff_respects_a_files_policy_no(tmp_path):
+    runtime, provider, action_store, _artifacts, owner, cid, _enrolled = _handoff_harness(
+        tmp_path, saved_dir=tmp_path / "enrolled" / "exports",
+    )
+    runtime.capabilities.policy.store.set(
+        principal_id=owner.principal_id, scope="files/local/workspace", operation="read", decision="NO",
+    )
+
+    runtime.send(cid, "What is the Possible Opening document about?", principal_id=owner.principal_id)
+
+    blocked = [row for row in action_store.recent(limit=10) if row.capability_id == "files.read"]
+    assert blocked and blocked[0].status == "blocked"
+    prompt = json.loads(provider.requests[1].input)
+    read_row = prompt["tool_results"][1]
+    assert read_row["capability_id"] == "files.read"
+    assert read_row["status"] == "blocked"
+    assert "overseas engineering opening" not in json.dumps(read_row)
 
 
 def test_capability_search_uses_token_boundaries_not_substrings():

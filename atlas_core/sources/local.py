@@ -13,6 +13,7 @@ import secrets
 import stat as stat_module
 import time
 import unicodedata
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,6 +67,7 @@ class LocalRootConfig:
     allow_cross_mounts: bool = False
     configuration_revision: str = "1"
     quarantine_relative_path: str | None = None
+    derived_relative_path: str | None = None
 
 
 @dataclass
@@ -118,6 +120,7 @@ class _RegisteredRoot:
     device: int
     inode: int
     quarantine_fd: int | None = None
+    derived_fd: int | None = None
 
 
 class _OpenHow(ctypes.Structure):
@@ -191,6 +194,33 @@ class LocalRootRegistry:
             except BaseException:
                 os.close(fd)
                 raise
+        derived_fd: int | None = None
+        derived_path = config.derived_relative_path
+        if derived_path is not None:
+            if not config.mutation_allowed:
+                os.close(fd)
+                if quarantine_fd is not None:
+                    os.close(quarantine_fd)
+                raise LocalSourceError(
+                    "operation_not_allowed",
+                    "Managed derived area requires mutation access for the root.",
+                    root_id=config.root_id,
+                )
+            try:
+                derived_path = validate_relative_path(derived_path)
+                if derived_path == ".":
+                    raise LocalSourceError(
+                        "invalid_path", "Managed derived area must be below the configured root.",
+                        root_id=config.root_id,
+                    )
+                derived_fd = _open_retained_directory(
+                    fd, derived_path, opened.st_dev, config.root_id
+                )
+            except BaseException:
+                os.close(fd)
+                if quarantine_fd is not None:
+                    os.close(quarantine_fd)
+                raise
         normalized = LocalRootConfig(
             root_id=config.root_id,
             provider_namespace=config.provider_namespace,
@@ -201,9 +231,10 @@ class LocalRootRegistry:
             allow_cross_mounts=False,
             configuration_revision=config.configuration_revision,
             quarantine_relative_path=quarantine_path,
+            derived_relative_path=derived_path,
         )
         registered = _RegisteredRoot(
-            normalized, canonical, fd, opened.st_dev, opened.st_ino, quarantine_fd
+            normalized, canonical, fd, opened.st_dev, opened.st_ino, quarantine_fd, derived_fd
         )
         key = (config.provider_namespace, config.root_id)
         with self._lock:
@@ -231,6 +262,8 @@ class LocalRootRegistry:
                 os.close(fd)
                 if quarantine_fd is not None:
                     os.close(quarantine_fd)
+                if derived_fd is not None:
+                    os.close(derived_fd)
                 if same:
                     return
                 raise LocalSourceError("root_revision_unavailable", "Root identity is already registered for a different target or policy.", root_id=config.root_id)
@@ -274,6 +307,8 @@ class LocalRootRegistry:
         for root in roots.values():
             if root.quarantine_fd is not None:
                 os.close(root.quarantine_fd)
+            if root.derived_fd is not None:
+                os.close(root.derived_fd)
             os.close(root.fd)
 
     def __enter__(self) -> LocalRootRegistry:
@@ -466,6 +501,55 @@ class LocalSourceKernel:
             raise LocalSourceError("unsupported_encoding", "Source is not valid UTF-8 text.", root_id=root_id, relative_path=ref.relative_path) from exc
         result = SourceReadResult(observation, text, "utf-8", bom)
         return result
+
+    def extract_text(
+        self, provider_namespace: str, root_id: str, relative_path: str, *,
+        extractor: str, configuration_revision: str | None = None,
+        cancellation: CancellationToken | None = None,
+    ) -> dict[str, Any]:
+        """Materialize a deterministic text extraction inside the managed derived area.
+
+        The read rides the ordinary bounded read path, so containment, drift
+        detection and size limits are the same ones every source read gets. The
+        derived file is written no-overwrite through a retained directory
+        descriptor and never escapes the enrolled root.
+        """
+
+        from .extractors import extract as _extract
+
+        source = self.read(
+            provider_namespace, root_id, relative_path,
+            configuration_revision=configuration_revision, cancellation=cancellation,
+        )
+        root = self.registry.get(provider_namespace, root_id, configuration_revision=configuration_revision)
+        if root.derived_fd is None:
+            raise LocalSourceError("operation_not_allowed", "Managed derived area is unavailable.", root_id=root_id, relative_path=relative_path)
+        text = _extract(source.text, extractor)
+        payload = text.encode("utf-8")
+        if len(payload) > MAX_READ_BYTES:
+            raise LocalSourceError("too_large", "Extracted text exceeds the readable byte limit.", root_id=root_id, relative_path=relative_path)
+        name = f"extract-{uuid.uuid4().hex}.txt"
+        try:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600, dir_fd=root.derived_fd)
+        except OSError as exc:
+            raise _os_error(exc, root_id, name)
+        try:
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.fsync(root.derived_fd)
+        derived_relative = f"{root.config.derived_relative_path}/{name}"
+        return {
+            "observation": source.observation.to_dict(),
+            "extractor": extractor,
+            "derived_relative_path": derived_relative,
+            "text_sha256": hashlib.sha256(payload).hexdigest(),
+            "byte_length": len(payload),
+            "source_byte_sha256": source.observation.byte_sha256,
+        }
 
     def list(
         self, provider_namespace: str, root_id: str, relative_path: str, *,

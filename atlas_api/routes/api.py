@@ -350,8 +350,54 @@ async def knowledge_list(request: Request) -> JSONResponse:
 async def knowledge_delete(request: Request) -> JSONResponse:
     gate=require_mutation_auth(request)
     if isinstance(gate,JSONResponse):return gate
-    try:_runtime(request).knowledge_store.delete(request.path_params["item_id"]);return JSONResponse({"ok":True})
+    try:
+        rt=_runtime(request);owner=_owner(request,gate)
+        from atlas_core.provenance import InvocationProvenance
+        occurrence=rt.capabilities.invoke("knowledge.delete",{"item_id":request.path_params["item_id"]},provenance=InvocationProvenance(owner.principal_id,"human","control"))
+        status=200 if occurrence.status=="succeeded" else 202 if occurrence.status in {"pending_confirmation","uncertain"} else 409
+        return JSONResponse({"action":occurrence.public()},status_code=status)
     except Exception as exc:return _error(exc)
+
+
+async def knowledge_promote(request: Request) -> JSONResponse:
+    gate=require_mutation_auth(request)
+    if isinstance(gate,JSONResponse):return gate
+    try:
+        body=await _body(request);rt=_runtime(request);owner=_owner(request,gate)
+        from atlas_core.provenance import InvocationProvenance
+        payload={k:v for k,v in {
+            "content":body.get("content"),"title":body.get("title"),"source_ref":body.get("source_ref"),
+            "kind":body.get("kind"),"metadata":body.get("metadata") if isinstance(body.get("metadata"),dict) else None,
+        }.items() if v is not None}
+        occurrence=rt.capabilities.invoke("knowledge.promote",payload,provenance=InvocationProvenance(owner.principal_id,"human","control"))
+        status=201 if occurrence.status=="succeeded" else 202 if occurrence.status in {"pending_confirmation","uncertain"} else 409
+        return JSONResponse({"action":occurrence.public(),"item":occurrence.result if occurrence.status=="succeeded" else None},status_code=status)
+    except Exception as exc:return _error(exc)
+
+
+async def artifacts_list(request: Request) -> JSONResponse:
+    gate=require_session(request)
+    if isinstance(gate,JSONResponse):return gate
+    rt=_runtime(request);owner=_owner(request,gate)
+    rows=rt.artifact_store.list(owner.principal_id,name_like=request.query_params.get("q"),byte_sha256=request.query_params.get("hash"),state=request.query_params.get("state"),limit=200)
+    return JSONResponse({"artifacts":list(rows)})
+
+
+async def artifact_detail(request: Request) -> JSONResponse:
+    gate=require_session(request)
+    if isinstance(gate,JSONResponse):return gate
+    try:
+        rt=_runtime(request);owner=_owner(request,gate);item=rt.artifact_store.get(request.path_params["artifact_id"])
+        if item["principal_id"]!=owner.principal_id:return _error(KeyError("artifact not found"),404)
+        return JSONResponse({"artifact":item,"passages":[{k:v for k,v in row.items() if k!="content"} for row in rt.passages.for_source(item["artifact_id"])]})
+    except KeyError:return _error(KeyError("artifact not found"),404)
+
+
+async def knowledge_generations(request: Request) -> JSONResponse:
+    gate=require_session(request)
+    if isinstance(gate,JSONResponse):return gate
+    rt=_runtime(request)
+    return JSONResponse({"generations":list(rt.generations.list())})
 
 
 async def memory_list(request: Request) -> JSONResponse:

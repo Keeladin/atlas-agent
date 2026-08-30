@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import os
 import secrets
 from dataclasses import dataclass
@@ -184,7 +185,9 @@ def auth_from_env(*, env_file: Path | None = DEFAULT_AUTH_ENV_PATH) -> AuthServi
         or ""
     ).strip()
     if not secret:
-        secret = secrets.token_urlsafe(48)
+        raise RuntimeError(
+            "ATLAS_SESSION_SECRET (or ATLAS_API_SESSION_SECRET) must be set so sessions survive restart."
+        )
     if not password:
         raise RuntimeError(
             "ATLAS_COMPANION_PASSWORD (or ATLAS_API_PASSWORD) must be set for Companion API."
@@ -224,12 +227,18 @@ def require_mutation_auth(request: Request) -> SessionData | JSONResponse:
 
 
 def client_key(request: Request) -> str:
+    direct = request.client.host if request.client and request.client.host else ""
     forwarded = request.headers.get("x-forwarded-for") or ""
-    if forwarded.strip():
+    if forwarded.strip() and _loopback_address(direct):
         return forwarded.split(",")[0].strip()
-    if request.client and request.client.host:
-        return request.client.host
-    return "unknown"
+    return direct or "unknown"
+
+
+def _loopback_address(value: str) -> bool:
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
 
 
 def json_body(data: Any) -> JSONResponse:

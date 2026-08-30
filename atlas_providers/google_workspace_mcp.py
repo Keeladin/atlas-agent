@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
+import quopri
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +22,7 @@ import mcp.server.stdio
 
 
 DISCOVERY_DIRECTORY = "https://www.googleapis.com/discovery/v1/apis"
+DISCOVERY_CACHE_TTL_SEC = 86400
 DEFAULT_SERVICES = ("gmail", "drive", "calendar")
 DESTRUCTIVE_METHODS = {
     "delete", "batchDelete", "trash", "emptyTrash", "deletePermanent",
@@ -78,6 +83,8 @@ class GoogleWorkspaceProvider:
         self._documents: dict[str, dict[str, Any]] = {}
         self._bindings: dict[str, MethodBinding] = {}
         self._tools: list[types.Tool] | None = None
+        self._discovery_cache_dir = self.workspace / ".discovery-cache"
+        self._discovery_cache_dir.mkdir(parents=True, exist_ok=True)
 
     async def list_tools(self) -> list[types.Tool]:
         if self._tools is None:
@@ -97,7 +104,7 @@ class GoogleWorkspaceProvider:
     def _load_directory(self) -> dict[str, dict[str, Any]]:
         if self._directory is not None:
             return self._directory
-        payload = _fetch_json(DISCOVERY_DIRECTORY, self.discovery_timeout_sec)
+        payload = self._cached_discovery("directory", DISCOVERY_DIRECTORY)
         items = payload.get("items") if isinstance(payload, dict) else None
         if not isinstance(items, list):
             raise RuntimeError("Google Discovery directory returned no API list")
@@ -124,9 +131,29 @@ class GoogleWorkspaceProvider:
         url = str(entry.get("discoveryRestUrl") or "").strip()
         if not url:
             raise RuntimeError(f"Google Discovery service has no REST document: {service}")
-        document = _fetch_json(url, self.discovery_timeout_sec)
+        document = self._cached_discovery(service, url)
         self._documents[service] = document
         return document
+
+
+    def _cached_discovery(self, name: str, url: str) -> dict[str, Any]:
+        path = self._discovery_cache_dir / f"{name}.json"
+        if path.is_file() and time.time() - path.stat().st_mtime <= DISCOVERY_CACHE_TTL_SEC:
+            cached = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(cached, dict):
+                return cached
+        try:
+            payload = _fetch_json(url, self.discovery_timeout_sec)
+            temp = path.with_suffix(".tmp")
+            temp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            temp.replace(path)
+            return payload
+        except Exception:
+            if path.is_file():
+                cached = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(cached, dict):
+                    return cached
+            raise
 
     def _build_tools(self) -> list[types.Tool]:
         tools: list[types.Tool] = [_discover_tool(self.services)]
@@ -203,8 +230,9 @@ class GoogleWorkspaceProvider:
         if upload_type:
             command.extend(("--upload-content-type", upload_type))
         output = arguments.get("output")
-        if binding.method.get("supportsMediaDownload") is True and not output:
-            return _tool_error("output is required for media-download methods")
+        media_requested = isinstance(params, dict) and str(params.get("alt") or "").casefold() == "media"
+        if binding.method.get("supportsMediaDownload") is True and media_requested and not output:
+            return _tool_error("output is required when requesting media download")
         if output:
             try:
                 command.extend(("--output", _provider_output_path(self.workspace, str(output))))
@@ -240,8 +268,113 @@ class GoogleWorkspaceProvider:
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "gws command failed").strip()
             return _tool_error(detail)
-        return _tool_success(_parse_gws_output(completed.stdout), text=completed.stdout.strip() or None)
+        payload = _parse_gws_output(completed.stdout)
+        payload = _normalize_provider_result(binding, payload)
+        return _tool_success(payload)
 
+
+
+def _normalize_provider_result(binding: MethodBinding, payload: Any) -> Any:
+    if binding.service == "gmail" and isinstance(payload, dict):
+        if binding.resource_path == ("users", "messages") and binding.method_name == "get":
+            return _normalize_gmail_message(payload)
+        if binding.resource_path == ("users", "threads") and binding.method_name == "get":
+            return _normalize_gmail_thread(payload)
+    return payload
+
+
+def _normalize_gmail_thread(thread: dict[str, Any]) -> dict[str, Any]:
+    messages = thread.get("messages") if isinstance(thread.get("messages"), list) else []
+    return {
+        "thread_id": str(thread.get("id") or ""),
+        "history_id": str(thread.get("historyId") or ""),
+        "messages": [_normalize_gmail_message(item) for item in messages if isinstance(item, dict)],
+        "result_type": "complete",
+    }
+
+
+def _normalize_gmail_message(message: dict[str, Any]) -> dict[str, Any]:
+    payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
+    headers = payload.get("headers") if isinstance(payload.get("headers"), list) else []
+    wanted: dict[str, list[str]] = {name: [] for name in ("From", "To", "Cc", "Subject", "Date", "Message-ID")}
+    for row in headers:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "")
+        if name in wanted:
+            wanted[name].append(str(row.get("value") or ""))
+    body_text, body_html, has_attachments = _gmail_body(payload)
+    received_at = _gmail_received_at(message.get("internalDate"))
+    return {
+        "message_id": str(message.get("id") or ""),
+        "thread_id": str(message.get("threadId") or ""),
+        "history_id": str(message.get("historyId") or ""),
+        "from": wanted["From"][0] if wanted["From"] else "",
+        "to": wanted["To"],
+        "cc": wanted["Cc"],
+        "subject": wanted["Subject"][0] if wanted["Subject"] else "",
+        "received_at": received_at,
+        "sender_date": wanted["Date"][0] if wanted["Date"] else "",
+        "message_id_header": wanted["Message-ID"][0] if wanted["Message-ID"] else "",
+        "labels": list(message.get("labelIds") or []),
+        "snippet": str(message.get("snippet") or ""),
+        "body_text": body_text,
+        "body_html": body_html if not body_text else "",
+        "has_attachments": has_attachments,
+        "size_estimate": int(message.get("sizeEstimate") or 0),
+        "result_type": "complete",
+    }
+
+
+def _gmail_received_at(value: Any) -> str:
+    try:
+        millis = int(str(value))
+    except (TypeError, ValueError):
+        return ""
+    return datetime.fromtimestamp(millis / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _gmail_body(payload: dict[str, Any]) -> tuple[str, str, bool]:
+    plain: list[str] = []
+    html: list[str] = []
+    has_attachments = False
+
+    def walk(part: dict[str, Any]) -> None:
+        nonlocal has_attachments
+        filename = str(part.get("filename") or "")
+        body = part.get("body") if isinstance(part.get("body"), dict) else {}
+        if filename or body.get("attachmentId"):
+            has_attachments = True
+        mime = str(part.get("mimeType") or "").lower()
+        data = body.get("data")
+        if isinstance(data, str) and data:
+            decoded = _gmail_decode_part(data, part.get("headers"))
+            if mime == "text/plain" and decoded:
+                plain.append(decoded)
+            elif mime == "text/html" and decoded:
+                html.append(decoded)
+        for child in part.get("parts") or []:
+            if isinstance(child, dict):
+                walk(child)
+    walk(payload)
+    return "\n\n".join(x.strip() for x in plain if x.strip()), "\n\n".join(x.strip() for x in html if x.strip()), has_attachments
+
+
+def _gmail_decode_part(data: str, headers: Any) -> str:
+    padded = data + "=" * (-len(data) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+    except Exception:
+        return ""
+    transfer = ""
+    if isinstance(headers, list):
+        for row in headers:
+            if isinstance(row, dict) and str(row.get("name") or "").lower() == "content-transfer-encoding":
+                transfer = str(row.get("value") or "").lower()
+                break
+    if "quoted-printable" in transfer:
+        raw = quopri.decodestring(raw)
+    return raw.decode("utf-8", errors="replace")
 
 def _fetch_json(url: str, timeout_sec: float) -> dict[str, Any]:
     request = urllib.request.Request(url, headers={"User-Agent": "Atlas-Google-Workspace-MCP/1"})
@@ -293,8 +426,18 @@ def _provider_output_path(workspace: Path, value: str) -> str:
     parent = target.parent.resolve(strict=True)
     if not parent.is_relative_to(base) or not parent.is_dir():
         raise ValueError("output parent must be a directory inside the provider workspace")
-    if target.exists() or target.is_symlink():
-        raise ValueError("output path already exists; provider downloads do not overwrite")
+    if target.is_symlink():
+        raise ValueError("output path cannot be a symlink")
+    if target.exists():
+        stem, suffix = target.stem, target.suffix
+        for index in range(2, 10000):
+            candidate = target.with_name(f"{stem}-{index}{suffix}")
+            _reject_symlink_components(base, candidate.relative_to(base).parts, include_leaf=True)
+            if not candidate.exists() and not candidate.is_symlink():
+                target = candidate
+                break
+        else:
+            raise ValueError("could not allocate a collision-free provider output path")
     return target.relative_to(base).as_posix()
 
 
@@ -502,7 +645,7 @@ def _parse_gws_output(text: str) -> Any:
 
 def _tool_success(payload: Any, *, text: str | None = None) -> types.CallToolResult:
     structured = payload if isinstance(payload, dict) else {"result": payload}
-    rendered = text or json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    rendered = text or "Structured result available in structuredContent."
     return types.CallToolResult(
         content=[types.TextContent(text=rendered)],
         structuredContent=structured,

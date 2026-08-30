@@ -19,11 +19,18 @@ class OwnerPolicy:
         self.store = store
 
     def resolve(self, *, principal_id: str, scope: str, operation: str) -> PolicyResolution:
+        rules, revision = self.store.snapshot(principal_id)
+        return self.resolve_from_rules(
+            principal_id=principal_id, scope=scope, operation=operation,
+            rules=rules, revision=revision,
+        )
+
+    def resolve_from_rules(self, *, principal_id: str, scope: str, operation: str,
+                           rules: tuple[PolicyRule, ...], revision: int) -> PolicyResolution:
         concrete_scope = normalize_scope(scope)
         concrete_operation = normalize_operation(operation)
-        revision = self.store.revision()
         candidates = [
-            rule for rule in self.store.latest_rules(principal_id)
+            rule for rule in rules
             if _scope_matches(rule.scope, concrete_scope)
             and rule.operation in {concrete_operation, "*"}
         ]

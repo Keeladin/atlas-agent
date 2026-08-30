@@ -142,7 +142,7 @@ The technical transport can call the remote tool only after Atlas has crossed th
 
 ## 8. External capability providers
 
-Provider-specific functionality should enter Atlas through the generic capability boundary rather than by creating parallel domain runtimes. A provider may translate an external system's discovery/schema surface into MCP tools, but it does not define owner authority.
+Provider-specific functionality should enter Atlas through the generic capability boundary rather than by creating parallel domain runtimes. A provider may translate an external system's discovery/schema surface into MCP tools, but it does not define owner authority. Provider-owned response normalization is also allowed when an external API returns transport-heavy or encoded data: the provider may decode and compact that response into stable structured fields before it reaches generic Chat context, while retaining the same governed capability identity.
 
 The implemented Google Workspace provider is the first example. It reads Google's Discovery Service for enabled Workspace APIs and exposes the resulting Gmail, Drive and Calendar methods as ordinary MCP tools over stdio. Current `gws` supplies Google authentication and API execution. Production uses the documented headless authorized-user credentials-file path rather than asking the `atlas` service account to mutate the owner's interactive gws config directory: the exported credential stays under protected external production state, and gws token/cache state lives in a config directory created and owned by UID `atlas`. The legacy interactive config remains owner-only. This technical credential state does not grant Atlas discretionary authority. Atlas does not maintain a separate semantic mail layer or a handcrafted list of allowed Gmail functions.
 
@@ -196,9 +196,9 @@ Provider settings are persistent runtime configuration. Credentials are stored s
 
 The provider runtime supports OpenAI-compatible chat endpoints, OpenAI Responses, Anthropic Messages and Gemini Generate Content adapters.
 
-Enabled providers are attempted in runtime priority order. Transport/provider failure falls through to another enabled provider rather than changing Atlas semantics.
+Enabled providers are attempted in runtime priority order. Transport/provider failure falls through to another enabled provider rather than changing Atlas semantics, and the failed provider is logged as an operational warning. Decrypted model credentials are passed directly from `CredentialStore` to the selected in-process adapter; they are never round-tripped through process-global environment variables.
 
-The model receives a bounded capability shortlist and can request a wider capability search. It returns either a conversational reply, a semantic capability selection or a capability-search request. Authorization is never delegated to the model.
+The model receives a bounded capability shortlist and can request a wider capability search. It returns either a conversational reply, a semantic capability selection or a capability-search request. Authorization is never delegated to the model. Capability-search fallback is limited to the small core signpost set rather than an alphabetical registry slice. Tool-result bounding preserves intact capability/status/trust envelopes, caps oversized item content, and omits older results first when the turn budget is exceeded.
 
 ## 13. Memory, Knowledge and Chat
 
@@ -259,11 +259,11 @@ The v3 migration imports selected configuration and custody state only. Legacy a
 
 ## 15. API and Companion
 
-`atlas_api` provides authenticated read routes and CSRF-protected mutation routes. Session authentication establishes the owner principal; it is not an authority decision by itself.
+`atlas_api` provides authenticated read routes and CSRF-protected mutation routes. Session authentication establishes the owner principal; it is not an authority decision by itself. Long-running synchronous runtime work — model turns, generic capability execution, Work execution, confirmation continuation, MCP refresh and provider verification — is dispatched through Starlette's worker threadpool rather than executed on the asyncio event loop, so health, polling and confirmation/cancellation remain responsive during a slow turn.
 
 Companion's primary navigation is Chat, Work, Sources and Atlas. Pending `CONFIRM` occurrences are also surfaced through the global `Needs you` affordance.
 
-The Memory screen is a secondary durable-context surface reached from Sources; it exposes owner memory, grounding, retract/restore/purge controls and the exact purge guarantee. The Atlas screen exposes live policy, providers, MCP/n8n connections, external-account bindings, source roots, host state and capability inventory from the same runtime used for execution. Chat confirmation cards are reconciled against the live pending-action set rather than treating a historical chat-turn copy as current action state; after dispatch, a card cannot offer a second confirmation while runtime verification is pending.
+The Memory screen is a secondary durable-context surface reached from Sources; it exposes owner memory, grounding, retract/restore/purge controls and the exact purge guarantee. The Atlas screen exposes live policy, providers, MCP/n8n connections, external-account bindings, source roots, host state and capability inventory from the same runtime used for execution. A capability snapshot reads the owner's latest policy rules and revision once, then resolves the inventory against that in-memory snapshot instead of reopening SQLite and rescanning policy for every capability. Chat confirmation cards are reconciled against the live pending-action set rather than treating a historical chat-turn copy as current action state; after dispatch, a card cannot offer a second confirmation while runtime verification is pending.
 
 The Capabilities surface is generated from that live inventory rather than from provider-specific frontend modules. Server metadata creates provider groups, discovered tool names/metadata create presentation categories, and `input_schema` renders common string, number, boolean, enum, array and object inputs. Complex schemas retain a raw JSON fallback. Invocation still crosses `/api/capabilities/<id>/invoke`, so normalization, exact scope resolution, `NO` / `YES` / `CONFIRM`, evidence and verification remain runtime responsibilities. The UI treats non-exact native `scope_hint` values as hints rather than final authorization decisions; exact MCP tool scopes can expose direct policy controls.
 
@@ -281,7 +281,7 @@ The `atlas` account has a real home, membership in `systemd-journal`, and linger
 
 The unit binds Atlas to `127.0.0.1:8080`; Caddy provides HTTPS and external reachability. `PrivateTmp` is deliberately absent because the target Ubuntu host restricts unprivileged user namespaces and the user-unit topology does not require that mount namespace.
 
-The unit supplies startup mechanics only. It does not encode `NO`, `YES` or `CONFIRM` decisions.
+The unit supplies startup mechanics only. It does not encode `NO`, `YES` or `CONFIRM` decisions. Companion authentication requires a stable configured session secret; Atlas does not silently generate a process-local replacement on boot. Caddy is the intended loopback proxy, and login-throttle handling trusts `X-Forwarded-For` only when the direct peer is loopback.
 
 ## 17. Product boundary
 
@@ -293,6 +293,6 @@ If Morning is connected later, it must appear as an explicit external capability
 
 The acceptance suite attacks the governing invariants: policy specificity/default deny, exact confirmation and policy recheck, Work recheck, memory operation-level authority, owner-grounded post-reply capture, atomic purge rollback, hash-based redaction without item ids, untouchable confirmation windows, cycle-safe supersession purge, raw lower-is-better bm25 recall, filesystem containment, Streamable HTTP/stdio MCP inventory and dispatch, provider discovery, user-systemd dispatch, API authentication/control and deployment-state assumptions.
 
-Companion has independent lint, unit tests and a production/PWA build.
+Companion has independent lint, unit tests and a production/PWA build. Runtime hardening tests additionally pin event-loop responsiveness during a slow chat turn, direct (non-environment) model credential custody, one policy-store snapshot per capability inventory, intact bounded tool-result envelopes and core-signpost-only fallback discovery.
 
 A green build is necessary but not sufficient for deployment. Live cutover also verifies the actual `atlas` user manager, persisted production state, HTTPS Companion, provider/MCP availability and self-restart reconciliation.

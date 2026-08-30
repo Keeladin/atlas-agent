@@ -34,11 +34,13 @@ Atlas currently includes:
 - full discovered MCP and n8n capability inventory;
 - generic MCP over Streamable HTTP and local stdio transports;
 - a Discovery-driven Google Workspace provider surface for Gmail, Drive and Calendar;
-- runtime-managed model providers and encrypted credentials;
+- runtime-managed model providers and encrypted credentials, with decrypted model keys passed directly to provider adapters rather than process-global environment variables;
 - hardened enrolled filesystem roots;
 - host observation and user-systemd service operations;
 - durable Knowledge for references/notes and first-class persistent Memory with supersession, retraction and governed purge;
 - action receipts, evidence and restart reconciliation;
+- a responsive Starlette control plane that dispatches blocking model/tool/Work execution off the event loop;
+- operational warning logs for non-fatal cadence, provider-fallback and post-turn reconciliation failures;
 - the Companion PWA and runtime-control surface.
 
 ## Authority
@@ -70,9 +72,9 @@ Each capability definition carries its discovered input schema. Companion consum
 
 Production n8n is connected through n8n's built-in instance MCP endpoint as `n8n-runtime`. Atlas inventories the complete tool surface advertised by that server and applies the same runtime policy to each exact tool scope. The MCP bearer credential is technical provider custody in Atlas's encrypted credential store; it is not authority. The obsolete mail-only n8n connector is not registered in Atlas.
 
-Google Workspace is integrated as a provider rather than a mail subsystem: Google Discovery defines the Gmail, Drive and Calendar method surface, the provider exposes those methods through MCP, and Atlas policy governs each discovered tool. Atlas does not maintain a parallel `mail.read` / `mail.send` semantic API. The provider keeps its `gws` OAuth/config state under the external production-state tree rather than inside the Git checkout.
+Google Workspace is integrated as a provider rather than a mail subsystem: Google Discovery defines the Gmail, Drive and Calendar method surface, the provider exposes those methods through MCP, and Atlas policy governs each discovered tool. Provider adapters may normalize excessively verbose external response formats into compact structured results before they cross the generic MCP boundary; Chat does not contain Gmail-specific parsing or truncation logic. Atlas does not maintain a parallel `mail.read` / `mail.send` semantic API. The provider keeps its `gws` OAuth/config state under the external production-state tree rather than inside the Git checkout.
 
-The conversational model selects capabilities and arguments. It does not decide whether the operation is allowed and cannot manufacture confirmation.
+The conversational model selects capabilities and arguments. It does not decide whether the operation is allowed and cannot manufacture confirmation. Tool-result bounding preserves capability/status/trust envelopes and drops older results before corrupting the newest result into an unusable raw JSON tail. An unmatched capability query falls back only to the small core signpost set, never to an alphabetical slice of the registry.
 
 ## Persistence
 
@@ -108,6 +110,8 @@ google-workspace/workspace/                     bounded provider upload/download
 
 The registered `google-workspace` MCP server launches `atlas_providers.google_workspace_mcp`, which derives Gmail, Drive and Calendar tools from Google Discovery and dispatches them through the current `gws` binary. Production uses gws's documented headless credentials-file flow: the exported authorized-user JSON remains outside Git and is readable only by the owner and the `atlas` service account, while gws writes refresh/cache state into an Atlas-owned `runtime-config/` directory. The older interactive config remains owner-only and is not used by the running service. This OAuth/config state is technical provider custody; Atlas `NO` / `YES` / `CONFIRM` policy remains the sole discretionary authority.
 
+The stdio MCP boundary keeps one provider session alive across calls and reconnects only after transport failure; it does not replay a failed invocation. Discovery documents are cached on disk with stale-cache fallback, and inventory refresh is discover-then-swap so a transient refresh failure retains the last known-good capability set while surfacing stale status. Provider errors preserve their concrete message for bounded Chat recovery, advertised schemas are size/depth bounded, and normalized capability-id collisions are rejected rather than shadowed. Google Workspace response normalization is exact-binding-specific: Gmail message/thread reads are compacted and MIME text is decoded before model context, while Drive metadata reads remain metadata operations unless media download is explicitly requested.
+
 ## Persistent Memory
 
 Memory is a first-class runtime responsibility, not a `knowledge_items` subtype. `MemoryStore` keeps owner-scoped `memory_items` and FTS state in `atlas-work.db`; `KnowledgeStore` contains only references and notes. Chat recalls both stores independently.
@@ -128,7 +132,7 @@ Chat -> Work -> Sources -> Atlas
 
 There is no `Now` page and no Morning UI.
 
-Secrets are never returned to the browser. Atlas-managed model/MCP bearer credentials live in the encrypted `CredentialStore`; provider-owned external credentials such as the Google Workspace headless authorized-user file remain under the protected production-state tree and never enter Git or Companion state.
+Secrets are never returned to the browser. Atlas-managed model/MCP bearer credentials live in the encrypted `CredentialStore`; decrypted model API keys are handed directly to the in-process provider adapter and are not copied into `os.environ`, so Atlas-spawned subprocesses do not inherit them. Provider-owned external credentials such as the Google Workspace headless authorized-user file remain under the protected production-state tree and never enter Git or Companion state.
 
 ## Deployment topology
 
@@ -170,7 +174,7 @@ uv run python -m atlas_api \
   --static-dir ./companion/dist
 ```
 
-`instance/companion-auth.env` must contain the Companion authentication configuration before login can be used.
+`instance/companion-auth.env` must contain both the Companion password and a stable session secret before login can be used. Atlas fails startup rather than generating an ephemeral session secret that would invalidate every login on restart. Behind the production loopback proxy, `X-Forwarded-For` is trusted for login throttling only when the direct peer is a loopback address.
 
 ## Repository layout
 

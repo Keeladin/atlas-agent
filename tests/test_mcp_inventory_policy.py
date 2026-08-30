@@ -77,3 +77,50 @@ def test_mcp_server_id_must_be_policy_safe(tmp_path):
             kind="mcp",
             url="http://127.0.0.1:9999/mcp",
         )
+
+
+def test_failed_refresh_keeps_previous_inventory(tmp_path, monkeypatch):
+    rt = build_runtime(tmp_path / "instance")
+    fake = FakeMCP()
+    monkeypatch.setattr(rt.mcp, "_client", lambda server: fake)
+    rt.mcp_store.put(server_id="demo", display_name="Demo", kind="mcp", url="http://127.0.0.1:9999/mcp")
+    rt.mcp.refresh("demo")
+    assert rt.capabilities_registry.get("mcp.demo.read_data")
+    def broken(): raise RuntimeError("temporary discovery failure")
+    fake.list_tools = broken
+    with pytest.raises(RuntimeError, match="temporary discovery failure"):
+        rt.mcp.refresh("demo")
+    assert rt.capabilities_registry.get("mcp.demo.read_data")
+    available, reason = rt.capabilities_registry.get("mcp.demo.read_data").availability()
+    assert available is True
+    assert reason.startswith("stale_inventory:")
+
+
+def test_mcp_safe_id_collision_is_rejected_without_replacing_inventory(tmp_path, monkeypatch):
+    rt = build_runtime(tmp_path / "instance")
+    fake = FakeMCP()
+    monkeypatch.setattr(rt.mcp, "_client", lambda server: fake)
+    rt.mcp_store.put(server_id="demo", display_name="Demo", kind="mcp", url="http://127.0.0.1:9999/mcp")
+    rt.mcp.refresh("demo")
+    fake.list_tools = lambda: [
+        {"name":"Send Digest","inputSchema":{},"annotations":{}},
+        {"name":"Send/Digest","inputSchema":{},"annotations":{}},
+    ]
+    with pytest.raises(RuntimeError, match="collision"):
+        rt.mcp.refresh("demo")
+    assert rt.capabilities_registry.get("mcp.demo.read_data")
+
+
+def test_mcp_provider_error_detail_is_preserved(tmp_path, monkeypatch):
+    rt = build_runtime(tmp_path / "instance")
+    fake = FakeMCP()
+    fake.call_tool = lambda name, arguments: {
+        "isError": True,
+        "content": [{"type":"text","text":"userId is required"}],
+        "structuredContent": {"error":"userId is required"},
+    }
+    monkeypatch.setattr(rt.mcp, "_client", lambda server: fake)
+    rt.mcp_store.put(server_id="demo", display_name="Demo", kind="mcp", url="http://127.0.0.1:9999/mcp")
+    result = rt.mcp.call_tool("demo", "read_data", {})
+    assert result.ok is False
+    assert result.error == "userId is required"

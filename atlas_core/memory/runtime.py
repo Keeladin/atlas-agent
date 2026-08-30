@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from atlas_core.actions import ActionResult, ActionStore
@@ -11,15 +11,18 @@ from atlas_core.capabilities import CapabilityDefinition, CapabilityRegistration
 from .store import MemoryStore, memory_content_hash
 
 _CONTENT_KEYS = {"content", "title", "grounding_excerpt", "text"}
+_RESERVED_METADATA_KEYS = {"content_source", "source_conversation_id", "source_turn_id", "capture"}
 
 
 class MemoryRuntime:
-    def __init__(self, store: MemoryStore, registry: CapabilityRegistry, actions_store: ActionStore) -> None:
+    def __init__(self, store: MemoryStore, registry: CapabilityRegistry, actions_store: ActionStore,
+                 grounding_validator: Callable[[str, str], bool] | None = None) -> None:
         if store.path.resolve() != actions_store.path.resolve():
             raise ValueError("MemoryStore and ActionStore must use the same SQLite database for atomic purge")
         self.store = store
         self.registry = registry
         self.actions_store = actions_store
+        self.grounding_validator = grounding_validator
         self._register()
 
     def _register(self) -> None:
@@ -52,39 +55,114 @@ class MemoryRuntime:
             lambda p: ScopeResolution(f"atlas/memory/{p['item_id']}", dict(p), f"Purge memory {_short(p['item_id'])}"), self._purge)
 
     @staticmethod
-    def _owner(payload: dict[str, Any]) -> str:
+    def _context(payload: dict[str, Any]) -> tuple[str, str]:
         owner = str(payload.pop("__owner_principal_id", "") or "")
+        surface = str(payload.pop("__invocation_surface", "") or "")
         if not owner:
             raise ValueError("owner principal unavailable")
-        return owner
+        return owner, surface
+
+    def _mutation_context_error(self, payload: dict[str, Any], surface: str, operation: str, *,
+                                content_must_match_excerpt: bool) -> ActionResult | None:
+        if surface == "control":
+            return None
+        if surface != "chat":
+            return ActionResult(
+                False, {}, {"ok": False, "operation": operation},
+                error_code="memory_surface_invalid",
+                error="owner memory mutations require authenticated chat grounding or explicit owner control",
+            )
+        excerpt = str(payload.get("grounding_excerpt") or "")
+        source_ref = str(payload.get("source_ref") or "")
+        valid = bool(
+            excerpt and source_ref
+            and self.grounding_validator is not None
+            and self.grounding_validator(source_ref, excerpt)
+        )
+        if content_must_match_excerpt:
+            content = str(payload.get("content") or "")
+            valid = valid and bool(content) and memory_content_hash(content) == memory_content_hash(excerpt)
+        if valid:
+            return None
+        return ActionResult(
+            False, {}, {"ok": False, "operation": operation},
+            error_code="memory_grounding_invalid",
+            error="chat memory mutation must be grounded in the authenticated owner turn",
+        )
+
+    @staticmethod
+    def _memory_metadata(payload: dict[str, Any], surface: str) -> dict[str, Any]:
+        incoming = dict(payload.get("metadata") or {})
+        metadata = {key: value for key, value in incoming.items() if key not in _RESERVED_METADATA_KEYS}
+        if surface == "chat":
+            parts = str(payload.get("source_ref") or "").split(":", 2)
+            metadata["content_source"] = "owner_turn"
+            if len(parts) == 3 and parts[0] == "chat":
+                metadata["source_conversation_id"] = parts[1]
+                metadata["source_turn_id"] = parts[2]
+        else:
+            metadata["content_source"] = "control_owner_input"
+        return metadata
 
     def _search(self, payload: dict[str, Any]) -> ActionResult:
-        owner = self._owner(payload)
+        owner, _ = self._context(payload)
         rows = self.store.search(owner, payload["query"], limit=int(payload.get("limit") or 10))
         return ActionResult(True, list(rows), {"ok": True, "operation": "search", "count": len(rows)})
 
     def _remember(self, payload: dict[str, Any]) -> ActionResult:
-        owner = self._owner(payload)
-        item = self.store.add(principal_id=owner, title=str(payload.get("title") or "Memory"), content=payload["content"],
-                              grounding_excerpt=payload.get("grounding_excerpt"), source_ref=payload.get("source_ref"), metadata=payload.get("metadata"))
+        owner, surface = self._context(payload)
+        grounding_error = self._mutation_context_error(payload, surface, "remember", content_must_match_excerpt=True)
+        if grounding_error is not None:
+            return grounding_error
+        metadata = self._memory_metadata(payload, surface)
+        grounding_excerpt = payload.get("grounding_excerpt") if surface == "chat" else None
+        source_ref = payload.get("source_ref") if surface == "chat" else None
+        try:
+            item = self.store.add(
+                principal_id=owner, title=str(payload.get("title") or "Memory"), content=payload["content"],
+                grounding_excerpt=grounding_excerpt, source_ref=source_ref, metadata=metadata,
+            )
+        except sqlite3.IntegrityError as exc:
+            if "duplicate active memory" in str(exc):
+                return ActionResult(False, {}, {"ok": False, "operation": "remember"},
+                                    error_code="memory_duplicate", error="an equivalent active memory already exists")
+            raise
         return ActionResult(True, item, {"ok": True, "operation": "remember", "item_id": item["item_id"]})
 
     def _update(self, payload: dict[str, Any]) -> ActionResult:
-        owner = self._owner(payload)
-        item = self.store.update(principal_id=owner, item_id=payload["item_id"], content=payload["content"], title=payload.get("title"),
-                                 grounding_excerpt=payload.get("grounding_excerpt"), source_ref=payload.get("source_ref"), metadata=payload.get("metadata"))
+        owner, surface = self._context(payload)
+        grounding_error = self._mutation_context_error(payload, surface, "update", content_must_match_excerpt=True)
+        if grounding_error is not None:
+            return grounding_error
+        metadata = self._memory_metadata(payload, surface)
+        grounding_excerpt = payload.get("grounding_excerpt") if surface == "chat" else None
+        source_ref = payload.get("source_ref") if surface == "chat" else None
+        try:
+            item = self.store.update(
+                principal_id=owner, item_id=payload["item_id"], content=payload["content"], title=payload.get("title"),
+                grounding_excerpt=grounding_excerpt, source_ref=source_ref, metadata=metadata,
+            )
+        except sqlite3.IntegrityError as exc:
+            if "duplicate active memory" in str(exc):
+                return ActionResult(False, {}, {"ok": False, "operation": "update"},
+                                    error_code="memory_duplicate", error="an equivalent active memory already exists")
+            raise
         return ActionResult(True, item, {"ok": True, "operation": "update", "item_id": item["item_id"], "supersedes": payload["item_id"]})
 
     def _retract(self, payload: dict[str, Any]) -> ActionResult:
-        owner = self._owner(payload); item = self.store.retract(owner, payload["item_id"])
+        owner, surface = self._context(payload)
+        grounding_error = self._mutation_context_error(payload, surface, "retract", content_must_match_excerpt=False)
+        if grounding_error is not None:
+            return grounding_error
+        item = self.store.retract(owner, payload["item_id"])
         return ActionResult(True, item, {"ok": True, "operation": "retract", "item_id": item["item_id"]})
 
     def _restore(self, payload: dict[str, Any]) -> ActionResult:
-        owner = self._owner(payload); item = self.store.restore(owner, payload["item_id"])
+        owner, _ = self._context(payload); item = self.store.restore(owner, payload["item_id"])
         return ActionResult(True, item, {"ok": True, "operation": "restore", "item_id": item["item_id"]})
 
     def _purge(self, payload: dict[str, Any]) -> ActionResult:
-        owner = self._owner(payload); item_id = payload["item_id"]
+        owner, _ = self._context(payload); item_id = payload["item_id"]
         try:
             with self.store._db() as db:
                 chain = self.store.chain(owner, item_id, db=db)
@@ -92,7 +170,9 @@ class MemoryRuntime:
                 hashes = {memory_content_hash(value) for item in chain for value in (item.get("content"), item.get("grounding_excerpt")) if isinstance(value, str) and value}
                 placeholders = ",".join("?" for _ in item_ids)
                 db.execute(f"DELETE FROM memory_items WHERE principal_id=? AND item_id IN ({placeholders})", (owner, *sorted(item_ids)))
-                redacted = self.actions_store.redact_memory_content(db, principal_id=owner, item_ids=item_ids, content_hashes=hashes)
+                redacted = _redact_occurrences(
+                    db, self.actions_store, principal_id=owner, item_ids=item_ids, content_hashes=hashes,
+                )
                 evidence_redacted = _redact_evidence(db, redacted, item_ids=item_ids, content_hashes=hashes)
                 for row in redacted:
                     db.execute(
@@ -109,6 +189,65 @@ class MemoryRuntime:
 def _short(item_id: str) -> str:
     return item_id if len(item_id) <= 18 else item_id[:15] + "…"
 
+
+
+def _json_item_matches(value: Any, item_ids: set[str]) -> bool:
+    if isinstance(value, dict):
+        return any(_json_item_matches(child, item_ids) for child in value.values())
+    if isinstance(value, list):
+        return any(_json_item_matches(child, item_ids) for child in value)
+    return isinstance(value, str) and any(item_id in value for item_id in item_ids)
+
+
+def _json_hash_matches(value: Any, content_hashes: set[str], key: str | None = None) -> bool:
+    if isinstance(value, dict):
+        return any(_json_hash_matches(child, content_hashes, str(child_key)) for child_key, child in value.items())
+    if isinstance(value, list):
+        return any(_json_hash_matches(child, content_hashes, key) for child in value)
+    return isinstance(value, str) and key in _CONTENT_KEYS and memory_content_hash(value) in content_hashes
+
+
+def _redact_occurrences(db: sqlite3.Connection, actions_store: ActionStore, *, principal_id: str,
+                        item_ids: set[str], content_hashes: set[str]) -> list[dict[str, Any]]:
+    redacted_rows: list[dict[str, Any]] = []
+    for row in actions_store.memory_occurrence_rows(db, principal_id=principal_id):
+        decoded: dict[str, Any] = {}
+        for column in ("payload_json", "result_json", "receipt_json"):
+            raw = row[column]
+            try:
+                decoded[column] = None if raw is None else json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                decoded[column] = raw
+        item_match = any(_json_item_matches(value, item_ids) for value in decoded.values())
+        hash_match = any(_json_hash_matches(value, content_hashes) for value in decoded.values())
+        summary = row.get("summary")
+        if isinstance(summary, str):
+            item_match = item_match or any(item_id in summary for item_id in item_ids)
+            hash_match = hash_match or memory_content_hash(summary) in content_hashes
+        if not (item_match or hash_match):
+            continue
+        fields: list[str] = []
+        encoded: dict[str, str | None] = {}
+        for column, value in decoded.items():
+            if value is None:
+                encoded[column] = None
+                continue
+            redacted, nested = _redact_json(value, item_ids=item_ids, content_hashes=content_hashes,
+                                             path=column, mark_root=(column == "payload_json" and isinstance(value, dict)))
+            fields.extend(nested)
+            encoded[column] = json.dumps(redacted, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        fields.append("summary")
+        actions_store.redact_memory_occurrence(
+            db, occurrence_id=row["occurrence_id"], payload_json=encoded["payload_json"] or "{}",
+            result_json=encoded["result_json"], receipt_json=encoded["receipt_json"] or "{}",
+        )
+        matched_by = []
+        if item_match:
+            matched_by.append("item_id")
+        if hash_match:
+            matched_by.append("content_hash")
+        redacted_rows.append({"occurrence_id": row["occurrence_id"], "matched_by": matched_by, "fields": sorted(set(fields))})
+    return redacted_rows
 
 def _redact_evidence(db: sqlite3.Connection, occurrences: list[dict[str, Any]], *, item_ids: set[str], content_hashes: set[str]) -> int:
     count = 0

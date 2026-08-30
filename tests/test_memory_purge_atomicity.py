@@ -26,8 +26,8 @@ def _runtime(tmp_path):
     return policy_store, action_store, evidence, capabilities, memory_store, memory
 
 
-def _prov(owner: str = "principal_owner") -> InvocationProvenance:
-    return InvocationProvenance(owner, "human", "chat")
+def _prov(owner: str = "principal_owner", surface: str = "control") -> InvocationProvenance:
+    return InvocationProvenance(owner, "human", surface)
 
 
 def _set(policy_store, operation: str, decision: str, owner: str = "principal_owner") -> None:
@@ -35,19 +35,20 @@ def _set(policy_store, operation: str, decision: str, owner: str = "principal_ow
 
 
 def test_purge_rolls_back_memory_delete_and_redaction_together(tmp_path, monkeypatch):
+    import atlas_core.memory.runtime as memory_runtime_module
     policy_store, action_store, _, capabilities, memory_store, _ = _runtime(tmp_path)
     _set(policy_store, "remember", "YES"); _set(policy_store, "purge", "YES")
     text = "atomic secret text"
     remembered = capabilities.invoke("memory.remember", {"content": text}, provenance=_prov())
     item_id = remembered.result["item_id"]
     before = action_store.get(remembered.occurrence_id)
-    original = action_store.redact_memory_content
+    original = memory_runtime_module._redact_occurrences
 
-    def explode(db, **kwargs):
-        original(db, **kwargs)
+    def explode(db, actions_store, **kwargs):
+        original(db, actions_store, **kwargs)
         raise RuntimeError("forced redaction failure")
 
-    monkeypatch.setattr(action_store, "redact_memory_content", explode)
+    monkeypatch.setattr(memory_runtime_module, "_redact_occurrences", explode)
     purged = capabilities.invoke("memory.purge", {"item_id": item_id}, provenance=_prov())
     assert purged.status == "failed"
     assert memory_store.get("principal_owner", item_id)["content"] == text

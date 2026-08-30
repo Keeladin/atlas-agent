@@ -204,11 +204,117 @@ def test_workspace_provider_file_paths_cannot_escape_or_overwrite(tmp_path):
 
     existing = root / "existing.bin"
     existing.write_bytes(b"old")
-    with pytest.raises(ValueError, match="already exists"):
-        workspace._provider_output_path(root, "existing.bin")
+    assert workspace._provider_output_path(root, "existing.bin") == "existing-2.bin"
+    assert existing.read_bytes() == b"old"
+    (root / "existing-2.bin").write_bytes(b"newer")
+    assert workspace._provider_output_path(root, "existing.bin") == "existing-3.bin"
 
     outside_dir = tmp_path / "outside-dir"
     outside_dir.mkdir()
     (root / "escape").symlink_to(outside_dir, target_is_directory=True)
     with pytest.raises(ValueError, match="symlink"):
         workspace._provider_output_path(root, "escape/new.bin")
+
+
+def test_gmail_message_get_is_normalized_for_agent_context():
+    import base64
+    body = base64.urlsafe_b64encode(b"Hello from the body.").decode().rstrip("=")
+    message = {
+        "id": "msg-1", "threadId": "thr-1", "historyId": "7",
+        "internalDate": "1788069607000", "labelIds": ["INBOX"], "snippet": "Hello",
+        "sizeEstimate": 1234,
+        "payload": {
+            "headers": [
+                {"name": "From", "value": "Sender <sender@example.com>"},
+                {"name": "To", "value": "owner@example.com"},
+                {"name": "Subject", "value": "Useful subject"},
+                {"name": "Date", "value": "Sun, 30 Aug 2026 06:00:07 +0000"},
+                {"name": "Received", "value": "transport noise" * 500},
+            ],
+            "parts": [{"mimeType": "text/plain", "body": {"data": body}, "headers": []}],
+        },
+    }
+    result = workspace._normalize_gmail_message(message)
+    assert result["subject"] == "Useful subject"
+    assert result["from"] == "Sender <sender@example.com>"
+    assert result["body_text"] == "Hello from the body."
+    assert result["received_at"] == "2026-08-30T06:00:07Z"
+    assert "transport noise" not in str(result)
+
+
+def test_gmail_thread_get_reuses_message_normalizer():
+    import base64
+    body = base64.urlsafe_b64encode(b"Thread body").decode().rstrip("=")
+    raw = {"id":"thr-1","historyId":"9","messages":[{
+        "id":"msg-1","threadId":"thr-1","internalDate":"1788069607000","snippet":"stub",
+        "payload":{"headers":[{"name":"Subject","value":"Real subject"}],
+                   "parts":[{"mimeType":"text/plain","body":{"data":body},"headers":[]}]},
+    }]}
+    result = workspace._normalize_gmail_thread(raw)
+    assert result["thread_id"] == "thr-1"
+    assert result["messages"][0]["subject"] == "Real subject"
+    assert result["messages"][0]["body_text"] == "Thread body"
+
+
+def test_drive_metadata_get_does_not_require_output(tmp_path, monkeypatch):
+    provider = workspace.GoogleWorkspaceProvider(gws_command="gws", services=("drive",), workspace=tmp_path / "workspace")
+    binding = workspace.MethodBinding("drive", ("files",), "get", {"httpMethod":"GET","supportsMediaDownload":True})
+    captured = {}
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return workspace.subprocess.CompletedProcess(command, 0, '{"id":"file-1","name":"thing.zip"}\n', "")
+    monkeypatch.setattr(workspace.subprocess, "run", fake_run)
+    result = provider._execute(binding, {"params":{"fileId":"file-1","fields":"*"}})
+    assert result.is_error is False
+    assert "--output" not in captured["command"]
+
+
+def test_drive_media_get_requires_output(tmp_path):
+    provider = workspace.GoogleWorkspaceProvider(gws_command="gws", services=("drive",), workspace=tmp_path / "workspace")
+    binding = workspace.MethodBinding("drive", ("files",), "get", {"httpMethod":"GET","supportsMediaDownload":True})
+    result = provider._execute(binding, {"params":{"fileId":"file-1","alt":"media"}})
+    assert result.is_error is True
+    assert "output is required" in result.content[0].text
+
+
+def test_discovery_cache_serves_fresh_disk_copy_without_network(tmp_path, monkeypatch):
+    provider = workspace.GoogleWorkspaceProvider(gws_command="gws", services=("drive",), workspace=tmp_path / "workspace")
+    cache = provider._discovery_cache_dir / "directory.json"
+    cache.write_text('{"items":[]}')
+    monkeypatch.setattr(workspace, "_fetch_json", lambda *_: (_ for _ in ()).throw(AssertionError("network should not be used")))
+    assert provider._cached_discovery("directory", "https://example.invalid") == {"items": []}
+
+
+def _write_pid_server(path: Path) -> None:
+    path.write_text("""import asyncio, os
+import mcp.types as types
+from mcp.server import Server, NotificationOptions
+from mcp.server.models import InitializationOptions
+import mcp.server.stdio
+async def listing(_ctx,_params):
+    return types.ListToolsResult(tools=[types.Tool(name='pid',description='pid',inputSchema={'type':'object'}),types.Tool(name='slow',description='slow',inputSchema={'type':'object'})])
+async def calling(_ctx,params):
+    if params.name == 'slow': await asyncio.sleep(5)
+    return types.CallToolResult(content=[types.TextContent(text=str(os.getpid()))],structuredContent={'pid':os.getpid()})
+async def main():
+    server=Server('pid',version='1',on_list_tools=listing,on_call_tool=calling)
+    opts=InitializationOptions(server_name='pid',server_version='1',capabilities=server.get_capabilities(NotificationOptions(),{}))
+    async with mcp.server.stdio.stdio_server() as (r,w): await server.run(r,w,opts)
+asyncio.run(main())
+""")
+
+
+def test_stdio_client_reuses_session_and_closes_child_on_timeout(tmp_path):
+    import os, time
+    from atlas_core.mcp_stdio import StdioMCPClient
+    script=tmp_path/'pid_server.py';_write_pid_server(script)
+    client=StdioMCPClient(sys.executable,args=[str(script)],timeout_sec=1.0,read_timeout_sec=0.2)
+    first=client.call_tool('pid',{})['structuredContent']['pid']
+    second=client.call_tool('pid',{})['structuredContent']['pid']
+    assert first == second
+    with pytest.raises(Exception): client.call_tool('slow',{})
+    for _ in range(20):
+        try: os.kill(first,0)
+        except ProcessLookupError: break
+        time.sleep(0.05)
+    else: pytest.fail('timed-out stdio MCP child remained alive')

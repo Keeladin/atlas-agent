@@ -1937,7 +1937,7 @@ a.card:hover {
 }
 
 .chat-turn.assistant .chat-turn-role { color: var(--gold-dim); }
-.chat-turn-content { color: var(--text); font-size: 0.84rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-turn-content { color: var(--text); font-size: 0.90rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .chat-thread-wrap {
   position: relative;

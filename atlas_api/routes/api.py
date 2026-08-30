@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import math
+import logging
+from datetime import datetime, timezone
 from typing import Any
 
+from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+
+logger = logging.getLogger(__name__)
 
 from atlas_api.auth import (
     AuthService, client_key, forbidden, require_mutation_auth, require_session, unauthorized,
@@ -110,8 +116,8 @@ async def capability_invoke(request: Request) -> JSONResponse:
         body = await _body(request)
         owner = _owner(request, gate)
         from atlas_core.provenance import InvocationProvenance
-        occurrence = _runtime(request).capabilities.invoke(
-            request.path_params["capability_id"],
+        occurrence = await run_in_threadpool(
+            _runtime(request).capabilities.invoke, request.path_params["capability_id"],
             body.get("input") if isinstance(body.get("input"), dict) else {},
             provenance=InvocationProvenance(owner.principal_id, "human", "control"),
         )
@@ -168,9 +174,14 @@ async def action_confirm(request: Request) -> JSONResponse:
     gate = require_mutation_auth(request)
     if isinstance(gate, JSONResponse): return gate
     try:
-        rt = _runtime(request); owner = _owner(request, gate); occurrence = rt.actions.confirm(request.path_params["occurrence_id"], principal_id=owner.principal_id)
+        rt = _runtime(request); owner = _owner(request, gate)
+        occurrence = await run_in_threadpool(rt.actions.confirm, request.path_params["occurrence_id"], principal_id=owner.principal_id)
         payload: dict[str, Any] = {"action": occurrence.public()}
-        if occurrence.work_id and occurrence.status == "succeeded": payload["work"] = rt.work.run(occurrence.work_id)
+        if occurrence.work_id and occurrence.status == "succeeded": payload["work"] = await run_in_threadpool(rt.work.run, occurrence.work_id)
+        if occurrence.surface == "chat":
+            continuation = await run_in_threadpool(rt.chat.resume_confirmed_action, occurrence, principal_id=owner.principal_id)
+            if continuation is not None:
+                payload["chat"] = continuation
         return JSONResponse(payload)
     except PermissionError as exc: return forbidden(str(exc))
     except Exception as exc: return _error(exc)
@@ -221,7 +232,14 @@ async def conversation_send(request: Request) -> JSONResponse:
     gate = require_mutation_auth(request)
     if isinstance(gate, JSONResponse): return gate
     try:
-        body = await _body(request); owner = _owner(request, gate); result = _runtime(request).chat.send(request.path_params["conversation_id"], str(body.get("message") or "").strip(), principal_id=owner.principal_id); return JSONResponse(result)
+        body = await _body(request); owner = _owner(request, gate); rt = _runtime(request)
+        result = await run_in_threadpool(
+            rt.chat.send, request.path_params["conversation_id"], str(body.get("message") or "").strip(),
+            principal_id=owner.principal_id, defer_capture=True,
+        )
+        capture = result.pop("_post_turn_capture", None)
+        background = BackgroundTask(rt.chat.run_post_turn_capture, **capture) if capture else None
+        return JSONResponse(result, background=background)
     except Exception as exc: return _error(exc, 500)
 
 
@@ -238,7 +256,7 @@ async def work_create(request: Request) -> JSONResponse:
         body = await _body(request); owner = _owner(request, gate); rt = _runtime(request)
         from atlas_core.provenance import InvocationProvenance
         payload={"objective":str(body.get("objective") or ""),"steps":body.get("steps") or [],"run":bool(body.get("run",True))}
-        occurrence=rt.capabilities.invoke("work.create",payload,provenance=InvocationProvenance(owner.principal_id,"human","control"))
+        occurrence=await run_in_threadpool(rt.capabilities.invoke,"work.create",payload,provenance=InvocationProvenance(owner.principal_id,"human","control"))
         status=201 if occurrence.status=="succeeded" else 202 if occurrence.status in {"pending_confirmation","uncertain"} else 409
         return JSONResponse({"action":occurrence.public(),"work":occurrence.result if occurrence.status=="succeeded" else None},status_code=status)
     except Exception as exc: return _error(exc)
@@ -256,8 +274,8 @@ async def work_action(request: Request) -> JSONResponse:
     if isinstance(gate, JSONResponse): return gate
     try:
         rt=_runtime(request);wid=request.path_params["work_id"];action=request.path_params["action"]
-        if action=="run":result=rt.work.run(wid)
-        elif action=="resume":result=rt.work.resume(wid)
+        if action=="run":result=await run_in_threadpool(rt.work.run,wid)
+        elif action=="resume":result=await run_in_threadpool(rt.work.resume,wid)
         elif action=="pause":rt.work.pause(wid);result=rt.work.detail(wid)
         elif action=="cancel":rt.work_store.cancel(wid);result=rt.work.detail(wid)
         else:return _error(ValueError("unsupported work action"),404)
@@ -278,7 +296,7 @@ async def cadence_create(request: Request) -> JSONResponse:
         body=await _body(request);owner=_owner(request,gate);rt=_runtime(request)
         from atlas_core.provenance import InvocationProvenance
         payload={"name":str(body.get("name") or ""),"objective":str(body.get("objective") or ""),"schedule":body.get("schedule") or {},"steps":body.get("steps") or []}
-        occurrence=rt.capabilities.invoke("cadence.create",payload,provenance=InvocationProvenance(owner.principal_id,"human","control"))
+        occurrence=await run_in_threadpool(rt.capabilities.invoke,"cadence.create",payload,provenance=InvocationProvenance(owner.principal_id,"human","control"))
         status=201 if occurrence.status=="succeeded" else 202 if occurrence.status in {"pending_confirmation","uncertain"} else 409
         return JSONResponse({"action":occurrence.public(),"cadence":occurrence.result if occurrence.status=="succeeded" else None},status_code=status)
     except Exception as exc:return _error(exc)
@@ -288,7 +306,7 @@ async def cadence_enable(request: Request) -> JSONResponse:
     gate=require_mutation_auth(request)
     if isinstance(gate,JSONResponse):return gate
     try:
-        rt=_runtime(request);body=await _body(request);item=rt.cadence_store.get(request.path_params["cadence_id"]);enabled=bool(body.get("enabled",True));next_run=None if not enabled else rt.cadence.next_after(item.schedule,__import__('datetime').datetime.now(__import__('datetime').timezone.utc)).isoformat();return JSONResponse(rt.cadence_store.set_enabled(item.cadence_id,enabled,next_run).as_dict())
+        rt=_runtime(request);body=await _body(request);item=rt.cadence_store.get(request.path_params["cadence_id"]);enabled=bool(body.get("enabled",True));next_run=None if not enabled else rt.cadence.next_after(item.schedule,datetime.now(timezone.utc)).isoformat();return JSONResponse(rt.cadence_store.set_enabled(item.cadence_id,enabled,next_run).as_dict())
     except Exception as exc:return _error(exc)
 
 
@@ -349,7 +367,7 @@ async def memory_detail(request: Request) -> JSONResponse:
     if isinstance(gate,JSONResponse):return gate
     try:
         rt=_runtime(request);owner=_owner(request,gate);item=rt.memory_store.get(owner.principal_id,request.path_params["item_id"])
-        with rt.memory_store._db() as db:chain=rt.memory_store.chain(owner.principal_id,item["item_id"],db=db)
+        chain=rt.memory_store.chain_for(owner.principal_id,item["item_id"])
         return JSONResponse({"item":item,"chain":list(chain)})
     except KeyError:return _error(KeyError("memory not found"),404)
 
@@ -388,7 +406,7 @@ async def mcp_put(request: Request) -> JSONResponse:
             if token:raise ValueError("stdio MCP servers do not use Atlas HTTP bearer tokens")
             if credential_ref:
                 try:rt.credentials.disable(credential_ref)
-                except Exception:pass
+                except Exception:logger.warning("failed to disable obsolete MCP credential", exc_info=True)
                 credential_ref=None
         elif token:
             if credential_ref:rt.credentials.replace(credential_ref,{"token":token})
@@ -401,7 +419,7 @@ async def mcp_put(request: Request) -> JSONResponse:
             enabled=bool(body.get("enabled",True)),credential_ref=credential_ref,
             timeout_sec=float(body.get("timeout_sec",30)),read_timeout_sec=float(body.get("read_timeout_sec",300)),
         )
-        if item.enabled:rt.mcp.refresh(sid)
+        if item.enabled:await run_in_threadpool(rt.mcp.refresh,sid)
         rt.seed_policy();return JSONResponse(item.public())
     except Exception as exc:return _error(exc)
 
@@ -410,7 +428,7 @@ async def mcp_refresh(request: Request) -> JSONResponse:
     gate=require_mutation_auth(request)
     if isinstance(gate,JSONResponse):return gate
     try:
-        rt=_runtime(request);tools=rt.mcp.refresh(request.path_params["server_id"]);rt.seed_policy();return JSONResponse({"tools":[tool.__dict__ for tool in tools]})
+        rt=_runtime(request);tools=await run_in_threadpool(rt.mcp.refresh,request.path_params["server_id"]);rt.seed_policy();return JSONResponse({"tools":[tool.__dict__ for tool in tools]})
     except Exception as exc:return _error(exc)
 
 
@@ -424,7 +442,7 @@ async def mcp_delete(request: Request) -> JSONResponse:
         rt.capabilities_registry.unregister_prefix(f"mcp.{sid}.");rt.mcp_store.delete(sid)
         if server.credential_ref:
             try:rt.credentials.disable(server.credential_ref)
-            except Exception:pass
+            except Exception:logger.warning("failed to disable deleted MCP credential", exc_info=True)
         return JSONResponse({"ok":True})
     except Exception as exc:return _error(exc)
 
@@ -454,7 +472,7 @@ async def provider_put(request: Request) -> JSONResponse:
 async def provider_verify(request: Request) -> JSONResponse:
     gate=require_mutation_auth(request)
     if isinstance(gate,JSONResponse):return gate
-    try:return JSONResponse(_runtime(request).providers.verify(request.path_params["provider_key"]))
+    try:return JSONResponse(await run_in_threadpool(_runtime(request).providers.verify,request.path_params["provider_key"]))
     except Exception as exc:return _error(exc)
 
 
@@ -468,7 +486,7 @@ async def provider_delete(request: Request) -> JSONResponse:
         rt.provider_settings.delete(key)
         if item.credential_ref:
             try:rt.credentials.disable(item.credential_ref)
-            except Exception:pass
+            except Exception:logger.warning("failed to disable deleted provider credential", exc_info=True)
         return JSONResponse({"ok":True})
     except Exception as exc:return _error(exc)
 

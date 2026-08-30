@@ -51,6 +51,7 @@ class MemoryStore:
                 principal_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
                 grounding_excerpt TEXT,
                 source_ref TEXT,
                 metadata_json TEXT NOT NULL DEFAULT '{}',
@@ -62,6 +63,7 @@ class MemoryStore:
             );
             CREATE INDEX IF NOT EXISTS memory_principal_state ON memory_items(principal_id,state,updated_at);
             CREATE INDEX IF NOT EXISTS memory_supersedes ON memory_items(principal_id,supersedes);
+            CREATE INDEX IF NOT EXISTS memory_principal_content_hash ON memory_items(principal_id,content_hash,state);
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(item_id UNINDEXED,title,content,tokenize='unicode61');
             CREATE TRIGGER IF NOT EXISTS memory_ai AFTER INSERT ON memory_items BEGIN
                 INSERT INTO memory_fts(item_id,title,content) VALUES(new.item_id,new.title,new.content);
@@ -74,9 +76,22 @@ class MemoryStore:
                 INSERT INTO memory_fts(item_id,title,content) VALUES(new.item_id,new.title,new.content);
             END;
             """)
-            count = db.execute("SELECT COUNT(*) FROM memory_fts").fetchone()[0]
-            if count == 0:
-                db.execute("INSERT INTO memory_fts(item_id,title,content) SELECT item_id,title,content FROM memory_items")
+            db.executescript("""
+            CREATE TRIGGER IF NOT EXISTS memory_duplicate_active_insert
+            BEFORE INSERT ON memory_items
+            WHEN NEW.state='active' AND EXISTS (
+                SELECT 1 FROM memory_items
+                WHERE principal_id=NEW.principal_id AND state='active' AND content_hash=NEW.content_hash
+            )
+            BEGIN SELECT RAISE(ABORT, 'duplicate active memory'); END;
+            CREATE TRIGGER IF NOT EXISTS memory_duplicate_active_update
+            BEFORE UPDATE OF state,content_hash,principal_id ON memory_items
+            WHEN NEW.state='active' AND EXISTS (
+                SELECT 1 FROM memory_items
+                WHERE principal_id=NEW.principal_id AND state='active' AND content_hash=NEW.content_hash AND item_id!=OLD.item_id
+            )
+            BEGIN SELECT RAISE(ABORT, 'duplicate active memory'); END;
+            """)
 
     def add(self, *, principal_id: str, title: str = "Memory", content: str,
             grounding_excerpt: str | None = None, source_ref: str | None = None,
@@ -90,8 +105,8 @@ class MemoryStore:
                     raise KeyError(supersedes)
                 conn.execute("UPDATE memory_items SET state='superseded',updated_at=CURRENT_TIMESTAMP WHERE item_id=?", (supersedes,))
             conn.execute(
-                "INSERT INTO memory_items(item_id,principal_id,title,content,grounding_excerpt,source_ref,metadata_json,supersedes) VALUES (?,?,?,?,?,?,?,?)",
-                (iid, principal_id, title or "Memory", content, grounding_excerpt, source_ref,
+                "INSERT INTO memory_items(item_id,principal_id,title,content,content_hash,grounding_excerpt,source_ref,metadata_json,supersedes) VALUES (?,?,?,?,?,?,?,?,?)",
+                (iid, principal_id, title or "Memory", content, memory_content_hash(content), grounding_excerpt, source_ref,
                  json.dumps(metadata or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False), supersedes),
             )
             row = conn.execute("SELECT * FROM memory_items WHERE item_id=?", (iid,)).fetchone()
@@ -169,6 +184,10 @@ class MemoryStore:
                 if row["state"] == "active": return self.get(principal_id, item_id, db=conn)
                 raise ValueError("only a retracted memory can be restored")
             return self.get(principal_id, item_id, db=conn)
+
+    def chain_for(self, principal_id: str, item_id: str) -> tuple[dict[str, Any], ...]:
+        with self._db() as db:
+            return self.chain(principal_id, item_id, db=db)
 
     def chain(self, principal_id: str, item_id: str, *, db: sqlite3.Connection) -> tuple[dict[str, Any], ...]:
         if db.execute("SELECT 1 FROM memory_items WHERE item_id=? AND principal_id=?", (item_id, principal_id)).fetchone() is None:

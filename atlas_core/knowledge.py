@@ -28,28 +28,7 @@ class KnowledgeStore:
     def initialize(self) -> None:
         with self._db() as db:
             db.execute("PRAGMA journal_mode=WAL")
-            existing = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='knowledge_items'").fetchone()
-            if existing is not None and "'memory'" in str(existing["sql"] or ""):
-                legacy_memories = db.execute("SELECT COUNT(*) FROM knowledge_items WHERE kind='memory'").fetchone()[0]
-                if legacy_memories:
-                    raise RuntimeError("legacy knowledge memory rows must be migrated before enabling the MemoryRuntime")
-                db.executescript("""
-                DROP TRIGGER IF EXISTS knowledge_ai;
-                DROP TRIGGER IF EXISTS knowledge_ad;
-                DROP TRIGGER IF EXISTS knowledge_au;
-                DROP TABLE IF EXISTS knowledge_fts;
-                ALTER TABLE knowledge_items RENAME TO knowledge_items_legacy;
-                """)
-                self._create_schema(db)
-                db.execute("""INSERT INTO knowledge_items(item_id,kind,title,content,source_ref,metadata_json,created_at,updated_at)
-                              SELECT item_id,kind,title,content,source_ref,metadata_json,created_at,updated_at
-                              FROM knowledge_items_legacy WHERE kind IN ('reference','note')""")
-                db.execute("DROP TABLE knowledge_items_legacy")
-            else:
-                self._create_schema(db)
-            count = db.execute("SELECT COUNT(*) FROM knowledge_fts").fetchone()[0]
-            if count == 0:
-                db.execute("INSERT INTO knowledge_fts(item_id,title,content) SELECT item_id,title,content FROM knowledge_items")
+            self._create_schema(db)
 
     @staticmethod
     def _create_schema(db: sqlite3.Connection) -> None:

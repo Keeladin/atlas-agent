@@ -146,12 +146,15 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     sources = SourceRuntime(source_roots, registry)
     host = HostRuntime(registry, actions_store)
     knowledge_store = KnowledgeStore(work_db); knowledge_store.initialize(); knowledge = KnowledgeRuntime(knowledge_store, registry)
-    memory_store = MemoryStore(work_db); memory_store.initialize(); memory = MemoryRuntime(memory_store, registry, actions_store)
+    chat_store = ChatStore(chat_db); chat_store.initialize()
+    memory_store = MemoryStore(work_db); memory_store.initialize(); memory = MemoryRuntime(
+        memory_store, registry, actions_store, grounding_validator=chat_store.owner_grounding_matches,
+    )
     work_store = WorkStore(work_db); work_store.initialize(); work = WorkRuntime(work_store, capabilities, actions_store)
     cadence_store = CadenceStore(cadence_db); cadence_store.initialize(); cadence = CadenceRuntime(cadence_store, work)
     register_work_capabilities(registry, work)
     register_cadence_capabilities(registry, cadence)
-    chat_store = ChatStore(chat_db); chat_store.initialize(); chat = ChatRuntime(chat_store, providers, registry, capabilities, knowledge_store, memory_store, identities)
+    chat = ChatRuntime(chat_store, providers, registry, capabilities, knowledge_store, memory_store, identities)
 
     runtime = AtlasRuntime(
         root, identities, policy_store, policy, actions_store, evidence, registry,

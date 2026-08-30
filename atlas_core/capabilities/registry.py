@@ -32,7 +32,7 @@ class CapabilityRegistry:
         try:return self._items[capability_id]
         except KeyError as exc:raise KeyError(f"unknown capability: {capability_id}") from exc
     def all(self)->tuple[CapabilityRegistration,...]:return tuple(self._items[key] for key in sorted(self._items))
-    def executor(self, capability_id: str, principal_id: str | None = None) -> Executor:
+    def executor(self, capability_id: str, principal_id: str | None = None, surface: str | None = None) -> Executor:
         item = self.get(capability_id)
         if not item.metadata.get("requires_owner_context"):
             return item.executor
@@ -40,5 +40,7 @@ class CapabilityRegistry:
             contextual = dict(payload)
             if principal_id:
                 contextual["__owner_principal_id"] = principal_id
+            if surface:
+                contextual["__invocation_surface"] = surface
             return item.executor(contextual)
         return execute

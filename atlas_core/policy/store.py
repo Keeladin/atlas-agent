@@ -72,6 +72,23 @@ class PolicyStore:
             row = db.execute("SELECT * FROM policy_events WHERE sequence=?", (sequence,)).fetchone()
         return _rule(row)
 
+    def snapshot(self, principal_id: str) -> tuple[tuple[PolicyRule, ...], int]:
+        with self._db() as db:
+            revision = int(db.execute("SELECT COALESCE(MAX(sequence),0) AS revision FROM policy_events").fetchone()["revision"])
+            rows = db.execute(
+                """
+                SELECT p.* FROM policy_events p
+                JOIN (
+                    SELECT principal_id,scope,operation,MAX(sequence) AS sequence
+                    FROM policy_events WHERE principal_id=?
+                    GROUP BY principal_id,scope,operation
+                ) latest ON latest.sequence=p.sequence
+                ORDER BY p.scope,p.operation
+                """,
+                (principal_id,),
+            ).fetchall()
+        return tuple(_rule(row) for row in rows), revision
+
     def latest_rules(self, principal_id: str) -> tuple[PolicyRule, ...]:
         with self._db() as db:
             rows = db.execute(

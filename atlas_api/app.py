@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from atlas_api.compose import build_runtime
 from atlas_api.routes import api
 from atlas_api.spa import CompanionStaticFiles
 
+logger = logging.getLogger(__name__)
+
 
 async def _cadence_loop(app: Starlette) -> None:
     while True:
@@ -20,7 +23,7 @@ async def _cadence_loop(app: Starlette) -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            pass
+            logger.warning("cadence tick failed", exc_info=True)
         await asyncio.sleep(30)
 
 

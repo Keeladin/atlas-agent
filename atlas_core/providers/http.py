@@ -70,12 +70,13 @@ def _require_env(name: str | None) -> str | None:
 @dataclass
 class OpenAIResponsesProvider:
     spec: ProviderSpec
+    api_key: str | None = None
     api_key_env: str = "OPENAI_API_KEY"
     base_url: str = "https://api.openai.com"
     timeout_seconds: float = 120.0
 
     def generate(self, request: ModelRequest) -> ModelResponse:
-        key = _require_env(self.api_key_env)
+        key = self.api_key or _require_env(self.api_key_env)
         payload: dict[str, Any] = {"model": self.spec.model, "input": request.input}
         if request.system:
             payload["instructions"] = request.system
@@ -105,11 +106,12 @@ class OpenAICompatibleChatProvider:
 
     spec: ProviderSpec
     base_url: str
+    api_key: str | None = None
     api_key_env: str | None = None
     timeout_seconds: float = 120.0
 
     def generate(self, request: ModelRequest) -> ModelResponse:
-        key = _require_env(self.api_key_env)
+        key = self.api_key or _require_env(self.api_key_env)
         messages = []
         if request.system:
             messages.append({"role": "system", "content": request.system})
@@ -138,6 +140,7 @@ class OpenAICompatibleChatProvider:
 @dataclass
 class AnthropicMessagesProvider:
     spec: ProviderSpec
+    api_key: str | None = None
     api_key_env: str = "ANTHROPIC_API_KEY"
     base_url: str = "https://api.anthropic.com"
     api_version: str = "2023-06-01"
@@ -145,7 +148,7 @@ class AnthropicMessagesProvider:
     timeout_seconds: float = 120.0
 
     def generate(self, request: ModelRequest) -> ModelResponse:
-        key = _require_env(self.api_key_env)
+        key = self.api_key or _require_env(self.api_key_env)
         payload: dict[str, Any] = {
             "model": self.spec.model,
             "max_tokens": self.max_tokens,
@@ -168,12 +171,13 @@ class AnthropicMessagesProvider:
 @dataclass
 class GeminiGenerateContentProvider:
     spec: ProviderSpec
+    api_key: str | None = None
     api_key_env: str = "GEMINI_API_KEY"
     base_url: str = "https://generativelanguage.googleapis.com"
     timeout_seconds: float = 120.0
 
     def generate(self, request: ModelRequest) -> ModelResponse:
-        key = _require_env(self.api_key_env)
+        key = self.api_key or _require_env(self.api_key_env)
         payload: dict[str, Any] = {"contents": [{"role": "user", "parts": [{"text": request.input}]}]}
         if request.system:
             payload["system_instruction"] = {"parts": [{"text": request.system}]}

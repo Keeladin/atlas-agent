@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import math
 import logging
+import mimetypes
+import os
 from datetime import datetime, timezone
 from typing import Any
 
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, StreamingResponse
 
 logger = logging.getLogger(__name__)
 
@@ -323,13 +325,56 @@ async def source_roots_list(request: Request) -> JSONResponse:
     return JSONResponse({"roots":[x.public() for x in _runtime(request).source_roots.all() if x.provider_namespace != "atlas-managed"]})
 
 
+async def source_file_view(request: Request) -> Response:
+    gate = require_session(request)
+    if isinstance(gate, JSONResponse):
+        return gate
+    fd = None
+    try:
+        rt = _runtime(request); owner = _owner(request, gate)
+        root_id = str(request.query_params.get("root_id") or "")
+        relative_path = str(request.query_params.get("relative_path") or "")
+        row = rt.source_roots.get(root_id)
+        from atlas_core.sources import validate_relative_path
+        relative_path = validate_relative_path(relative_path)
+        scope = f"files/{row.provider_namespace}/{row.root_id}/{relative_path}"
+        decision = rt.policy.resolve(principal_id=owner.principal_id, scope=scope, operation="read")
+        if decision.decision != "YES":
+            return forbidden("file viewing is not allowed by current owner policy")
+        fd, _ref, info = rt.sources.kernel.open_binary(
+            row.provider_namespace, row.root_id, relative_path,
+            configuration_revision=rt.sources._revision(row),
+        )
+        media_type = mimetypes.guess_type(relative_path)[0] or "application/octet-stream"
+        opened_fd = fd; fd = None
+        def chunks():
+            try:
+                while True:
+                    chunk = os.read(opened_fd, 256 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                os.close(opened_fd)
+        return StreamingResponse(chunks(), media_type=media_type, headers={
+            "Content-Length": str(info.st_size),
+            "Content-Disposition": "inline",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        })
+    except Exception as exc:
+        if fd is not None:
+            os.close(fd)
+        return _error(exc)
+
+
 async def source_root_put(request: Request) -> JSONResponse:
     gate=require_mutation_auth(request)
     if isinstance(gate,JSONResponse):return gate
     try:
         body=await _body(request);rt=_runtime(request)
         root_id=str(body.get("root_id") or "");provider_namespace=str(body.get("provider_namespace") or "local")
-        if root_id == "atlas-managed-intake" or provider_namespace == "atlas-managed": raise ValueError("managed-intake root identity is reserved by Atlas")
+        if root_id in {"atlas-managed-intake", "atlas-library-clean"} or provider_namespace in {"atlas-managed", "atlas-library"}: raise ValueError("Atlas-managed root identity is reserved")
         item=rt.source_roots.put(root_id=root_id,host_path=str(body.get("host_path") or ""),display_name=body.get("display_name"),provider_namespace=provider_namespace,quarantine_relative_path=body.get("quarantine_relative_path",".atlas-quarantine"),enabled=bool(body.get("enabled",True)));rt.sources.reload();rt.seed_policy();return JSONResponse(item.public())
     except Exception as exc:return _error(exc)
 
@@ -338,8 +383,33 @@ async def source_root_delete(request: Request) -> JSONResponse:
     gate=require_mutation_auth(request)
     if isinstance(gate,JSONResponse):return gate
     try:
-        rt=_runtime(request);rt.source_roots.delete(request.path_params["root_id"]);rt.sources.reload();return JSONResponse({"ok":True})
+        rt=_runtime(request); root_id=request.path_params["root_id"]
+        if root_id in {"atlas-managed-intake", "atlas-library-clean"}: raise ValueError("Atlas-managed root cannot be removed")
+        rt.source_roots.delete(root_id);rt.sources.reload();return JSONResponse({"ok":True})
     except Exception as exc:return _error(exc)
+
+
+async def library_scans(request: Request) -> JSONResponse:
+    gate = require_session(request)
+    if isinstance(gate, JSONResponse):
+        return gate
+    return JSONResponse({"scans": list(_runtime(request).library_store.recent_scans())})
+
+
+async def library_scan_detail(request: Request) -> JSONResponse:
+    gate = require_session(request)
+    if isinstance(gate, JSONResponse):
+        return gate
+    try:
+        scan_id = request.path_params["scan_id"]
+        rt = _runtime(request)
+        return JSONResponse({
+            "scan": rt.library_store.get_scan(scan_id),
+            "files": list(rt.library_store.files(scan_id)),
+            "duplicate_groups": list(rt.library_store.duplicate_groups(scan_id)),
+        })
+    except KeyError:
+        return _error(KeyError("library scan not found"), 404)
 
 
 async def knowledge_list(request: Request) -> JSONResponse:

@@ -13,7 +13,7 @@ class WorkRuntime:
         "representation_provider_unavailable", "representation_interpretation_failed",
         "representation_derivation_failed", "model_infer_failed",
         "mcp_unavailable", "mcp_tool_error", "files_error", "files_extract_text_failed",
-        "host_filesystem_error", "knowledge_generation_busy",
+        "host_filesystem_error", "knowledge_generation_busy", "library_materialize_failed",
     }
 
     def __init__(self, store: WorkStore, capabilities: CapabilityRuntime, actions: ActionStore,

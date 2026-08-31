@@ -14,6 +14,7 @@ type SourceObservation = { source_ref: SourceRef; observed_at: string; object_ty
 type Listing = { observation: SourceObservation; entries: SourceObservation[]; next_cursor?: string | null; entry_errors?: Array<Record<string, unknown>> }
 type ArtifactFacet = { root_id?: string | null; relative_path?: string | null; state?: string; byte_sha256?: string | null }
 type Artifact = { artifact_id: string; display_name: string; media_type?: string | null; provenance?: Record<string, unknown>; facets: ArtifactFacet[]; managed_content?: Record<string, unknown>; managed_representations?: Array<Record<string, unknown>>; source_occurrences?: Array<Record<string, unknown>> }
+type LibraryScan = { scan_id: string; status: string; source_roots: string[]; summary: Record<string, number>; error?: string | null; created_at: string; completed_at?: string | null }
 
 function formatBytes(value?: number | null) {
   if (value == null) return '—'
@@ -44,9 +45,11 @@ export function Sources() {
   const roots = useQuery({ queryKey: ['source-roots'], queryFn: () => api<{ roots: SourceRoot[] }>('/api/sources/roots') })
   const artifacts = useQuery({ queryKey: ['artifacts'], queryFn: () => api<{ artifacts: Artifact[] }>('/api/artifacts') })
   const work = useQuery({ queryKey: ['work'], queryFn: () => api<{ work: WorkItem[] }>('/api/work') })
+  const scans = useQuery({ queryKey: ['library-scans'], queryFn: () => api<{ scans: LibraryScan[] }>('/api/library/scans') })
   const [rootId, setRootId] = useState(''); const [path, setPath] = useState('.')
   const [listing, setListing] = useState<Listing | null>(null); const [selected, setSelected] = useState<SourceObservation | null>(null)
   const [sourceControlsOpen, setSourceControlsOpen] = useState(true)
+  const [scanRoots, setScanRoots] = useState<string[]>([])
   const browse = useMutation({
     mutationFn: ({ root, relative, cursor }: { root: string; relative: string; cursor?: string | null }) => api<{ action: ActionOccurrence }>('/api/capabilities/files.list/invoke', { method: 'POST', body: JSON.stringify({ input: { root_id: root, relative_path: relative, page_size: 100, cursor: cursor ?? null } }) }),
     onSuccess: ({ action }, variables) => {
@@ -74,7 +77,21 @@ export function Sources() {
     },
   })
   const enabledRoots = useMemo(() => (roots.data?.roots ?? []).filter(root => root.enabled), [roots.data?.roots])
-  useEffect(() => { if (!rootId && enabledRoots.length) setRootId(enabledRoots[0].root_id) }, [enabledRoots, rootId])
+  const consolidationSources = useMemo(() => enabledRoots.filter(root => root.provider_namespace !== 'atlas-library'), [enabledRoots])
+  const cleanLibraryRoot = useMemo(() => enabledRoots.find(root => root.provider_namespace === 'atlas-library'), [enabledRoots])
+  useEffect(() => { if (!rootId && enabledRoots.length) setRootId((consolidationSources[0] ?? enabledRoots[0]).root_id) }, [consolidationSources, enabledRoots, rootId])
+  useEffect(() => { if (!scanRoots.length && consolidationSources.length) setScanRoots(consolidationSources.map(root => root.root_id)) }, [consolidationSources, scanRoots.length])
+  const scanLibrary = useMutation({
+    mutationFn: () => api<{ action: ActionOccurrence; work?: WorkItem }>('/api/work', { method: 'POST', body: JSON.stringify({
+      objective: 'Consolidate source library into one exact-copy-clean set',
+      steps: [
+        { capability_id: 'library.scan_duplicates', description: 'Recursively hash source files and group exact duplicates', input: { root_ids: scanRoots, max_files: 10000 } },
+        { capability_id: 'library.materialize', description: 'Copy one canonical file per exact-content group into the clean library', input: { scan_id: { $ref: { step: 1, output: '/scan/scan_id' } }, destination_root_id: cleanLibraryRoot?.root_id, destination_relative_path: '.' } },
+      ],
+      run: true,
+    }) }),
+    onSuccess: async () => { await Promise.all([qc.invalidateQueries({ queryKey: ['library-scans'] }), qc.invalidateQueries({ queryKey: ['work'] })]) },
+  })
 
   const artifactRows = useMemo(() => artifacts.data?.artifacts ?? [], [artifacts.data?.artifacts])
   const sourceArtifacts = useMemo(() => {
@@ -90,6 +107,7 @@ export function Sources() {
   const managedId = selectedArtifact?.managed_representations?.[0]?.managed_artifact_id as string | undefined
   const managedArtifact = managedId ? artifactRows.find(item => item.artifact_id === managedId) : undefined
   const linkedWork = selectedArtifact ? (work.data?.work ?? []).filter(item => item.metadata?.source_artifact_id === selectedArtifact.artifact_id || item.metadata?.artifact_id === managedId) : []
+  const latestScan = scans.data?.scans?.[0]
 
   return <Workspace title="Sources" subtitle="External origins, managed custody, and the runtime state created from them." tabs={<SegmentedNav items={OPERATIONS_TABS} />}>
     <Panel title="Source intake">
@@ -123,11 +141,33 @@ export function Sources() {
         {listing.next_cursor ? <button type="button" onClick={() => browse.mutate({ root: rootId, relative: path, cursor: listing.next_cursor })}>Next page</button> : null}
       </div> : enabledRoots.length ? <div className="empty-state compact"><strong>Select Browse to inspect this source</strong><span>Atlas will list only the enrolled root through the governed filesystem capability.</span></div> : null}
     </Panel>
+    <Panel title="Library consolidation">
+      <p className="meta">Recursively hash the selected source roots, keep one canonical copy of every byte-distinct file, and write the clean set into Atlas clean library. Source folders are never modified.</p>
+      <div className="stack" style={{ marginTop: '0.8rem' }}>
+        {consolidationSources.map(root => <label key={root.root_id} className="list-row" style={{ cursor: 'pointer' }}>
+          <span><input type="checkbox" checked={scanRoots.includes(root.root_id)} onChange={event => setScanRoots(current => event.target.checked ? [...current, root.root_id] : current.filter(id => id !== root.root_id))} /> <strong>{root.display_name}</strong></span>
+          <small className="mono">{root.host_path}</small>
+        </label>)}
+      </div>
+      <div className="actions" style={{ marginTop: '0.8rem' }}>
+        <button className="primary" type="button" disabled={!scanRoots.length || !cleanLibraryRoot || scanLibrary.isPending} onClick={() => scanLibrary.mutate()}>
+          {scanLibrary.isPending ? 'Consolidating…' : 'Start consolidation'}
+        </button>
+      </div>
+      {scanLibrary.isError ? <p className="offline-banner">Scan failed: {scanLibrary.error.message}</p> : null}
+      {latestScan ? <div className="operations-summary" style={{ marginTop: '0.8rem' }}>
+        <span>Files <strong>{latestScan.summary.files_scanned ?? 0}</strong></span>
+        <span>Unique <strong>{latestScan.summary.unique_files ?? 0}</strong></span>
+        <span>Duplicate copies <strong>{latestScan.summary.duplicate_copies ?? 0}</strong></span>
+        <span>Groups <strong>{latestScan.summary.duplicate_groups ?? 0}</strong></span>
+      </div> : null}
+    </Panel>
     {selected ? <Panel title="Artifact lifecycle">
       <div className="artifact-lifecycle-head">
         <div><span className="eyebrow">Source file</span><strong>{nameOf(selected)}</strong><small className="mono">{selected.source_ref.relative_path}</small></div>
         <div className="actions">
           <span className={`chip ${managedArtifact ? 'done' : ''}`}>{managedArtifact ? 'managed' : selectedArtifact ? 'established' : 'observed'}</span>
+          <button type="button" onClick={() => window.open(`/api/sources/file?root_id=${encodeURIComponent(selected.source_ref.root_id)}&relative_path=${encodeURIComponent(selected.source_ref.relative_path)}`, '_blank', 'noopener,noreferrer')}>View file</button>
           <button className="primary" type="button" disabled={intake.isPending || Boolean(linkedWork.length)} onClick={() => intake.mutate(selected)}>
             {intake.isPending ? 'Processing…' : linkedWork.length ? 'Intake complete' : managedArtifact ? 'Retry routing' : 'Start intake'}
           </button>

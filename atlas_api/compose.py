@@ -20,6 +20,7 @@ from atlas_core.knowledge import KnowledgeRuntime, KnowledgeStore
 from atlas_core.knowledge.generations import GenerationStore
 from atlas_core.knowledge.indexing import IndexingRuntime
 from atlas_core.knowledge.passages import PassageStore
+from atlas_core.library import LibraryRuntime, LibraryStore
 from atlas_core.mcp import MCPRuntime, MCPServerStore
 from atlas_core.memory import MemoryRuntime, MemoryStore
 from atlas_core.model_runtime import ModelInferenceRuntime
@@ -53,6 +54,8 @@ class AtlasRuntime:
     host: HostRuntime
     knowledge_store: KnowledgeStore
     knowledge: KnowledgeRuntime
+    library_store: LibraryStore
+    library: LibraryRuntime
     passages: PassageStore
     generations: GenerationStore
     indexing: IndexingRuntime
@@ -97,6 +100,8 @@ class AtlasRuntime:
             ("atlas/knowledge/index", "index", "YES"),
             ("atlas/knowledge/index", "verify", "YES"),
             ("atlas/knowledge/index", "activate", "CONFIRM"),
+            ("atlas/library", "scan", "YES"),
+            ("atlas/library", "materialize", "YES"),
             ("atlas/artifacts", "search", "YES"),
             ("atlas/artifacts", "inspect", "YES"),
             ("atlas/artifacts/intake", "classify", "YES"),
@@ -171,6 +176,12 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
         root_id=MANAGED_ROOT_ID, host_path=str(managed_root), display_name="Atlas managed intake",
         provider_namespace=MANAGED_PROVIDER_NAMESPACE, quarantine_relative_path=None, enabled=True,
     )
+    library_root = root / "library-clean"
+    library_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    source_roots.put(
+        root_id="atlas-library-clean", host_path=str(library_root), display_name="Atlas clean library",
+        provider_namespace="atlas-library", quarantine_relative_path=".atlas-quarantine", enabled=True,
+    )
 
     # ActionRuntime resolves the executor at execution time so pending CONFIRM
     # occurrences survive capability refreshes and process restarts.
@@ -188,6 +199,8 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     generations = GenerationStore(work_db); generations.initialize()
     indexing = IndexingRuntime(passages, generations, artifact_store, sources)
     knowledge = KnowledgeRuntime(knowledge_store, registry, indexing)
+    library_store = LibraryStore(work_db); library_store.initialize()
+    library = LibraryRuntime(library_store, sources, registry)
     model_inference = ModelInferenceRuntime(providers, registry)
     representations = RepresentationRuntime(artifact_store, sources, registry, model_provider=providers)
     chat_store = ChatStore(chat_db); chat_store.initialize()
@@ -214,7 +227,7 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     runtime = AtlasRuntime(
         root, identities, policy_store, policy, actions_store, evidence, registry,
         actions, capabilities, credentials, provider_settings, providers,
-        mcp_store, mcp, source_roots, sources, host, knowledge_store, knowledge,
+        mcp_store, mcp, source_roots, sources, host, knowledge_store, knowledge, library_store, library,
         passages, generations, indexing, artifact_store, artifacts, managed_intake, artifact_intake_store, artifact_intake, model_inference, representations, memory_store, memory,
         work_store, work, cadence_store, cadence, chat_store, chat,
     )

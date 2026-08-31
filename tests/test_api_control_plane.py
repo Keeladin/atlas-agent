@@ -128,3 +128,22 @@ def test_memory_routes_use_governed_capabilities_and_confirmation(tmp_path, monk
         assert confirmed.status_code == 200
         assert confirmed.json()["action"]["status"] == "succeeded"
         assert client.get("/api/memory").json()["items"] == []
+
+
+def test_source_file_view_streams_governed_binary_content(tmp_path, monkeypatch):
+    source = tmp_path / "files"; source.mkdir()
+    payload = b"%PDF-1.4\nproof\n%%EOF\n"
+    (source / "manual.pdf").write_bytes(payload)
+    with _client(tmp_path, monkeypatch) as client:
+        csrf = _login(client)
+        enrolled = client.post(
+            "/api/sources/roots",
+            json={"root_id": "manuals", "host_path": str(source), "display_name": "Manuals"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert enrolled.status_code == 200
+        response = client.get("/api/sources/file?root_id=manuals&relative_path=manual.pdf")
+        assert response.status_code == 200
+        assert response.content == payload
+        assert response.headers["content-type"].startswith("application/pdf")
+        assert response.headers["content-disposition"] == "inline"

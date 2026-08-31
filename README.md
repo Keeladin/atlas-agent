@@ -35,7 +35,8 @@ Atlas currently includes:
 - generic MCP over Streamable HTTP and local stdio transports;
 - a Discovery-driven Google Workspace provider surface for Gmail, Drive and Calendar;
 - runtime-managed model providers and encrypted credentials, with decrypted model keys passed directly to provider adapters rather than process-global environment variables;
-- hardened enrolled filesystem roots;
+- hardened enrolled filesystem roots, including governed in-browser file viewing;
+- deterministic library consolidation that hashes whole enrolled roots, preserves originals, and materializes one canonical copy of each exact-content file into an Atlas-owned clean library;
 - host observation and user-systemd service operations;
 - durable Knowledge for references/notes and first-class persistent Memory with supersession, retraction and governed purge;
 - action receipts, evidence and restart reconciliation;
@@ -92,6 +93,7 @@ atlas-work.db       work, steps, action occurrences, evidence, Knowledge, Memory
 atlas-chat.db       conversations and chat turns
 atlas-cadence.db    recurring cadence definitions
 secrets/            encrypted credential database and master key
+library-clean/      Atlas-owned non-destructive canonical-copy output for library consolidation
 ```
 
 Old Atlas Work, Chat, Cadence, HostAction, authority-grant and Morning databases are not reused by this runtime.

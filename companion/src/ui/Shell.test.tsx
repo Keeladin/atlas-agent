@@ -30,7 +30,7 @@ describe('Atlas shell', () => {
     renderShell()
     const nav = screen.getByRole('navigation', { name: 'Primary' })
     const labels = Array.from(nav.querySelectorAll('a')).map(node => node.textContent)
-    expect(labels).toEqual(['Chat', 'Work', 'Sources', 'Atlas'])
+    expect(labels).toEqual(['Chat', 'Operations', 'Atlas'])
     expect(screen.queryByText('Now')).not.toBeInTheDocument()
     expect(screen.queryByText('Morning')).not.toBeInTheDocument()
     expect(await screen.findByText('Chat body')).toBeInTheDocument()

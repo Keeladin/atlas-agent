@@ -108,6 +108,11 @@ class KnowledgeRuntime:
         activate_schema = {"type": "object", "required": ["generation_id"], "properties": {
             "generation_id": {"type": "string", "minLength": 1},
         }, "additionalProperties": False}
+        verify_schema = {"type": "object", "required": ["generation_id"], "properties": {
+            "generation_id": {"type": "string", "minLength": 1},
+            "required_extraction_artifact_ids": {"type": "array", "uniqueItems": True,
+                                                 "items": {"type": "string", "minLength": 1}},
+        }, "additionalProperties": False}
 
         self.registry.register(CapabilityRegistration(
             CapabilityDefinition("knowledge.index", "Segment an extracted artifact into the derived knowledge tier.", "index", "internal", index_schema, source="knowledge", tags=("knowledge", "index")),
@@ -116,11 +121,24 @@ class KnowledgeRuntime:
             metadata={"scope_hint": "atlas/knowledge/index"},
         ), replace=True)
         self.registry.register(CapabilityRegistration(
+            CapabilityDefinition("knowledge.verify_generation", "Deterministically verify a built knowledge generation before activation.", "verify", "internal", verify_schema, source="knowledge", tags=("knowledge", "index", "verification")),
+            lambda p: ScopeResolution("atlas/knowledge/index", dict(p), f"Verify knowledge generation {_short(p['generation_id'])}"),
+            self._verify_execute, metadata={"scope_hint": "atlas/knowledge/index"},
+        ), replace=True)
+        self.registry.register(CapabilityRegistration(
             CapabilityDefinition("knowledge.activate_generation", "Activate a verified knowledge generation as the default retrieval corpus.", "activate", "internal", activate_schema, source="knowledge", tags=("knowledge", "index")),
             lambda p: ScopeResolution("atlas/knowledge/index", dict(p), f"Activate knowledge generation {_short(p['generation_id'])}"),
             self._activate_execute,
             metadata={"scope_hint": "atlas/knowledge/index"},
         ), replace=True)
+
+    def _verify_execute(self, payload: dict[str, Any]) -> ActionResult:
+        try:
+            receipt = self.indexing.verify(payload["generation_id"], required_extraction_artifact_ids=payload.get("required_extraction_artifact_ids"))
+        except (KeyError, ValueError) as exc:
+            return ActionResult(False, {}, {"ok": False, "operation": "verify"}, error_code="generation_not_verifiable", error=str(exc))
+        return ActionResult(True, {"generation_id": payload["generation_id"], "verification": receipt},
+                            {"ok": bool(receipt.get("ok")), "operation": "verify", "generation_id": payload["generation_id"]})
 
     def _activate_execute(self, payload: dict[str, Any]) -> ActionResult:
         try:

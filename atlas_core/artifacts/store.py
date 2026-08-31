@@ -66,6 +66,18 @@ class ArtifactStore:
                 ON artifact_facets(root_id,relative_path) WHERE kind='local_file';
             CREATE INDEX IF NOT EXISTS facet_hash ON artifact_facets(byte_sha256);
             CREATE INDEX IF NOT EXISTS facet_artifact ON artifact_facets(artifact_id);
+            CREATE TABLE IF NOT EXISTS managed_contents(
+                content_sha256 TEXT PRIMARY KEY, managed_artifact_id TEXT NOT NULL UNIQUE,
+                byte_size INTEGER NOT NULL, media_type TEXT, format TEXT NOT NULL,
+                storage_name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS managed_content_sources(
+                link_id TEXT PRIMARY KEY, source_artifact_id TEXT NOT NULL, content_sha256 TEXT NOT NULL,
+                source_root_id TEXT, source_relative_path TEXT, occurrence_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source_artifact_id,content_sha256)
+            );
+            CREATE INDEX IF NOT EXISTS managed_source_artifact ON managed_content_sources(source_artifact_id,created_at);
             """)
 
     # ---- registration (executor-internal bookkeeping)
@@ -110,7 +122,17 @@ class ArtifactStore:
             facets = conn.execute(
                 "SELECT * FROM artifact_facets WHERE artifact_id=? ORDER BY created_at,facet_id", (artifact_id,)
             ).fetchall()
-        return _artifact(row, facets).as_dict()
+        result = _artifact(row, facets).as_dict()
+        managed = self.managed_by_artifact(artifact_id, db=db)
+        if managed is not None:
+            result["managed_content"] = managed
+            with self._db(db) as conn:
+                links = conn.execute("SELECT * FROM managed_content_sources WHERE content_sha256=? ORDER BY created_at,link_id", (managed["content_sha256"],)).fetchall()
+            result["source_occurrences"] = [dict(item) for item in links]
+        else:
+            linked = self.managed_for_source(artifact_id) if db is None else ()
+            if linked: result["managed_representations"] = list(linked)
+        return result
 
     def list(self, principal_id: str, *, name_like: str | None = None, byte_sha256: str | None = None,
              state: str | None = None, limit: int = 100) -> tuple[dict[str, Any], ...]:
@@ -140,6 +162,63 @@ class ArtifactStore:
             rows = conn.execute("SELECT * FROM artifact_facets WHERE byte_sha256=?", (byte_sha256,)).fetchall()
         return tuple(_facet(row).as_dict() for row in rows)
 
+    def local_facets(self, root_id: str) -> tuple[dict[str, Any], ...]:
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM artifact_facets WHERE kind='local_file' AND root_id=? ORDER BY relative_path",
+                (root_id,),
+            ).fetchall()
+        return tuple(_facet(row).as_dict() for row in rows)
+
+    # ---- managed intake / content identity
+
+    def managed_by_hash(self, content_sha256: str, *, db: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+        with self._db(db) as conn:
+            row = conn.execute("SELECT * FROM managed_contents WHERE content_sha256=?", (content_sha256,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def managed_by_artifact(self, artifact_id: str, *, db: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+        with self._db(db) as conn:
+            row = conn.execute("SELECT * FROM managed_contents WHERE managed_artifact_id=?", (artifact_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def managed_for_source(self, source_artifact_id: str) -> tuple[dict[str, Any], ...]:
+        with self._db() as conn:
+            rows = conn.execute(
+                """SELECT l.*,m.managed_artifact_id,m.byte_size,m.media_type,m.format,m.storage_name
+                   FROM managed_content_sources l JOIN managed_contents m USING(content_sha256)
+                   WHERE l.source_artifact_id=? ORDER BY l.created_at DESC,l.link_id DESC""",
+                (source_artifact_id,),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def register_managed_content(self, *, content_sha256: str, managed_artifact_id: str, byte_size: int,
+                                 media_type: str | None, format: str, storage_name: str,
+                                 db: sqlite3.Connection | None = None) -> dict[str, Any]:
+        with self._db(db) as conn:
+            conn.execute(
+                """INSERT INTO managed_contents(content_sha256,managed_artifact_id,byte_size,media_type,format,storage_name)
+                   VALUES (?,?,?,?,?,?) ON CONFLICT(content_sha256) DO NOTHING""",
+                (content_sha256, managed_artifact_id, int(byte_size), media_type, format, storage_name),
+            )
+            row = conn.execute("SELECT * FROM managed_contents WHERE content_sha256=?", (content_sha256,)).fetchone()
+        return dict(row)
+
+    def link_managed_source(self, *, source_artifact_id: str, content_sha256: str, occurrence_id: str,
+                            source_root_id: str | None, source_relative_path: str | None,
+                            db: sqlite3.Connection | None = None) -> dict[str, Any]:
+        with self._db(db) as conn:
+            conn.execute(
+                """INSERT INTO managed_content_sources(link_id,source_artifact_id,content_sha256,source_root_id,source_relative_path,occurrence_id)
+                   VALUES (?,?,?,?,?,?) ON CONFLICT(source_artifact_id,content_sha256) DO NOTHING""",
+                (f"managed_link_{uuid4().hex}", source_artifact_id, content_sha256, source_root_id, source_relative_path, occurrence_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM managed_content_sources WHERE source_artifact_id=? AND content_sha256=?",
+                (source_artifact_id, content_sha256),
+            ).fetchone()
+        return dict(row)
+
     # ---- passive verification
 
     def set_facet_state(self, facet_id: str, state: str, *, db: sqlite3.Connection | None = None) -> None:
@@ -147,12 +226,15 @@ class ArtifactStore:
             conn.execute("UPDATE artifact_facets SET state=? WHERE facet_id=?", (state, facet_id))
 
     def facet_verified(self, facet_id: str, *, observed_at: str, byte_sha256: str | None = None,
-                       byte_size: int | None = None, db: sqlite3.Connection | None = None) -> None:
+                       byte_size: int | None = None, observed: dict[str, Any] | None = None,
+                       db: sqlite3.Connection | None = None) -> None:
         with self._db(db) as conn:
             conn.execute(
                 """UPDATE artifact_facets SET state='present',verified_at=?,
-                   byte_sha256=COALESCE(?,byte_sha256),byte_size=COALESCE(?,byte_size) WHERE facet_id=?""",
-                (observed_at, byte_sha256, byte_size, facet_id),
+                   byte_sha256=COALESCE(?,byte_sha256),byte_size=COALESCE(?,byte_size),
+                   observed_json=CASE WHEN ? IS NULL THEN observed_json ELSE ? END WHERE facet_id=?""",
+                (observed_at, byte_sha256, byte_size, None if observed is None else 1,
+                 None if observed is None else json.dumps(observed, sort_keys=True, separators=(",", ":"), ensure_ascii=False), facet_id),
             )
 
 

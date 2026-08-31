@@ -258,3 +258,36 @@ def test_passive_verification_marks_changed_bytes_stale_and_keeps_them_stale(tmp
     assert second["extraction_artifact_id"] != first["extraction_artifact_id"]
     assert second["text_sha256"] != first["text_sha256"]
     assert h.artifact_store.find_local("docs", name)["state"] == "stale"
+
+
+def test_new_intake_forks_active_generation_and_never_mutates_active_or_candidate(tmp_path):
+    h = Harness(tmp_path)
+    first = h.index(h.extract(h.write("manual-a.md")))
+    h.activate()
+    active_id = first["generation_id"]
+
+    second_extraction = h.extract(h.write("manual-b.md", "# Second\nPressure is 95 bar.\n"))
+    second = h.index(second_extraction)
+    assert second["generation_id"] != active_id
+    assert h.generations.get(active_id)["state"] == "active"
+    with h.passages._db() as db:
+        old_count = db.execute("SELECT COUNT(*) FROM generation_passages WHERE generation_id=?", (active_id,)).fetchone()[0]
+        new_count = db.execute("SELECT COUNT(*) FROM generation_passages WHERE generation_id=?", (second["generation_id"],)).fetchone()[0]
+    assert new_count > old_count
+
+    refused_active = h.invoke("knowledge.index", {
+        "source_artifact_id": second_extraction["artifact_id"],
+        "extraction_artifact_id": second_extraction["extraction_artifact_id"],
+        "generation_id": active_id,
+    })
+    assert refused_active.status == "failed"
+    assert "only a building generation accepts passages" in (refused_active.error or "")
+
+    h.indexing.verify(second["generation_id"])
+    refused_candidate = h.invoke("knowledge.index", {
+        "source_artifact_id": second_extraction["artifact_id"],
+        "extraction_artifact_id": second_extraction["extraction_artifact_id"],
+        "generation_id": second["generation_id"],
+    })
+    assert refused_candidate.status == "failed"
+    assert "only a building generation accepts passages" in (refused_candidate.error or "")

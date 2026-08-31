@@ -111,12 +111,12 @@ class SourceRuntime:
             return ActionResult(True,out,{"ok":True,"provider":"local_files","operation":op,"root_id":row.root_id,"relative_path":rel})
         except LocalSourceError as exc:return ActionResult(False,receipt={"ok":False,"provider":"local_files"},error_code=exc.code,error=exc.message)
         except Exception as exc:return ActionResult(False,receipt={"ok":False,"provider":"local_files"},error_code="files_error",error=str(exc))
-    def _ensure_artifact(self,row:SourceRoot,relative:str,*,occurrence_hint:str,byte_sha256:str|None,byte_size:int|None,principal_id:str,media_type:str|None=None,provenance:dict[str,Any]|None=None)->str:
+    def _ensure_artifact(self,row:SourceRoot,relative:str,*,occurrence_hint:str,byte_sha256:str|None,byte_size:int|None,principal_id:str,media_type:str|None=None,provenance:dict[str,Any]|None=None,observed:dict[str,Any]|None=None)->str:
         """Register (or reuse) the artifact identity for one governed local path."""
         facet=self.artifacts.find_local(row.root_id,relative)
         if facet is not None:return facet["artifact_id"]
         artifact_id=self.artifacts.register(principal_id=principal_id,display_name=relative.rsplit("/",1)[-1],occurrence_id=occurrence_hint,media_type=media_type,provenance=provenance or {"root_id":row.root_id,"relative_path":relative})
-        self.artifacts.add_facet(artifact_id=artifact_id,kind="local_file",occurrence_id=occurrence_hint,root_id=row.root_id,relative_path=relative,byte_sha256=byte_sha256,byte_size=byte_size)
+        self.artifacts.add_facet(artifact_id=artifact_id,kind="local_file",occurrence_id=occurrence_hint,root_id=row.root_id,relative_path=relative,byte_sha256=byte_sha256,byte_size=byte_size,observed=observed)
         return artifact_id
 
     def _verify_facet(self,row:SourceRoot,relative:str,observation:dict[str,Any])->None:
@@ -131,7 +131,7 @@ class SourceRuntime:
                 return
             if facet.get("byte_sha256") and facet["byte_sha256"]!=observed_hash:
                 self.artifacts.set_facet_state(facet["facet_id"],"stale");return
-            self.artifacts.facet_verified(facet["facet_id"],observed_at=observed_at,byte_sha256=observed_hash,byte_size=observation.get("byte_size"))
+            self.artifacts.facet_verified(facet["facet_id"],observed_at=observed_at,byte_sha256=observed_hash,byte_size=observation.get("byte_size"),observed=observation)
         except Exception:
             # Verification is bookkeeping about a read that already succeeded; it must never fail the read.
             pass
@@ -146,7 +146,7 @@ class SourceRuntime:
             extractor=str(payload.get("extractor") or extractor_for(rel))
             result=self.kernel.extract_text(row.provider_namespace,row.root_id,rel,extractor=extractor,configuration_revision=self._revision(row))
             observation=result["observation"]
-            source_artifact_id=self._ensure_artifact(row,rel,occurrence_hint="files.extract_text",byte_sha256=observation.get("byte_sha256"),byte_size=observation.get("byte_size"),principal_id=principal_id,media_type=observation.get("media_type"))
+            source_artifact_id=self._ensure_artifact(row,rel,occurrence_hint="files.extract_text",byte_sha256=observation.get("byte_sha256"),byte_size=observation.get("byte_size"),principal_id=principal_id,media_type=observation.get("media_type"),observed=observation)
             self._verify_facet(row,rel,observation)
             derived_rel=result["derived_relative_path"]
             extraction_artifact_id=self.artifacts.register(
@@ -158,6 +158,101 @@ class SourceRuntime:
             return ActionResult(True,out,{"ok":True,"operation":"extract_text","root_id":row.root_id,"relative_path":rel,"extractor":extractor,"extraction_artifact_id":extraction_artifact_id})
         except LocalSourceError as exc:return ActionResult(False,receipt={"ok":False,"operation":"extract_text"},error_code=exc.code,error=exc.message)
         except Exception as exc:return ActionResult(False,receipt={"ok":False,"operation":"extract_text"},error_code="files_extract_text_failed",error=str(exc))
+
+    def establish_file(self, root_id: str, relative_path: str, *, principal_id: str, occurrence_hint: str = "artifacts.intake_file") -> dict[str, Any]:
+        """Establish durable Artifact identity for one governed local file without semantic interpretation."""
+        if self.artifacts is None:
+            raise ValueError("artifact registry unavailable")
+        if not principal_id:
+            raise ValueError("owner principal unavailable")
+        row = self.store.get(root_id)
+        if not row.enabled:
+            raise ValueError("source root is disabled")
+        rel = validate_relative_path(relative_path)
+        if rel == ".":
+            raise ValueError("relative_path must name a file")
+        observation = self.kernel.stat(
+            row.provider_namespace, row.root_id, rel, configuration_revision=self._revision(row)
+        ).to_dict()
+        if observation.get("object_type") != "regular_file":
+            raise ValueError("source intake requires a regular file")
+        artifact_id = self._ensure_artifact(
+            row, rel, occurrence_hint=occurrence_hint, byte_sha256=observation.get("byte_sha256"),
+            byte_size=observation.get("byte_size"), principal_id=principal_id,
+            media_type=observation.get("media_type"), observed=observation,
+        )
+        return {"artifact_id": artifact_id, "root_id": row.root_id, "relative_path": rel, "observation": observation}
+
+    def diff_source(self, root_id: str, relative_path: str = ".", *, max_entries: int = 1000, principal_id: str | None = None) -> dict[str, Any]:
+        """Compare current source metadata with registered local artifact facets.
+
+        This is detection, not interpretation: it never reads file content. With
+        principal context it establishes Artifact identity from listing metadata and
+        updates known facet state; new/changed/missing candidates are returned for
+        semantic intake.
+        """
+        if self.artifacts is None:
+            raise ValueError("artifact registry unavailable")
+        row = self.store.get(root_id)
+        if not row.enabled:
+            raise ValueError("source root is disabled")
+        base = validate_relative_path(relative_path)
+        current: dict[str, dict[str, Any]] = {}
+        queue = [base]
+        seen = 0
+        while queue:
+            directory = queue.pop(0)
+            cursor = None
+            while True:
+                page = self.kernel.list(row.provider_namespace, row.root_id, directory, page_size=min(500, max_entries), cursor=cursor, configuration_revision=self._revision(row))
+                for entry in page.entries:
+                    seen += 1
+                    if seen > max_entries:
+                        raise ValueError("source diff exceeds max_entries")
+                    data = entry.to_dict(); rel = data["source_ref"]["relative_path"]
+                    name = rel.rsplit("/", 1)[-1]
+                    if name in {DERIVED_RELATIVE_PATH, row.quarantine_relative_path, ".ssh", ".gnupg", "secrets"}:
+                        continue
+                    if data["object_type"] == "directory":
+                        queue.append(rel)
+                    elif data["object_type"] == "regular_file":
+                        current[rel] = data
+                cursor = page.next_cursor
+                if not cursor:
+                    break
+        prefix = "" if base == "." else base + "/"
+        known = {f["relative_path"]: f for f in self.artifacts.local_facets(row.root_id)
+                 if f.get("relative_path") and (base == "." or f["relative_path"] == base or f["relative_path"].startswith(prefix))
+                 and not f["relative_path"].startswith(DERIVED_RELATIVE_PATH + "/")}
+        new, changed, missing = [], [], []
+        for rel, obs in current.items():
+            facet = known.get(rel)
+            candidate = {"root_id": row.root_id, "relative_path": rel, "display_name": rel.rsplit("/",1)[-1],
+                         "byte_size": obs.get("byte_size"), "media_type": obs.get("media_type"),
+                         "observed_at": obs.get("observed_at"), "metadata": obs.get("metadata") or {}}
+            if facet is None:
+                if principal_id:
+                    artifact_id=self._ensure_artifact(row,rel,occurrence_hint="artifacts.diff_source",byte_sha256=None,byte_size=obs.get("byte_size"),principal_id=principal_id,media_type=obs.get("media_type"),observed=obs)
+                    candidate["artifact_id"] = artifact_id
+                new.append(candidate); continue
+            candidate["artifact_id"] = facet["artifact_id"]
+            old_obs = facet.get("observed") or {}; old_meta = old_obs.get("metadata") or {}
+            # Content/hash observations carry pre/post metadata; listing entries carry
+            # the stat metadata directly. Compare the last stable observation to the
+            # current listing without reading file content under a root-level diff.
+            old_meta = old_meta.get("post") or old_meta.get("pre") or old_meta
+            new_meta = obs.get("metadata") or {}
+            metadata_changed = any(old_meta.get(k) is not None and old_meta.get(k) != new_meta.get(k) for k in ("size","mtime_ns","ctime_ns","inode"))
+            if facet.get("state") == "stale" or (facet.get("byte_size") is not None and facet.get("byte_size") != obs.get("byte_size")) or metadata_changed:
+                candidate["previous_state"] = facet.get("state")
+                self.artifacts.set_facet_state(facet["facet_id"], "stale")
+                changed.append(candidate)
+        for rel, facet in known.items():
+            if rel not in current and facet.get("state") != "missing":
+                self.artifacts.set_facet_state(facet["facet_id"], "missing")
+                missing.append({"root_id": row.root_id, "relative_path": rel, "artifact_id": facet["artifact_id"], "previous_state": facet.get("state")})
+        return {"root_id": row.root_id, "relative_path": base, "new": new, "changed": changed, "missing": missing,
+                "counts": {"new": len(new), "changed": len(changed), "missing": len(missing)}, "scanned_files": len(current)}
 
     def _mutation_scope(self,payload:dict[str,Any],op:str)->ScopeResolution:
         row,src=self._root(payload);dst=validate_relative_path(str(payload.get("destination_path") or ""));clean={"root_id":row.root_id,"relative_path":src,"destination_path":dst};return ScopeResolution(f"files/{row.provider_namespace}/{row.root_id}/{src}",clean,f"{op.title()} {src} to {dst}")

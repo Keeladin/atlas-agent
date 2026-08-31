@@ -12,6 +12,14 @@ logger=logging.getLogger(__name__)
 class ProviderRuntime:
     def __init__(self,settings:ProviderSettingsStore,secrets:CredentialStore)->None:self.settings=settings;self.secrets=secrets
     def public_state(self)->tuple[dict[str,Any],...]:return tuple(item.public() for item in self.settings.all())
+    def supports_content(self, kind: str)->tuple[bool,str]:
+        """Report whether an enabled adapter can carry provider-neutral binary content."""
+        wanted=str(kind or "").strip().lower()
+        if wanted=="text":return True,"available"
+        supported={"anthropic":{"image","document"}}
+        enabled=[row for row in self.settings.all() if row.enabled]
+        if any(wanted in supported.get(row.kind,set()) for row in enabled):return True,"available"
+        return False,f"no enabled model provider adapter supports {wanted or 'requested'} content"
     def active(self):
         enabled=[row for row in self.settings.all() if row.enabled]
         if not enabled:raise RuntimeError("no model provider enabled")
@@ -44,6 +52,8 @@ class ProviderRuntime:
             if not row.base_url:raise RuntimeError("openai-compatible provider requires base_url")
             return OpenAICompatibleChatProvider(spec,base_url=row.base_url,api_key=api_key)
         if row.kind=="openai":return OpenAIResponsesProvider(spec,api_key=api_key,base_url=row.base_url or "https://api.openai.com")
-        if row.kind=="anthropic":return AnthropicMessagesProvider(spec,api_key=api_key,base_url=row.base_url or "https://api.anthropic.com")
+        if row.kind=="anthropic":
+            workspace_id=str(row.metadata.get("workspace_id") or row.metadata.get("anthropic_workspace_id") or "").strip() or None
+            return AnthropicMessagesProvider(spec,api_key=api_key,base_url=row.base_url or "https://api.anthropic.com",workspace_id=workspace_id)
         if row.kind=="gemini":return GeminiGenerateContentProvider(spec,api_key=api_key,base_url=row.base_url or "https://generativelanguage.googleapis.com")
         raise RuntimeError(f"unsupported provider kind: {row.kind}")

@@ -320,14 +320,17 @@ async def cadence_delete(request: Request) -> JSONResponse:
 async def source_roots_list(request: Request) -> JSONResponse:
     gate=require_session(request)
     if isinstance(gate,JSONResponse):return gate
-    return JSONResponse({"roots":[x.public() for x in _runtime(request).source_roots.all()]})
+    return JSONResponse({"roots":[x.public() for x in _runtime(request).source_roots.all() if x.provider_namespace != "atlas-managed"]})
 
 
 async def source_root_put(request: Request) -> JSONResponse:
     gate=require_mutation_auth(request)
     if isinstance(gate,JSONResponse):return gate
     try:
-        body=await _body(request);rt=_runtime(request);item=rt.source_roots.put(root_id=str(body.get("root_id") or ""),host_path=str(body.get("host_path") or ""),display_name=body.get("display_name"),provider_namespace=str(body.get("provider_namespace") or "local"),quarantine_relative_path=body.get("quarantine_relative_path",".atlas-quarantine"),enabled=bool(body.get("enabled",True)));rt.sources.reload();rt.seed_policy();return JSONResponse(item.public())
+        body=await _body(request);rt=_runtime(request)
+        root_id=str(body.get("root_id") or "");provider_namespace=str(body.get("provider_namespace") or "local")
+        if root_id == "atlas-managed-intake" or provider_namespace == "atlas-managed": raise ValueError("managed-intake root identity is reserved by Atlas")
+        item=rt.source_roots.put(root_id=root_id,host_path=str(body.get("host_path") or ""),display_name=body.get("display_name"),provider_namespace=provider_namespace,quarantine_relative_path=body.get("quarantine_relative_path",".atlas-quarantine"),enabled=bool(body.get("enabled",True)));rt.sources.reload();rt.seed_policy();return JSONResponse(item.public())
     except Exception as exc:return _error(exc)
 
 

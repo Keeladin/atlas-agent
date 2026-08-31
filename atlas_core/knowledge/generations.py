@@ -151,7 +151,14 @@ class GenerationStore:
     def building(self, *, db: sqlite3.Connection | None = None) -> dict[str, Any] | None:
         with self._db(db) as conn:
             row = conn.execute(
-                "SELECT * FROM generations WHERE state IN ('building','candidate') ORDER BY created_at DESC LIMIT 1"
+                "SELECT * FROM generations WHERE state='building' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        return _generation(row) if row is not None else None
+
+    def candidate(self, *, db: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+        with self._db(db) as conn:
+            row = conn.execute(
+                "SELECT * FROM generations WHERE state='candidate' ORDER BY created_at DESC LIMIT 1"
             ).fetchone()
         return _generation(row) if row is not None else None
 

@@ -28,7 +28,7 @@ Companion is Atlas's owner UI. It exposes runtime truth and control; it does not
 Atlas currently includes:
 
 - authenticated conversational Chat;
-- durable Work and recurring Cadence;
+- durable Work and recurring Cadence, with governed compound-Artifact inspection and semantic intake/classification occurring before Work is created;
 - an append-only owner policy with literal `NO`, `YES` and `CONFIRM` decisions;
 - durable exact-action confirmations bound to the normalized payload hash;
 - full discovered MCP and n8n capability inventory;
@@ -66,7 +66,7 @@ Authentication, provider attestation, schema validation, filesystem containment 
 
 `CapabilityRegistry` is the complete runtime inventory. Registration and discovery never imply permission.
 
-Native capabilities include Knowledge, Memory, Work, Cadence, local sources and host operations. Every tool advertised by an enabled MCP server is registered dynamically. n8n is treated as an MCP-backed capability provider and is not restricted to a handcrafted subset. MCP transport may be Streamable HTTP or a locally spawned stdio provider.
+Native capabilities include Artifacts/intake, Knowledge, Memory, Work, Cadence, local sources and host operations. Every tool advertised by an enabled MCP server is registered dynamically. n8n is treated as an MCP-backed capability provider and is not restricted to a handcrafted subset. MCP transport may be Streamable HTTP or a locally spawned stdio provider.
 
 Each capability definition carries its discovered input schema. Companion consumes that same live inventory to group tools by provider/category, render common schema fields, expose availability and authority, and invoke the generic capability endpoint. Unsupported or unusually complex schemas fall back to editable JSON rather than requiring a provider-specific screen.
 

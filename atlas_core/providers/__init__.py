@@ -1,4 +1,4 @@
-from .contracts import ModelProvider, ModelRequest, ModelResponse, ProviderSpec
+from .contracts import ModelContentPart, ModelProvider, ModelRequest, ModelResponse, ProviderSpec
 from .http import (
     AnthropicMessagesProvider,
     GeminiGenerateContentProvider,
@@ -12,6 +12,7 @@ from .settings import ProviderSettings, ProviderSettingsStore
 __all__ = [
     "AnthropicMessagesProvider",
     "GeminiGenerateContentProvider",
+    "ModelContentPart",
     "ModelProvider",
     "ModelRequest",
     "ModelResponse",

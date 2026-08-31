@@ -188,7 +188,17 @@ Work persists an objective and ordered semantic capability steps. It does not pe
 
 When a step runs it invokes `CapabilityRuntime`, so current policy governs the actual action. A pending confirmation pauses Work; success resumes the sequence; blocked/failed/expired actions fail the relevant step.
 
-Cadence stores recurring duties and periodically materializes them as normal Work. It has no privileged execution path around Work or policy.
+Cadence stores recurring duties. `work_template` cadences materialize normal Work; `intake_sweep` cadences schedule bounded monitored-Source intake outside Work, where each Artifact is independently classified and may create one ordinary Work item. Neither kind has a privileged execution path around capability policy.
+
+### Artifact intake before Work
+
+A monitored Source event is not itself Work. Deterministic detection first establishes or resolves an Artifact. Atlas then performs one bounded semantic classification over that Artifact and selects a workflow intent. Work is created only when that classification establishes a real durable responsibility.
+
+Classification describes purpose, Knowledge disposition and relationship; it does not prescribe file-modality mechanics such as OCR, table parsing, image extraction, chunking or embeddings. Runtime-owned workflow templates translate an approved workflow intent into capability steps. Model output can therefore select `knowledge.ingest` but cannot manufacture its executable steps.
+
+Routed Work keeps its opaque `work_id` as immutable identity and may also carry a human display reference such as `AA-001`: first letter = Artifact/responsibility class, second letter = workflow class, number = per-route sequence. Display references are descriptive history, never identity or authority.
+
+Work inputs may use backward-only `$ref` references to completed prior-step outputs. References are resolved before capability invocation and policy resolution and fail closed on invalid or forward pointers.
 
 ## 12. Models and providers
 
@@ -199,6 +209,14 @@ The provider runtime supports OpenAI-compatible chat endpoints, OpenAI Responses
 Enabled providers are attempted in runtime priority order. Transport/provider failure falls through to another enabled provider rather than changing Atlas semantics, and the failed provider is logged as an operational warning. Decrypted model credentials are passed directly from `CredentialStore` to the selected in-process adapter; they are never round-tripped through process-global environment variables.
 
 The model receives a bounded capability shortlist and can request a wider capability search. It returns either a conversational reply, a semantic capability selection or a capability-search request. Authorization is never delegated to the model. Capability-search fallback is limited to the small core signpost set rather than an alphabetical registry slice. Tool-result bounding preserves intact capability/status/trust envelopes, caps oversized item content, and omits older results first when the turn budget is exceeded.
+
+### PDF-derived Knowledge
+
+The first binary Knowledge extraction contract is `pdf@1`. It reads complete source bytes under a separate 64 MiB extraction cap, emits deterministic page text and detected tables, and records `extractor:pdf@1` in derived Artifact provenance. OCR, layout semantics and image/diagram interpretation are outside this extractor; unresolved visual modalities remain explicit inspection state.
+
+Heavy semantic representations sit behind a replaceable provider boundary. Intake classification may declare semantic representation needs such as OCR without naming an implementation. Runtime maps an executable need to `representations.derive`, which is governed against the concrete Source scope, hands complete bounded bytes to an external subprocess, materializes provider output in the managed derived area, and registers a lineage-bearing derived Artifact. Provider subprocesses receive a minimal environment rather than Atlas/model credentials. Unsupported or unavailable representation needs fail closed before Work is created.
+
+The first live representation provider is OCR-only: `atlas_providers/representation_ocr.py` runs RapidOCR/ONNX Runtime in a separate external provider environment, using PyMuPDF only to rasterize PDF pages. Provider capability advertisement is need-specific, so configuring OCR never implies that layout, table semantics or visual interpretation are available.
 
 ## 13. Memory, Knowledge and Chat
 

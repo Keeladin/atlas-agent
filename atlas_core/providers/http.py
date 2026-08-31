@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import urllib.error
@@ -33,6 +34,67 @@ def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any], timeo
         raise ProviderHTTPError("Provider returned a non-object JSON response.")
     return value
 
+
+
+def _anthropic_content(request: ModelRequest) -> str | list[dict[str, Any]]:
+    if not request.content:
+        return request.input
+    blocks: list[dict[str, Any]] = []
+    if request.input:
+        blocks.append({"type": "text", "text": request.input})
+    for part in request.content:
+        if part.kind == "text":
+            if part.text:
+                blocks.append({"type": "text", "text": part.text})
+            continue
+        if part.data is None or not part.media_type:
+            raise ProviderHTTPError(f"{part.kind} model content requires bytes and media_type")
+        source = {
+            "type": "base64",
+            "media_type": part.media_type,
+            "data": base64.b64encode(part.data).decode("ascii"),
+        }
+        if part.kind == "image":
+            blocks.append({"type": "image", "source": source})
+        elif part.kind == "document":
+            blocks.append({"type": "document", "source": source})
+        else:
+            raise ProviderHTTPError(f"unsupported model content kind: {part.kind}")
+    if not blocks:
+        raise ProviderHTTPError("model request has no usable content")
+    return blocks
+
+
+def _reject_multimodal(request: ModelRequest, provider_name: str) -> None:
+    if request.content:
+        raise ProviderHTTPError(f"{provider_name} adapter does not yet implement multimodal ModelRequest content")
+
+
+_ANTHROPIC_UNSUPPORTED_SCHEMA_CONSTRAINTS = {
+    # Anthropic structured outputs accept the structural schema but reject a
+    # number of validation-only JSON Schema keywords. Atlas retains and
+    # enforces the complete original schema after generation.
+    "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+    "minLength", "maxLength", "pattern", "format",
+    "minItems", "maxItems", "uniqueItems",
+    "minProperties", "maxProperties",
+}
+
+def _anthropic_output_schema(value: Any) -> Any:
+    """Project Atlas' full JSON Schema onto Anthropic's supported output subset.
+
+    Atlas still validates the returned object against the original schema locally, so
+    provider-specific schema limitations never weaken the runtime contract.
+    """
+    if isinstance(value, list):
+        return [_anthropic_output_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: _anthropic_output_schema(item)
+        for key, item in value.items()
+        if key not in _ANTHROPIC_UNSUPPORTED_SCHEMA_CONSTRAINTS
+    }
 
 def _normalize_usage(usage: dict[str, Any], *, family: str) -> dict[str, Any]:
     metrics = dict(usage)
@@ -77,6 +139,7 @@ class OpenAIResponsesProvider:
 
     def generate(self, request: ModelRequest) -> ModelResponse:
         key = self.api_key or _require_env(self.api_key_env)
+        _reject_multimodal(request, "OpenAI Responses")
         payload: dict[str, Any] = {"model": self.spec.model, "input": request.input}
         if request.system:
             payload["instructions"] = request.system
@@ -112,6 +175,7 @@ class OpenAICompatibleChatProvider:
 
     def generate(self, request: ModelRequest) -> ModelResponse:
         key = self.api_key or _require_env(self.api_key_env)
+        _reject_multimodal(request, "OpenAI-compatible chat")
         messages = []
         if request.system:
             messages.append({"role": "system", "content": request.system})
@@ -146,19 +210,32 @@ class AnthropicMessagesProvider:
     api_version: str = "2023-06-01"
     max_tokens: int = 4096
     timeout_seconds: float = 120.0
+    workspace_id: str | None = None
 
     def generate(self, request: ModelRequest) -> ModelResponse:
         key = self.api_key or _require_env(self.api_key_env)
         payload: dict[str, Any] = {
             "model": self.spec.model,
             "max_tokens": self.max_tokens,
-            "messages": [{"role": "user", "content": request.input}],
+            "messages": [{"role": "user", "content": _anthropic_content(request)}],
         }
         if request.system:
             payload["system"] = request.system
+        response_format = request.metadata.get("response_format")
+        if isinstance(response_format, dict) and response_format.get("type") == "json_schema":
+            wrapper = response_format.get("json_schema")
+            schema = wrapper.get("schema") if isinstance(wrapper, dict) else None
+            if isinstance(schema, dict):
+                # Anthropic structured outputs use output_config.format, while
+                # Atlas keeps one provider-neutral response_format contract.
+                payload["output_config"] = {"format": {"type": "json_schema", "schema": _anthropic_output_schema(schema)}}
+        headers = {"x-api-key": str(key), "anthropic-version": self.api_version}
+        workspace_id = (self.workspace_id or str(self.spec.metadata.get("workspace_id") or self.spec.metadata.get("anthropic_workspace_id") or "")).strip()
+        if workspace_id:
+            headers["anthropic-workspace-id"] = workspace_id
         raw = _post_json(
             self.base_url.rstrip("/") + "/v1/messages",
-            {"x-api-key": str(key), "anthropic-version": self.api_version},
+            headers,
             payload,
             self.timeout_seconds,
         )
@@ -178,6 +255,7 @@ class GeminiGenerateContentProvider:
 
     def generate(self, request: ModelRequest) -> ModelResponse:
         key = self.api_key or _require_env(self.api_key_env)
+        _reject_multimodal(request, "Gemini")
         payload: dict[str, Any] = {"contents": [{"role": "user", "parts": [{"text": request.input}]}]}
         if request.system:
             payload["system_instruction"] = {"parts": [{"text": request.system}]}

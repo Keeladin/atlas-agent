@@ -1,7 +1,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
+
+
+@dataclass(frozen=True)
+class ModelContentPart:
+    """Provider-neutral multimodal input carried across the model boundary."""
+
+    kind: Literal["text", "image", "document"]
+    text: str | None = None
+    data: bytes | None = None
+    media_type: str | None = None
+    source_ref: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def text_part(cls, text: str, *, source_ref: str | None = None) -> "ModelContentPart":
+        return cls(kind="text", text=text, source_ref=source_ref)
+
+    @classmethod
+    def binary(cls, kind: Literal["image", "document"], data: bytes, media_type: str, *, source_ref: str | None = None, metadata: dict[str, Any] | None = None) -> "ModelContentPart":
+        return cls(kind=kind, data=data, media_type=media_type, source_ref=source_ref, metadata=dict(metadata or {}))
 
 
 @dataclass(frozen=True)
@@ -9,6 +29,7 @@ class ModelRequest:
     capability_id: str
     system: str
     input: str
+    content: tuple[ModelContentPart, ...] = ()
     max_output_chars: int | None = None
     temperature: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

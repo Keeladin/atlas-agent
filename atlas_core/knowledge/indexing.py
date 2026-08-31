@@ -30,19 +30,29 @@ class IndexingRuntime:
     # ---- generation helpers
 
     def current_generation(self) -> dict[str, Any] | None:
-        return self.generations.active() or self.generations.building()
+        return self.generations.building() or self.generations.candidate() or self.generations.active()
 
     def ensure_generation(self, occurrence_hint: str = "knowledge.index") -> dict[str, Any]:
-        existing = self.current_generation()
+        existing = self.generations.building()
         if existing is not None:
             return existing
+        active = self.generations.active()
         generation_id = self.generations.create(
-            extractor_config_id="extractor:text@1", segmenter_config_id=SEGMENTER_HEADINGS_V1,
-            mechanisms=[FTS_MECHANISM], occurrence_id=occurrence_hint,
+            extractor_config_id=active["extractor_config_id"] if active else "extractor:text@1",
+            segmenter_config_id=active["segmenter_config_id"] if active else SEGMENTER_HEADINGS_V1,
+            mechanisms=list(active["mechanisms"]) if active else [FTS_MECHANISM],
+            occurrence_id=occurrence_hint, corpus=dict(active.get("corpus") or {}) if active else {},
         )
+        if active is not None:
+            with self.passages._db() as db:
+                db.execute(
+                    """INSERT INTO generation_passages(generation_id,passage_id,state)
+                       SELECT ?,passage_id,state FROM generation_passages WHERE generation_id=?""",
+                    (generation_id, active["generation_id"]),
+                )
         return self.generations.get(generation_id)
 
-    def verify(self, generation_id: str) -> dict[str, Any]:
+    def verify(self, generation_id: str, *, required_extraction_artifact_ids: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
         """Deterministic verification receipt. A generation that fails is never servable."""
         generation = self.generations.get(generation_id)
         if generation["state"] not in {"building", "verifying", "candidate"}:
@@ -64,11 +74,25 @@ class IndexingRuntime:
                    WHERE g.generation_id=? AND p.passage_id IS NULL""",
                 (generation_id,),
             ).fetchone()[0])
+        required = tuple(dict.fromkeys(str(item) for item in (required_extraction_artifact_ids or ()) if str(item)))
+        missing_required: list[str] = []
+        if required:
+            with self.passages._db() as db:
+                for extraction_artifact_id in required:
+                    count = int(db.execute(
+                        """SELECT COUNT(*) FROM generation_passages g
+                           JOIN passages p ON p.passage_id=g.passage_id
+                           WHERE g.generation_id=? AND g.state='current' AND p.extraction_artifact_id=?""",
+                        (generation_id, extraction_artifact_id),
+                    ).fetchone()[0])
+                    if count == 0:
+                        missing_required.append(extraction_artifact_id)
         receipt = {
             "passages": passage_count, "sources": source_count, "orphan_memberships": orphans,
+            "required_extractions": {"checked": len(required), "missing": missing_required},
             "canaries": {"checked": 0, "passed": 0},
         }
-        ok = passage_count > 0 and orphans == 0
+        ok = passage_count > 0 and orphans == 0 and not missing_required
         receipt["ok"] = ok
         self.generations.set_state(generation_id, "candidate" if ok else "failed", verification=receipt)
         return receipt
@@ -92,8 +116,8 @@ class IndexingRuntime:
         if facet is None:
             raise PermissionError("extraction artifact has no managed derived-area representation")
         generation = self.generations.get(generation_id) if generation_id else self.ensure_generation(occurrence_hint)
-        if generation["state"] not in {"building", "candidate", "active"}:
-            raise ValueError("generation is not accepting passages")
+        if generation["state"] != "building":
+            raise ValueError("only a building generation accepts passages")
 
         root = self.sources.store.get(facet["root_id"])
         read = self.sources.kernel.read(root.provider_namespace, root.root_id, facet["relative_path"])
@@ -130,7 +154,7 @@ class IndexingRuntime:
         if generation in {None, "active"}:
             target = self.generations.active()
         elif generation == "candidate":
-            target = self.generations.building()
+            target = self.generations.candidate()
         else:
             try:
                 target = self.generations.get(generation)

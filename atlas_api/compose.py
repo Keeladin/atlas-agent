@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import Any
 
 from atlas_core.actions import ActionRuntime, ActionStore
-from atlas_core.artifacts import ArtifactRuntime, ArtifactStore
+from atlas_core.artifacts import (
+    ArtifactRuntime, ArtifactStore, ArtifactIntakeRuntime, ArtifactIntakeStore,
+    ManagedIntakeRuntime, MANAGED_ROOT_ID, MANAGED_PROVIDER_NAMESPACE,
+)
 from atlas_core.cadence import CadenceRuntime, CadenceStore
 from atlas_core.cadence.runtime import register_cadence_capabilities
 from atlas_core.capabilities import CapabilityRegistry, CapabilityRuntime
@@ -19,8 +22,10 @@ from atlas_core.knowledge.indexing import IndexingRuntime
 from atlas_core.knowledge.passages import PassageStore
 from atlas_core.mcp import MCPRuntime, MCPServerStore
 from atlas_core.memory import MemoryRuntime, MemoryStore
+from atlas_core.model_runtime import ModelInferenceRuntime
 from atlas_core.policy import OwnerPolicy, PolicyStore
 from atlas_core.providers import ProviderRuntime, ProviderSettingsStore
+from atlas_core.representations import RepresentationRuntime
 from atlas_core.secrets import CredentialStore
 from atlas_core.sources import SourceRootStore, SourceRuntime
 from atlas_core.work import WorkRuntime, WorkStore
@@ -53,6 +58,11 @@ class AtlasRuntime:
     indexing: IndexingRuntime
     artifact_store: ArtifactStore
     artifacts: ArtifactRuntime
+    managed_intake: ManagedIntakeRuntime
+    artifact_intake_store: ArtifactIntakeStore
+    artifact_intake: ArtifactIntakeRuntime
+    model_inference: ModelInferenceRuntime
+    representations: RepresentationRuntime
     memory_store: MemoryStore
     memory: MemoryRuntime
     work_store: WorkStore
@@ -70,7 +80,7 @@ class AtlasRuntime:
             "policy_revision": self.policy_store.revision(),
             "providers": list(self.providers.public_state()),
             "mcp_servers": list(self.mcp.public_state()),
-            "source_roots": list(self.sources.public_state()),
+            "source_roots": [row for row in self.sources.public_state() if row.get("provider_namespace") != MANAGED_PROVIDER_NAMESPACE],
             "connections": [item.as_dict() for item in self.identities.connections(owner_principal_id=owner.principal_id)],
             "service_bindings": [item.as_dict() for item in self.identities.service_bindings()],
             "pending_confirmations": [item.public() for item in self.actions_store.pending(principal_id=owner.principal_id)],
@@ -85,9 +95,12 @@ class AtlasRuntime:
             ("atlas/knowledge", "promote", "YES"),
             ("atlas/knowledge", "delete", "CONFIRM"),
             ("atlas/knowledge/index", "index", "YES"),
+            ("atlas/knowledge/index", "verify", "YES"),
             ("atlas/knowledge/index", "activate", "CONFIRM"),
             ("atlas/artifacts", "search", "YES"),
             ("atlas/artifacts", "inspect", "YES"),
+            ("atlas/artifacts/intake", "classify", "YES"),
+            ("atlas/model", "infer", "YES"),
             ("atlas/memory", "search", "YES"),
             ("atlas/memory", "remember", "YES"),
             ("atlas/memory", "update", "YES"),
@@ -118,7 +131,7 @@ class AtlasRuntime:
         for root in self.source_roots.all():
             scope = f"files/{root.provider_namespace}/{root.root_id}"
             seeds.extend((scope, op, decision) for op, decision in [
-                ("list", "YES"), ("stat", "YES"), ("hash", "YES"), ("read", "YES"), ("extract_text", "YES"),
+                ("list", "YES"), ("stat", "YES"), ("hash", "YES"), ("read", "YES"), ("inspect", "YES"), ("extract_text", "YES"), ("derive", "YES"), ("interpret", "YES"), ("diff", "YES"), ("verify_format", "YES"), ("acquire", "YES"), ("intake", "YES"),
                 ("copy", "CONFIRM"), ("move", "CONFIRM"), ("rename", "CONFIRM"),
                 ("delete", "CONFIRM"), ("restore", "CONFIRM"),
             ])
@@ -152,6 +165,12 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     providers = ProviderRuntime(provider_settings, credentials)
     mcp_store = MCPServerStore(identity_db); mcp_store.initialize()
     source_roots = SourceRootStore(identity_db); source_roots.initialize()
+    managed_root = root / "managed-intake"
+    managed_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    source_roots.put(
+        root_id=MANAGED_ROOT_ID, host_path=str(managed_root), display_name="Atlas managed intake",
+        provider_namespace=MANAGED_PROVIDER_NAMESPACE, quarantine_relative_path=None, enabled=True,
+    )
 
     # ActionRuntime resolves the executor at execution time so pending CONFIRM
     # occurrences survive capability refreshes and process restarts.
@@ -160,20 +179,28 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
 
     mcp = MCPRuntime(mcp_store, credentials, registry); mcp.refresh_all()
     artifact_store = ArtifactStore(work_db); artifact_store.initialize()
-    artifacts = ArtifactRuntime(artifact_store, registry)
     sources = SourceRuntime(source_roots, registry, artifact_store)
+    artifacts = ArtifactRuntime(artifact_store, registry, sources)
+    managed_intake = ManagedIntakeRuntime(artifact_store, sources, registry)
     host = HostRuntime(registry, actions_store)
     knowledge_store = KnowledgeStore(work_db); knowledge_store.initialize()
     passages = PassageStore(work_db); passages.initialize()
     generations = GenerationStore(work_db); generations.initialize()
     indexing = IndexingRuntime(passages, generations, artifact_store, sources)
     knowledge = KnowledgeRuntime(knowledge_store, registry, indexing)
+    model_inference = ModelInferenceRuntime(providers, registry)
+    representations = RepresentationRuntime(artifact_store, sources, registry, model_provider=providers)
     chat_store = ChatStore(chat_db); chat_store.initialize()
     memory_store = MemoryStore(work_db); memory_store.initialize(); memory = MemoryRuntime(
         memory_store, registry, actions_store, grounding_validator=chat_store.owner_grounding_matches,
     )
     work_store = WorkStore(work_db); work_store.initialize(); work = WorkRuntime(work_store, capabilities, actions_store)
-    cadence_store = CadenceStore(cadence_db); cadence_store.initialize(); cadence = CadenceRuntime(cadence_store, work)
+    artifact_intake_store = ArtifactIntakeStore(work_db); artifact_intake_store.initialize()
+    artifact_intake = ArtifactIntakeRuntime(
+        artifact_intake_store, artifact_store, providers, work, registry, capabilities,
+        representations=representations, managed_intake=managed_intake,
+    )
+    cadence_store = CadenceStore(cadence_db); cadence_store.initialize(); cadence = CadenceRuntime(cadence_store, work, artifact_intake)
     register_work_capabilities(registry, work)
     register_cadence_capabilities(registry, cadence)
     chat = ChatRuntime(chat_store, providers, registry, capabilities, knowledge, memory_store, identities,
@@ -183,7 +210,7 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
         root, identities, policy_store, policy, actions_store, evidence, registry,
         actions, capabilities, credentials, provider_settings, providers,
         mcp_store, mcp, source_roots, sources, host, knowledge_store, knowledge,
-        passages, generations, indexing, artifact_store, artifacts, memory_store, memory,
+        passages, generations, indexing, artifact_store, artifacts, managed_intake, artifact_intake_store, artifact_intake, model_inference, representations, memory_store, memory,
         work_store, work, cadence_store, cadence, chat_store, chat,
     )
     runtime.seed_policy()

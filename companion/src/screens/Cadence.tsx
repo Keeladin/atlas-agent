@@ -5,8 +5,7 @@ import type { Cadence, Capability } from '../api/types'
 import { Panel } from '../ui/Panel'
 import { SegmentedNav } from '../ui/SegmentedNav'
 import { Workspace } from '../ui/Workspace'
-
-const TABS = [{ to: '/work', label: 'Work', end: true }, { to: '/cadence', label: 'Cadence', end: true }]
+import { OPERATIONS_TABS } from './operationsNav'
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
 type StepDraft = { capability_id: string; input: string }
@@ -52,7 +51,7 @@ export function CadenceList() {
   }
 
   const available = (capabilities.data?.capabilities ?? []).filter(item => item.available && !item.id.startsWith('cadence.'))
-  return <Workspace title="Cadence" subtitle="Recurring standing duties that instantiate ordinary Work." tabs={<SegmentedNav items={TABS} />}>
+  return <Workspace title="Cadence" subtitle="Recurring standing duties that instantiate ordinary Work." tabs={<SegmentedNav items={OPERATIONS_TABS} />}>
     <div className="cadence-layout">
       <Panel title="Standing duties">
         {query.isError ? <p className="offline-banner">{query.error.message}</p> : null}

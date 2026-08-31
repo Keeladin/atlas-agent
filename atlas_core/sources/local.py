@@ -28,6 +28,8 @@ FILESYSTEM_POLICY_VERSION = "local-files-v1"
 DEFAULT_LIST_PAGE_SIZE = 100
 MAX_LIST_PAGE_SIZE = 500
 MAX_READ_BYTES = 4 * 1024 * 1024
+MAX_INSPECTION_BYTES = 2 * 1024 * 1024
+MAX_EXTRACTION_BYTES = 64 * 1024 * 1024
 MAX_HASH_BYTES = 1024 * 1024 * 1024
 LIST_STAT_TIMEOUT_SECONDS = 10.0
 READ_HASH_TIMEOUT_SECONDS = 60.0
@@ -459,6 +461,52 @@ class LocalSourceKernel:
             os.close(fd)
         return self._stream_observation(root, ref, "hash", pre, post, total, digest.hexdigest())
 
+    def probe(
+        self, provider_namespace: str, root_id: str, relative_path: str, *,
+        max_bytes: int = MAX_INSPECTION_BYTES, configuration_revision: str | None = None,
+        cancellation: CancellationToken | None = None, timeout_seconds: float = READ_HASH_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
+        """Read a bounded byte probe for deterministic structural inspection.
+
+        The probe uses the same retained-root/openat containment as ordinary reads.
+        Raw bytes stay inside the runtime; callers should expose only bounded
+        structural observations derived from them.
+        """
+        limit = max(1, min(int(max_bytes), MAX_READ_BYTES))
+        deadline = self._deadline(timeout_seconds, READ_HASH_TIMEOUT_SECONDS)
+        root, ref = self._prepare(provider_namespace, root_id, relative_path, configuration_revision, cancellation, deadline)
+        fd = self._open_content(root, ref.relative_path)
+        chunks: list[bytes] = []
+        try:
+            pre = os.fstat(fd)
+            self._require_regular(pre, root_id, ref.relative_path)
+            remaining = min(pre.st_size, limit)
+            digest = hashlib.sha256() if pre.st_size <= limit else None
+            total = 0
+            while remaining > 0:
+                self._check(cancellation, deadline, root_id, ref.relative_path)
+                chunk = os.read(fd, min(STREAM_BUFFER_BYTES, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk); total += len(chunk); remaining -= len(chunk)
+                if digest is not None: digest.update(chunk)
+            post = os.fstat(fd)
+        except OSError as exc:
+            raise _os_error(exc, root_id, ref.relative_path)
+        finally:
+            os.close(fd)
+        if _has_drift(pre, post):
+            raise LocalSourceError("drifted", "Source changed during inspection probe.", root_id=root_id, relative_path=ref.relative_path)
+        complete = total == pre.st_size
+        observation = SourceObservation.create(
+            source_ref=ref, observed_at=_utc_now(), observation_kind="content", object_type="regular_file",
+            consistency="stable", completeness="complete" if complete else "bounded", byte_size=pre.st_size,
+            byte_sha256=digest.hexdigest() if digest is not None and complete else None,
+            metadata={"pre": _stat_metadata(pre), "post": _stat_metadata(post), "probe_bytes": total},
+            acquisition=self._acquisition(root, "inspect"),
+        )
+        return {"observation": observation.to_dict(), "raw": b"".join(chunks), "complete": complete}
+
     def read(
         self, provider_namespace: str, root_id: str, relative_path: str, *,
         configuration_revision: str | None = None, cancellation: CancellationToken | None = None,
@@ -502,33 +550,129 @@ class LocalSourceKernel:
         result = SourceReadResult(observation, text, "utf-8", bom)
         return result
 
-    def extract_text(
+    def read_bytes_for_extraction(
         self, provider_namespace: str, root_id: str, relative_path: str, *,
-        extractor: str, configuration_revision: str | None = None,
-        cancellation: CancellationToken | None = None,
+        configuration_revision: str | None = None, cancellation: CancellationToken | None = None,
+        timeout_seconds: float = READ_HASH_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
-        """Materialize a deterministic text extraction inside the managed derived area.
+        """Read complete source bytes for a deterministic extractor, never truncated."""
+        deadline = self._deadline(timeout_seconds, READ_HASH_TIMEOUT_SECONDS)
+        root, ref = self._prepare(provider_namespace, root_id, relative_path, configuration_revision, cancellation, deadline)
+        fd = self._open_content(root, ref.relative_path)
+        chunks: list[bytes] = []
+        try:
+            pre = os.fstat(fd)
+            self._require_regular(pre, root_id, ref.relative_path)
+            if pre.st_size > MAX_EXTRACTION_BYTES:
+                raise LocalSourceError("too_large", "Source exceeds the extraction byte limit.", root_id=root_id, relative_path=ref.relative_path)
+            total = 0; digest = hashlib.sha256()
+            while True:
+                self._check(cancellation, deadline, root_id, ref.relative_path)
+                chunk = os.read(fd, min(STREAM_BUFFER_BYTES, MAX_EXTRACTION_BYTES + 1 - total))
+                if not chunk: break
+                total += len(chunk)
+                if total > MAX_EXTRACTION_BYTES:
+                    raise LocalSourceError("too_large", "Source exceeds the extraction byte limit.", root_id=root_id, relative_path=ref.relative_path)
+                chunks.append(chunk); digest.update(chunk)
+                if self._stream_hook: self._stream_hook(total)
+            post = os.fstat(fd)
+        except OSError as exc:
+            raise _os_error(exc, root_id, ref.relative_path)
+        finally:
+            os.close(fd)
+        observation = self._stream_observation(root, ref, "content", pre, post, total, digest.hexdigest())
+        return {"observation": observation.to_dict(), "raw": b"".join(chunks)}
 
-        The read rides the ordinary bounded read path, so containment, drift
-        detection and size limits are the same ones every source read gets. The
-        derived file is written no-overwrite through a retained directory
-        descriptor and never escapes the enrolled root.
+    def acquire_managed_copy(
+        self, provider_namespace: str, root_id: str, relative_path: str, *,
+        destination_namespace: str, destination_root_id: str, canonical_extension: str,
+        configuration_revision: str | None = None, destination_revision: str | None = None,
+        cancellation: CancellationToken | None = None, timeout_seconds: float = READ_HASH_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
+        """Copy one stable source into a managed root while computing content identity.
+
+        The original is opened through the retained source-root descriptor and is
+        never modified. The destination is written as a temporary file, fsynced,
+        then atomically linked to its canonical SHA-256 name without overwrite.
         """
+        deadline = self._deadline(timeout_seconds, READ_HASH_TIMEOUT_SECONDS)
+        source, ref = self._prepare(provider_namespace, root_id, relative_path, configuration_revision, cancellation, deadline)
+        destination = self.registry.get(destination_namespace, destination_root_id, configuration_revision=destination_revision)
+        if not destination.config.mutation_allowed:
+            raise LocalSourceError("operation_not_allowed", "Managed destination is not writable.", root_id=destination_root_id)
+        extension = str(canonical_extension or "").strip().lower()
+        if extension and (not extension.startswith(".") or not re.fullmatch(r"\.[a-z0-9]{1,10}", extension)):
+            raise LocalSourceError("invalid_path", "Canonical extension is invalid.", root_id=destination_root_id)
+        source_fd = self._open_content(source, ref.relative_path)
+        temp_name = f".incoming-{uuid.uuid4().hex}.part"
+        temp_fd: int | None = None
+        digest = hashlib.sha256(); total = 0
+        try:
+            pre = os.fstat(source_fd); self._require_regular(pre, root_id, ref.relative_path)
+            if pre.st_size > MAX_HASH_BYTES:
+                raise LocalSourceError("too_large", "Source exceeds the managed-intake byte limit.", root_id=root_id, relative_path=ref.relative_path)
+            temp_fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600, dir_fd=destination.fd)
+            while True:
+                self._check(cancellation, deadline, root_id, ref.relative_path)
+                chunk = os.read(source_fd, STREAM_BUFFER_BYTES)
+                if not chunk: break
+                total += len(chunk)
+                if total > MAX_HASH_BYTES:
+                    raise LocalSourceError("too_large", "Source exceeds the managed-intake byte limit.", root_id=root_id, relative_path=ref.relative_path)
+                digest.update(chunk)
+                view = memoryview(chunk)
+                while view:
+                    view = view[os.write(temp_fd, view):]
+                if self._stream_hook: self._stream_hook(total)
+            os.fsync(temp_fd)
+            post = os.fstat(source_fd)
+            if _has_drift(pre, post):
+                raise LocalSourceError("drifted", "Source changed during managed intake.", root_id=root_id, relative_path=ref.relative_path)
+            content_sha256 = digest.hexdigest()
+            storage_name = f"sha256-{content_sha256}{extension}"
+            reused = False
+            try:
+                os.link(temp_name, storage_name, src_dir_fd=destination.fd, dst_dir_fd=destination.fd, follow_symlinks=False)
+            except FileExistsError:
+                reused = True
+                existing_fd = os.open(storage_name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=destination.fd)
+                try:
+                    existing_hash = hashlib.sha256(); existing_size = 0
+                    while True:
+                        chunk = os.read(existing_fd, STREAM_BUFFER_BYTES)
+                        if not chunk: break
+                        existing_size += len(chunk); existing_hash.update(chunk)
+                finally:
+                    os.close(existing_fd)
+                if existing_size != total or existing_hash.hexdigest() != content_sha256:
+                    raise LocalSourceError("internal_invariant", "Managed content name collides with different bytes.", root_id=destination_root_id, relative_path=storage_name)
+            os.unlink(temp_name, dir_fd=destination.fd); temp_name = ""
+            os.fsync(destination.fd)
+            observation = self._stream_observation(source, ref, "content", pre, post, total, content_sha256)
+            return {"observation": observation.to_dict(), "content_sha256": content_sha256,
+                    "byte_size": total, "managed_relative_path": storage_name, "reused_storage": reused}
+        except OSError as exc:
+            raise _os_error(exc, root_id, ref.relative_path)
+        finally:
+            if temp_fd is not None: os.close(temp_fd)
+            os.close(source_fd)
+            if temp_name:
+                try: os.unlink(temp_name, dir_fd=destination.fd)
+                except OSError: pass
 
-        from .extractors import extract as _extract
-
-        source = self.read(
-            provider_namespace, root_id, relative_path,
-            configuration_revision=configuration_revision, cancellation=cancellation,
-        )
+    def materialize_derived_text(
+        self, provider_namespace: str, root_id: str, text: str, *,
+        configuration_revision: str | None = None, prefix: str = "representation",
+    ) -> dict[str, Any]:
+        """Materialize bounded UTF-8 derived text inside the managed derived area."""
         root = self.registry.get(provider_namespace, root_id, configuration_revision=configuration_revision)
         if root.derived_fd is None:
-            raise LocalSourceError("operation_not_allowed", "Managed derived area is unavailable.", root_id=root_id, relative_path=relative_path)
-        text = _extract(source.text, extractor)
+            raise LocalSourceError("operation_not_allowed", "Managed derived area is unavailable.", root_id=root_id)
         payload = text.encode("utf-8")
         if len(payload) > MAX_READ_BYTES:
-            raise LocalSourceError("too_large", "Extracted text exceeds the readable byte limit.", root_id=root_id, relative_path=relative_path)
-        name = f"extract-{uuid.uuid4().hex}.txt"
+            raise LocalSourceError("too_large", "Derived text exceeds the readable byte limit.", root_id=root_id)
+        clean_prefix = re.sub(r"[^A-Za-z0-9._-]+", "-", prefix).strip("-") or "representation"
+        name = f"{clean_prefix}-{uuid.uuid4().hex}.txt"
         try:
             fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600, dir_fd=root.derived_fd)
         except OSError as exc:
@@ -541,14 +685,66 @@ class LocalSourceKernel:
         finally:
             os.close(fd)
         os.fsync(root.derived_fd)
+        return {
+            "derived_relative_path": f"{root.config.derived_relative_path}/{name}",
+            "text_sha256": hashlib.sha256(payload).hexdigest(), "byte_length": len(payload),
+        }
+
+    def extract_text(
+        self, provider_namespace: str, root_id: str, relative_path: str, *,
+        extractor: str, configuration_revision: str | None = None,
+        cancellation: CancellationToken | None = None,
+    ) -> dict[str, Any]:
+        """Materialize one deterministic text representation in the managed derived area.
+
+        Text extractors use the ordinary bounded UTF-8 path. Byte extractors get a
+        separate complete-read path capped at MAX_EXTRACTION_BYTES; extraction never
+        proceeds from a truncated source.
+        """
+        from .extractors import EXTRACTOR_INPUT, ExtractorUnavailable, extract as _extract
+
+        input_kind = EXTRACTOR_INPUT.get(extractor)
+        if input_kind is None:
+            raise LocalSourceError("operation_not_allowed", f"Unsupported extractor: {extractor}", root_id=root_id, relative_path=relative_path)
+        if input_kind == "bytes":
+            acquired = self.read_bytes_for_extraction(
+                provider_namespace, root_id, relative_path,
+                configuration_revision=configuration_revision, cancellation=cancellation,
+            )
+            observation = acquired["observation"]; value = acquired["raw"]
+        else:
+            source = self.read(
+                provider_namespace, root_id, relative_path,
+                configuration_revision=configuration_revision, cancellation=cancellation,
+            )
+            observation = source.observation.to_dict(); value = source.text
+        root = self.registry.get(provider_namespace, root_id, configuration_revision=configuration_revision)
+        if root.derived_fd is None:
+            raise LocalSourceError("operation_not_allowed", "Managed derived area is unavailable.", root_id=root_id, relative_path=relative_path)
+        try:
+            text = _extract(value, extractor)
+        except ExtractorUnavailable as exc:
+            raise LocalSourceError("extractor_unavailable", str(exc), root_id=root_id, relative_path=relative_path) from exc
+        payload = text.encode("utf-8")
+        if len(payload) > MAX_READ_BYTES:
+            raise LocalSourceError("too_large", "Extracted text exceeds the readable byte limit.", root_id=root_id, relative_path=relative_path)
+        name = f"extract-{uuid.uuid4().hex}.txt"
+        try:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600, dir_fd=root.derived_fd)
+        except OSError as exc:
+            raise _os_error(exc, root_id, name)
+        try:
+            view = memoryview(payload)
+            while view: view = view[os.write(fd, view):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.fsync(root.derived_fd)
         derived_relative = f"{root.config.derived_relative_path}/{name}"
         return {
-            "observation": source.observation.to_dict(),
-            "extractor": extractor,
-            "derived_relative_path": derived_relative,
-            "text_sha256": hashlib.sha256(payload).hexdigest(),
-            "byte_length": len(payload),
-            "source_byte_sha256": source.observation.byte_sha256,
+            "observation": observation, "extractor": extractor, "derived_relative_path": derived_relative,
+            "text_sha256": hashlib.sha256(payload).hexdigest(), "byte_length": len(payload),
+            "source_byte_sha256": observation.get("byte_sha256"),
         }
 
     def list(

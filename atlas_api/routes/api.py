@@ -412,6 +412,14 @@ async def library_scan_detail(request: Request) -> JSONResponse:
         return _error(KeyError("library scan not found"), 404)
 
 
+async def library_reviews(request: Request) -> JSONResponse:
+    gate = require_session(request)
+    if isinstance(gate, JSONResponse):
+        return gate
+    root_id = request.query_params.get("root_id")
+    return JSONResponse({"reviews": list(_runtime(request).library_store.reviews(root_id=root_id))})
+
+
 async def knowledge_list(request: Request) -> JSONResponse:
     gate=require_session(request)
     if isinstance(gate,JSONResponse):return gate

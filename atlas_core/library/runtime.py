@@ -65,6 +65,26 @@ class LibraryRuntime:
             self._materialize_scope, self._materialize_execute,
             metadata={"scope_hint": "atlas/library"},
         ), replace=True)
+        review_schema = {
+            "type": "object",
+            "required": ["root_id", "relative_path", "status"],
+            "properties": {
+                "root_id": {"type": "string", "minLength": 1},
+                "relative_path": {"type": "string", "minLength": 1},
+                "status": {"type": "string", "enum": ["unreviewed", "reviewed", "approved", "rejected"]},
+            },
+            "additionalProperties": False,
+        }
+        self.registry.register(CapabilityRegistration(
+            CapabilityDefinition(
+                "library.set_review",
+                "Set the owner's human review status for a file in the Atlas clean library.",
+                "review", "internal", review_schema, source="library",
+                tags=("library", "files", "review", "human"),
+            ),
+            self._review_scope, self._review_execute,
+            metadata={"scope_hint": "atlas/library"},
+        ), replace=True)
 
     def _scope(self, payload: dict[str, Any]) -> ScopeResolution:
         roots = [str(item).strip() for item in payload.get("root_ids") or []]
@@ -308,3 +328,35 @@ class LibraryRuntime:
         except BaseException:
             os.close(current)
             raise
+
+    def _review_scope(self, payload: dict[str, Any]) -> ScopeResolution:
+        root_id = str(payload.get("root_id") or "").strip()
+        relative_path = validate_relative_path(str(payload.get("relative_path") or ""))
+        status = str(payload.get("status") or "").strip()
+        if status not in {"unreviewed", "reviewed", "approved", "rejected"}:
+            raise ValueError("unsupported library review status")
+        row = self.sources.store.get(root_id)
+        if row.provider_namespace != "atlas-library":
+            raise ValueError("review status is only available for the Atlas clean library")
+        observation = self.sources.kernel.stat(
+            row.provider_namespace, row.root_id, relative_path,
+            configuration_revision=self.sources._revision(row),
+        )
+        if observation.object_type != "regular_file":
+            raise ValueError("review status can only be set on regular files")
+        clean = {"root_id": root_id, "relative_path": relative_path, "status": status}
+        return ScopeResolution(
+            f"atlas/library/review/{root_id}/{relative_path}", clean,
+            f"Mark {relative_path} as {status}",
+        )
+
+    def _review_execute(self, payload: dict[str, Any]) -> ActionResult:
+        try:
+            status = None if payload["status"] == "unreviewed" else payload["status"]
+            row = self.store.set_review(
+                root_id=payload["root_id"], relative_path=payload["relative_path"], status=status,
+            )
+            return ActionResult(True, row, {"ok": True, "operation": "library.review", **row})
+        except Exception as exc:
+            return ActionResult(False, receipt={"ok": False, "operation": "library.review"},
+                                error_code="library_review_failed", error=str(exc))

@@ -78,6 +78,7 @@ def create_app(*, instance_root: str | Path = "instance", static_dir: str | Path
         Route("/api/sources/roots/{root_id:str}", api.source_root_delete, methods=["DELETE"]),
         Route("/api/library/scans", api.library_scans, methods=["GET"]),
         Route("/api/library/scans/{scan_id:str}", api.library_scan_detail, methods=["GET"]),
+        Route("/api/library/reviews", api.library_reviews, methods=["GET"]),
         Route("/api/knowledge", api.knowledge_list, methods=["GET"]),
         Route("/api/knowledge/promote", api.knowledge_promote, methods=["POST"]),
         Route("/api/knowledge/{item_id:str}", api.knowledge_delete, methods=["DELETE"]),

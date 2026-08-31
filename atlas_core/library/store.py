@@ -37,6 +37,11 @@ class LibraryStore:
                 PRIMARY KEY(scan_id,root_id,relative_path),
                 FOREIGN KEY(scan_id) REFERENCES library_scans(scan_id) ON DELETE CASCADE)""")
             db.execute("CREATE INDEX IF NOT EXISTS library_scan_hash ON library_scan_files(scan_id,sha256)")
+            db.execute("""CREATE TABLE IF NOT EXISTS library_reviews(
+                root_id TEXT NOT NULL, relative_path TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('reviewed','approved','rejected')),
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(root_id,relative_path))""")
 
     def create_scan(self, source_roots: list[str]) -> str:
         scan_id = f"libscan_{uuid4().hex}"
@@ -120,3 +125,27 @@ class LibraryStore:
             {"sha256": digest, "copies": copies, "duplicate_count": len(copies) - 1}
             for digest, copies in grouped.items() if len(copies) > 1
         )
+
+    def set_review(self, *, root_id: str, relative_path: str, status: str | None) -> dict[str, Any]:
+        if status not in {None, "reviewed", "approved", "rejected"}:
+            raise ValueError("unsupported library review status")
+        with self._db() as db:
+            if status is None:
+                db.execute("DELETE FROM library_reviews WHERE root_id=? AND relative_path=?", (root_id, relative_path))
+                return {"root_id": root_id, "relative_path": relative_path, "status": "unreviewed"}
+            db.execute("""INSERT INTO library_reviews(root_id,relative_path,status,updated_at)
+                VALUES (?,?,?,CURRENT_TIMESTAMP)
+                ON CONFLICT(root_id,relative_path) DO UPDATE SET status=excluded.status,updated_at=CURRENT_TIMESTAMP""",
+                (root_id, relative_path, status))
+            row = db.execute("SELECT * FROM library_reviews WHERE root_id=? AND relative_path=?", (root_id, relative_path)).fetchone()
+        return dict(row)
+
+    def reviews(self, *, root_id: str | None = None) -> tuple[dict[str, Any], ...]:
+        sql = "SELECT * FROM library_reviews"
+        params: tuple[Any, ...] = ()
+        if root_id is not None:
+            sql += " WHERE root_id=?"; params = (root_id,)
+        sql += " ORDER BY updated_at DESC,relative_path"
+        with self._db() as db:
+            rows = db.execute(sql, params).fetchall()
+        return tuple(dict(row) for row in rows)

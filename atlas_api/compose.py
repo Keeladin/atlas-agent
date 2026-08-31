@@ -102,6 +102,7 @@ class AtlasRuntime:
             ("atlas/knowledge/index", "activate", "CONFIRM"),
             ("atlas/library", "scan", "YES"),
             ("atlas/library", "materialize", "YES"),
+            ("atlas/library", "review", "YES"),
             ("atlas/artifacts", "search", "YES"),
             ("atlas/artifacts", "inspect", "YES"),
             ("atlas/artifacts/intake", "classify", "YES"),

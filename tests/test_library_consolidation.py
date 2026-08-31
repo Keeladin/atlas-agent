@@ -86,3 +86,29 @@ def test_library_consolidation_runs_as_durable_work(tmp_path: Path):
     assert result["steps"][1]["status"] == "completed"
     copied = list((instance / "library-clean" / "manuals").glob("*.pdf"))
     assert len(copied) == 1
+
+
+def test_clean_library_review_status_is_durable_and_scoped(tmp_path: Path):
+    instance = tmp_path / "instance"
+    clean = instance / "library-clean"; clean.mkdir(parents=True)
+    (clean / "manual.pdf").write_bytes(b"manual")
+    rt = build_runtime(instance)
+    owner = rt.identities.current_owner().principal_id
+    provenance = InvocationProvenance(owner, "human", "control")
+
+    reviewed = rt.capabilities.invoke(
+        "library.set_review",
+        {"root_id": "atlas-library-clean", "relative_path": "manual.pdf", "status": "approved"},
+        provenance=provenance,
+    )
+    assert reviewed.status == "succeeded"
+    assert reviewed.result["status"] == "approved"
+    assert rt.library_store.reviews(root_id="atlas-library-clean")[0]["relative_path"] == "manual.pdf"
+
+    reset = rt.capabilities.invoke(
+        "library.set_review",
+        {"root_id": "atlas-library-clean", "relative_path": "manual.pdf", "status": "unreviewed"},
+        provenance=provenance,
+    )
+    assert reset.status == "succeeded"
+    assert rt.library_store.reviews(root_id="atlas-library-clean") == ()

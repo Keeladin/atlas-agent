@@ -277,7 +277,7 @@ async def work_action(request: Request) -> JSONResponse:
         if action=="run":result=await run_in_threadpool(rt.work.run,wid)
         elif action=="resume":result=await run_in_threadpool(rt.work.resume,wid)
         elif action=="pause":rt.work.pause(wid);result=rt.work.detail(wid)
-        elif action=="cancel":rt.work_store.cancel(wid);result=rt.work.detail(wid)
+        elif action=="cancel":rt.work.cancel(wid);result=rt.work.detail(wid)
         else:return _error(ValueError("unsupported work action"),404)
         return JSONResponse(result)
     except Exception as exc:return _error(exc)

@@ -5,7 +5,7 @@ from typing import Any
 from atlas_core.actions import ActionResult
 from atlas_core.capabilities import CapabilityDefinition, CapabilityRegistration, CapabilityRegistry, ScopeResolution
 
-from .indexing import IndexingRuntime, index_result
+from .indexing import IndexingRuntime, KnowledgeGenerationBusy, index_result
 from .store import KnowledgeStore
 
 CURATED_MECHANISM = "fts.bm25@curated"
@@ -118,31 +118,45 @@ class KnowledgeRuntime:
             CapabilityDefinition("knowledge.index", "Segment an extracted artifact into the derived knowledge tier.", "index", "internal", index_schema, source="knowledge", tags=("knowledge", "index")),
             lambda p: ScopeResolution("atlas/knowledge/index", dict(p), f"Index artifact {_short(p['source_artifact_id'])}"),
             lambda p: index_result(p, self.indexing),
-            metadata={"scope_hint": "atlas/knowledge/index"},
+            metadata={"scope_hint": "atlas/knowledge/index", "requires_invocation_context": True},
         ), replace=True)
         self.registry.register(CapabilityRegistration(
             CapabilityDefinition("knowledge.verify_generation", "Deterministically verify a built knowledge generation before activation.", "verify", "internal", verify_schema, source="knowledge", tags=("knowledge", "index", "verification")),
             lambda p: ScopeResolution("atlas/knowledge/index", dict(p), f"Verify knowledge generation {_short(p['generation_id'])}"),
-            self._verify_execute, metadata={"scope_hint": "atlas/knowledge/index"},
+            self._verify_execute, metadata={"scope_hint": "atlas/knowledge/index", "requires_invocation_context": True},
         ), replace=True)
         self.registry.register(CapabilityRegistration(
             CapabilityDefinition("knowledge.activate_generation", "Activate a verified knowledge generation as the default retrieval corpus.", "activate", "internal", activate_schema, source="knowledge", tags=("knowledge", "index")),
             lambda p: ScopeResolution("atlas/knowledge/index", dict(p), f"Activate knowledge generation {_short(p['generation_id'])}"),
             self._activate_execute,
-            metadata={"scope_hint": "atlas/knowledge/index"},
+            metadata={"scope_hint": "atlas/knowledge/index", "requires_invocation_context": True},
         ), replace=True)
 
     def _verify_execute(self, payload: dict[str, Any]) -> ActionResult:
+        owner_work_id = payload.pop("__work_id", None)
+        payload.pop("__step_id", None)
         try:
-            receipt = self.indexing.verify(payload["generation_id"], required_extraction_artifact_ids=payload.get("required_extraction_artifact_ids"))
+            receipt = self.indexing.verify(
+                payload["generation_id"],
+                required_extraction_artifact_ids=payload.get("required_extraction_artifact_ids"),
+                owner_work_id=owner_work_id,
+            )
+        except KnowledgeGenerationBusy as exc:
+            return ActionResult(False, {}, {"ok": False, "operation": "verify", "retryable": True},
+                                error_code="knowledge_generation_busy", error=str(exc))
         except (KeyError, ValueError) as exc:
             return ActionResult(False, {}, {"ok": False, "operation": "verify"}, error_code="generation_not_verifiable", error=str(exc))
         return ActionResult(True, {"generation_id": payload["generation_id"], "verification": receipt},
                             {"ok": bool(receipt.get("ok")), "operation": "verify", "generation_id": payload["generation_id"]})
 
     def _activate_execute(self, payload: dict[str, Any]) -> ActionResult:
+        owner_work_id = payload.pop("__work_id", None)
+        payload.pop("__step_id", None)
         try:
-            generation = self.indexing.activate(payload["generation_id"])
+            generation = self.indexing.activate(payload["generation_id"], owner_work_id=owner_work_id)
+        except KnowledgeGenerationBusy as exc:
+            return ActionResult(False, {}, {"ok": False, "operation": "activate", "retryable": True},
+                                error_code="knowledge_generation_busy", error=str(exc))
         except KeyError:
             return ActionResult(False, {}, {"ok": False, "operation": "activate"},
                                 error_code="generation_unknown", error="unknown generation")

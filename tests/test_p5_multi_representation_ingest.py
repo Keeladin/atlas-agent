@@ -150,3 +150,69 @@ def test_semantic_preflight_rejects_unreadable_pdf_before_work_creation(tmp_path
     assert routed.result["workflow_preflight"]["ok"] is False
     assert "semantic preflight failed" in routed.result["workflow_preflight"]["reason"]
     assert h.work_store.list() == ()
+
+
+class FailFirstSemanticModel(MultiRepresentationModel):
+    def __init__(self):
+        super().__init__()
+        self.fail_next_semantic = True
+
+    def generate(self, request):
+        if request.capability_id == "representations.interpret" and self.fail_next_semantic:
+            self.fail_next_semantic = False
+            self.requests.append(request)
+            raise RuntimeError("temporary model provider outage")
+        return super().generate(request)
+
+
+def _named_pdf_artifact(h, name: str, text: str):
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), text)
+    doc.save(h.root / name)
+    doc.close()
+    diff = h.invoke("artifacts.diff_source", {"root_id": "manuals"})
+    assert diff.status == "succeeded", diff.error
+    return next(row["artifact_id"] for row in diff.result["new"] if row["relative_path"] == name)
+
+
+def test_inflight_knowledge_ingest_owns_generation_until_activation(tmp_path):
+    h = Harness(tmp_path)
+    model = FailFirstSemanticModel()
+    h.model = model
+    h.intake.providers = model
+    h.representations.model_provider = model
+    h.policy_store.set(principal_id=h.owner.principal_id, scope="files/local/manuals", operation="interpret", decision="YES")
+
+    first_artifact = _named_pdf_artifact(h, "first.pdf", "First manual hydraulic valve diagram.")
+    first_route = h.invoke("artifacts.classify_intake", {"artifact_id": first_artifact, "source_event_kind": "new"})
+    first_work_id = first_route.result["work"]["work_id"]
+    first_paused = h.work.run(first_work_id)
+    assert first_paused["status"] == "paused"
+    assert first_paused["steps"][2]["status"] == "waiting"
+    first_generation = first_paused["steps"][1]["output"]["generation_id"]
+    assert h.indexing.generations.get(first_generation)["state"] == "building"
+    assert h.indexing.generations.get(first_generation)["build_owner_work_id"] == first_work_id
+
+    second_artifact = _named_pdf_artifact(h, "second.pdf", "Second manual drilling pump diagram.")
+    second_route = h.invoke("artifacts.classify_intake", {"artifact_id": second_artifact, "source_event_kind": "new"})
+    second_work_id = second_route.result["work"]["work_id"]
+    second_paused = h.work.run(second_work_id)
+    assert second_paused["status"] == "paused"
+    assert second_paused["steps"][1]["status"] == "waiting"
+    assert "another knowledge ingest owns" in (second_paused["steps"][1]["error"] or "")
+    assert h.indexing.generations.get(first_generation)["state"] == "building"
+
+    first_waiting_confirmation = h.work.resume(first_work_id)
+    assert first_waiting_confirmation["status"] == "waiting_confirmation"
+    activation = first_waiting_confirmation["steps"][-1]["occurrence_id"]
+    assert h.actions.confirm(activation, principal_id=h.owner.principal_id).status == "succeeded"
+    assert h.work.run(first_work_id)["status"] == "completed"
+
+    second_waiting_confirmation = h.work.resume(second_work_id)
+    assert second_waiting_confirmation["status"] == "waiting_confirmation"
+    second_generation = second_waiting_confirmation["steps"][1]["output"]["generation_id"]
+    assert second_generation != first_generation
+    activation = second_waiting_confirmation["steps"][-1]["occurrence_id"]
+    assert h.actions.confirm(activation, principal_id=h.owner.principal_id).status == "succeeded"
+    assert h.work.run(second_work_id)["status"] == "completed"

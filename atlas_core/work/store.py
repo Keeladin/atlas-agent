@@ -91,6 +91,17 @@ class WorkStore:
             db.execute("UPDATE work_steps SET status='queued',occurrence_id=NULL,output_json=NULL,error=NULL,updated_at=CURRENT_TIMESTAMP WHERE work_id=? AND ordinal>=? AND status!='completed'",(work_id,int(ordinal)))
             db.execute("UPDATE work_items SET status='queued',updated_at=CURRENT_TIMESTAMP WHERE work_id=?",(work_id,))
         return self.get(work_id)
+    def reset_retryable(self,work_id:str)->WorkItem:
+        """Retry a paused operational failure without replaying completed evidence."""
+        with self._db() as db:
+            row=db.execute("SELECT MIN(ordinal) FROM work_steps WHERE work_id=? AND status IN ('waiting','failed') AND error IS NOT NULL",(work_id,)).fetchone()
+            ordinal=row[0] if row else None
+            if ordinal is None:
+                db.execute("UPDATE work_items SET status='active',updated_at=CURRENT_TIMESTAMP WHERE work_id=?",(work_id,))
+            else:
+                db.execute("UPDATE work_steps SET status='queued',occurrence_id=NULL,output_json=NULL,error=NULL,updated_at=CURRENT_TIMESTAMP WHERE work_id=? AND ordinal>=? AND status!='completed'",(work_id,int(ordinal)))
+                db.execute("UPDATE work_items SET status='queued',updated_at=CURRENT_TIMESTAMP WHERE work_id=?",(work_id,))
+        return self.get(work_id)
     def cancel(self,work_id:str)->WorkItem:
         with self._db() as db:db.execute("UPDATE work_items SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE work_id=?",(work_id,));db.execute("UPDATE work_steps SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE work_id=? AND status NOT IN ('completed','failed')",(work_id,))
         return self.get(work_id)

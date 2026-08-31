@@ -57,9 +57,20 @@ def test_work_waits_for_confirm_then_current_no_wins(tmp_path):
     assert blocked.error_code == "policy_revoked_before_execution"
 
     final = rt.work.run(work.work_id)
-    assert final["status"] == "failed"
-    assert final["steps"][0]["status"] == "failed"
+    assert final["status"] == "paused"
+    assert final["steps"][0]["status"] == "waiting"
     assert calls == []
+
+    rt.policy_store.set(
+        principal_id=owner,
+        scope="external/device/pump-1",
+        operation="start",
+        decision="YES",
+    )
+    resumed = rt.work.resume(work.work_id)
+    assert resumed["status"] == "completed"
+    assert resumed["steps"][0]["status"] == "completed"
+    assert len(calls) == 1
 
 
 def test_failed_work_resume_retries_from_failed_step_without_replaying_completed_steps(tmp_path):

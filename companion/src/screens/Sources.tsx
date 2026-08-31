@@ -6,6 +6,7 @@ import type { ActionOccurrence, SourceRoot, WorkItem } from '../api/types'
 import { Panel } from '../ui/Panel'
 import { SegmentedNav } from '../ui/SegmentedNav'
 import { Workspace } from '../ui/Workspace'
+import { useMediaQuery } from '../ui/useMediaQuery'
 import { OPERATIONS_TABS } from './operationsNav'
 
 type SourceRef = { root_id: string; relative_path: string; display_locator: string }
@@ -39,14 +40,21 @@ function lifecycleLabel(artifact?: Artifact) {
 
 export function Sources() {
   const qc = useQueryClient()
+  const phone = useMediaQuery('(max-width: 480px)')
   const roots = useQuery({ queryKey: ['source-roots'], queryFn: () => api<{ roots: SourceRoot[] }>('/api/sources/roots') })
   const artifacts = useQuery({ queryKey: ['artifacts'], queryFn: () => api<{ artifacts: Artifact[] }>('/api/artifacts') })
   const work = useQuery({ queryKey: ['work'], queryFn: () => api<{ work: WorkItem[] }>('/api/work') })
   const [rootId, setRootId] = useState(''); const [path, setPath] = useState('.')
   const [listing, setListing] = useState<Listing | null>(null); const [selected, setSelected] = useState<SourceObservation | null>(null)
+  const [sourceControlsOpen, setSourceControlsOpen] = useState(true)
   const browse = useMutation({
     mutationFn: ({ root, relative, cursor }: { root: string; relative: string; cursor?: string | null }) => api<{ action: ActionOccurrence }>('/api/capabilities/files.list/invoke', { method: 'POST', body: JSON.stringify({ input: { root_id: root, relative_path: relative, page_size: 100, cursor: cursor ?? null } }) }),
-    onSuccess: ({ action }, variables) => { if (action.status === 'succeeded' && action.result && typeof action.result === 'object') { setPath(variables.relative); setListing(action.result as Listing); setSelected(null) } },
+    onSuccess: ({ action }, variables) => {
+      if (action.status === 'succeeded' && action.result && typeof action.result === 'object') {
+        setPath(variables.relative); setListing(action.result as Listing); setSelected(null)
+        if (phone) setSourceControlsOpen(false)
+      }
+    },
   })
   const intake = useMutation({
     mutationFn: (entry: SourceObservation) => api<{ action: ActionOccurrence }>(
@@ -86,7 +94,14 @@ export function Sources() {
   return <Workspace title="Sources" subtitle="External origins, managed custody, and the runtime state created from them." tabs={<SegmentedNav items={OPERATIONS_TABS} />}>
     <Panel title="Source intake">
       {!enabledRoots.length && !roots.isLoading ? <div className="empty-state"><strong>No source roots enrolled</strong><span>Add an allowed filesystem root under Atlas → Filesystem.</span></div> : null}
-      {enabledRoots.length ? <div className="source-toolbar">
+      {enabledRoots.length ? phone ? <details className="source-controls-disclosure" open={sourceControlsOpen} onToggle={event => setSourceControlsOpen(event.currentTarget.open)}>
+        <summary><span>Browse source</span><small>{enabledRoots.find(root => root.root_id === rootId)?.display_name ?? rootId} · {path}</small></summary>
+        <div className="source-toolbar">
+          <label>Source<select value={rootId} onChange={e => { setRootId(e.target.value); setPath('.'); setListing(null); setSelected(null); setSourceControlsOpen(true) }}>{enabledRoots.map(root => <option key={root.root_id} value={root.root_id}>{root.display_name}</option>)}</select></label>
+          <div className="source-path"><span className="eyebrow">Path</span><strong className="mono">{path}</strong></div>
+          <div className="actions"><button type="button" disabled={path === '.' || browse.isPending} onClick={() => open(parentOf(path))}>Up</button><button className="primary" type="button" disabled={!rootId || browse.isPending} onClick={() => open(path)}>{browse.isPending ? 'Loading…' : listing ? 'Refresh' : 'Browse'}</button></div>
+        </div>
+      </details> : <div className="source-toolbar">
         <label>Source<select value={rootId} onChange={e => { setRootId(e.target.value); setPath('.'); setListing(null); setSelected(null) }}>{enabledRoots.map(root => <option key={root.root_id} value={root.root_id}>{root.display_name}</option>)}</select></label>
         <div className="source-path"><span className="eyebrow">Path</span><strong className="mono">{path}</strong></div>
         <div className="actions"><button type="button" disabled={path === '.' || browse.isPending} onClick={() => open(parentOf(path))}>Up</button><button className="primary" type="button" disabled={!rootId || browse.isPending} onClick={() => open(path)}>{browse.isPending ? 'Loading…' : listing ? 'Refresh' : 'Browse'}</button></div>

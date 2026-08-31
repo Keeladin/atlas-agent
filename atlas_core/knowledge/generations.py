@@ -93,6 +93,7 @@ class GenerationStore:
                 mechanisms_json TEXT NOT NULL,
                 corpus_json TEXT NOT NULL DEFAULT '{}',
                 state TEXT NOT NULL CHECK(state IN ('building','verifying','candidate','active','retired','failed')),
+                build_owner_work_id TEXT,
                 verification_json TEXT,
                 occurrence_id TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -100,6 +101,15 @@ class GenerationStore:
             );
             CREATE UNIQUE INDEX IF NOT EXISTS one_active_generation ON generations(state) WHERE state='active';
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(generations)")}
+            if "build_owner_work_id" not in columns:
+                db.execute("ALTER TABLE generations ADD COLUMN build_owner_work_id TEXT")
+            # A generation stays exclusively owned from first passage through activation.
+            # This prevents one intake from verifying/activating another intake's partial work.
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS one_open_generation ON generations((1)) "
+                "WHERE state IN ('building','verifying','candidate')"
+            )
 
     def put_config(self, *, config_id: str, layer: str, spec: dict[str, Any],
                    db: sqlite3.Connection | None = None) -> str:
@@ -120,14 +130,15 @@ class GenerationStore:
 
     def create(self, *, extractor_config_id: str, segmenter_config_id: str, mechanisms: list[str],
                occurrence_id: str, corpus: dict[str, Any] | None = None,
+               build_owner_work_id: str | None = None,
                db: sqlite3.Connection | None = None) -> str:
         generation_id = f"generation_{uuid4().hex}"
         with self._db(db) as conn:
             conn.execute(
                 """INSERT INTO generations(generation_id,extractor_config_id,segmenter_config_id,mechanisms_json,
-                   corpus_json,state,occurrence_id) VALUES (?,?,?,?,?,'building',?)""",
+                   corpus_json,state,build_owner_work_id,occurrence_id) VALUES (?,?,?,?,?,'building',?,?)""",
                 (generation_id, extractor_config_id, segmenter_config_id, canonical_json(mechanisms),
-                 canonical_json(corpus or {}), occurrence_id),
+                 canonical_json(corpus or {}), build_owner_work_id, occurrence_id),
             )
         return generation_id
 
@@ -162,6 +173,26 @@ class GenerationStore:
             ).fetchone()
         return _generation(row) if row is not None else None
 
+    def pending(self, *, db: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+        with self._db(db) as conn:
+            row = conn.execute(
+                "SELECT * FROM generations WHERE state IN ('building','verifying','candidate') "
+                "ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        return _generation(row) if row is not None else None
+
+    def claim_build_owner(self, generation_id: str, work_id: str) -> dict[str, Any]:
+        with self._db() as conn:
+            cursor = conn.execute(
+                "UPDATE generations SET build_owner_work_id=? WHERE generation_id=? "
+                "AND state='building' AND build_owner_work_id IS NULL",
+                (work_id, generation_id),
+            )
+            current = self.get(generation_id, db=conn)
+            if current["build_owner_work_id"] != work_id:
+                raise ValueError("knowledge generation is owned by another artifact intake")
+            return current
+
     def set_state(self, generation_id: str, state: str, *, verification: dict[str, Any] | None = None,
                   db: sqlite3.Connection | None = None) -> dict[str, Any]:
         stamp = _iso()
@@ -186,6 +217,7 @@ def _generation(row: sqlite3.Row) -> dict[str, Any]:
         "mechanisms": json.loads(row["mechanisms_json"] or "[]"),
         "corpus": json.loads(row["corpus_json"] or "{}"),
         "state": row["state"],
+        "build_owner_work_id": row["build_owner_work_id"],
         "verification": json.loads(row["verification_json"]) if row["verification_json"] else None,
         "occurrence_id": row["occurrence_id"], "created_at": row["created_at"],
         "activated_at": row["activated_at"], "retired_at": row["retired_at"],

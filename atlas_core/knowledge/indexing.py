@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from typing import Any
 
 from atlas_core.actions import ActionResult
@@ -8,6 +9,10 @@ from .generations import FTS_MECHANISM, GenerationStore, seed_default_configs
 from .passages import PassageStore, SEGMENTER_HEADINGS_V1, content_hash, segment
 
 DERIVED_MARKER = ".atlas-derived/"
+
+
+class KnowledgeGenerationBusy(RuntimeError):
+    """Another artifact intake owns the only mutable knowledge generation."""
 
 
 class IndexingRuntime:
@@ -30,19 +35,61 @@ class IndexingRuntime:
     # ---- generation helpers
 
     def current_generation(self) -> dict[str, Any] | None:
-        return self.generations.building() or self.generations.candidate() or self.generations.active()
+        return self.generations.pending() or self.generations.active()
 
-    def ensure_generation(self, occurrence_hint: str = "knowledge.index") -> dict[str, Any]:
-        existing = self.generations.building()
-        if existing is not None:
-            return existing
-        active = self.generations.active()
-        generation_id = self.generations.create(
-            extractor_config_id=active["extractor_config_id"] if active else "extractor:text@1",
-            segmenter_config_id=active["segmenter_config_id"] if active else SEGMENTER_HEADINGS_V1,
-            mechanisms=list(active["mechanisms"]) if active else [FTS_MECHANISM],
-            occurrence_id=occurrence_hint, corpus=dict(active.get("corpus") or {}) if active else {},
+    def _busy(self, pending: dict[str, Any], work_id: str | None = None) -> KnowledgeGenerationBusy:
+        owner = pending.get("build_owner_work_id")
+        detail = f" ({owner})" if owner else ""
+        return KnowledgeGenerationBusy(
+            f"another knowledge ingest owns the open generation{detail}; finish, cancel, or resume it before continuing"
         )
+
+    def _contains_source(self, generation_id: str, source_artifact_id: str) -> bool:
+        with self.passages._db() as db:
+            row = db.execute(
+                """SELECT 1 FROM generation_passages g
+                   JOIN passages p ON p.passage_id=g.passage_id
+                   WHERE g.generation_id=? AND p.source_artifact_id=? LIMIT 1""",
+                (generation_id, source_artifact_id),
+            ).fetchone()
+        return row is not None
+
+    def ensure_generation(self, source_artifact_id: str, occurrence_hint: str = "knowledge.index",
+                          owner_work_id: str | None = None) -> dict[str, Any]:
+        pending = self.generations.pending()
+        if pending is not None:
+            if pending["state"] == "building":
+                owner = pending.get("build_owner_work_id")
+                if owner_work_id is None and owner is None:
+                    # Direct/internal indexing keeps the historical shared-build behaviour.
+                    return pending
+                if owner_work_id is not None:
+                    if owner is None:
+                        pending = self.generations.claim_build_owner(pending["generation_id"], owner_work_id)
+                        owner = owner_work_id
+                    if owner == owner_work_id:
+                        return pending
+            raise self._busy(pending, owner_work_id)
+        active = self.generations.active()
+        try:
+            generation_id = self.generations.create(
+                extractor_config_id=active["extractor_config_id"] if active else "extractor:text@1",
+                segmenter_config_id=active["segmenter_config_id"] if active else SEGMENTER_HEADINGS_V1,
+                mechanisms=list(active["mechanisms"]) if active else [FTS_MECHANISM],
+                occurrence_id=occurrence_hint, corpus=dict(active.get("corpus") or {}) if active else {},
+                build_owner_work_id=owner_work_id,
+            )
+        except sqlite3.IntegrityError:
+            pending = self.generations.pending()
+            if pending is not None and pending["state"] == "building":
+                owner = pending.get("build_owner_work_id")
+                if owner_work_id is None and owner is None:
+                    return pending
+                if owner_work_id is not None and owner == owner_work_id:
+                    return pending
+            if pending is not None:
+                raise self._busy(pending, owner_work_id)
+            raise
         if active is not None:
             with self.passages._db() as db:
                 db.execute(
@@ -52,9 +99,22 @@ class IndexingRuntime:
                 )
         return self.generations.get(generation_id)
 
-    def verify(self, generation_id: str, *, required_extraction_artifact_ids: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
+    def abandon_for_work(self, work_id: str) -> dict[str, Any] | None:
+        pending = self.generations.pending()
+        if pending is None or pending.get("build_owner_work_id") != work_id:
+            return None
+        return self.generations.set_state(
+            pending["generation_id"], "failed",
+            verification={"ok": False, "abandoned": True, "work_id": work_id},
+        )
+
+    def verify(self, generation_id: str, *, required_extraction_artifact_ids: list[str] | tuple[str, ...] | None = None,
+               owner_work_id: str | None = None) -> dict[str, Any]:
         """Deterministic verification receipt. A generation that fails is never servable."""
         generation = self.generations.get(generation_id)
+        owner = generation.get("build_owner_work_id")
+        if owner is not None and owner != owner_work_id:
+            raise self._busy(generation, owner_work_id)
         if generation["state"] not in {"building", "verifying", "candidate"}:
             raise ValueError("only a building or verifying generation can be verified")
         self.generations.set_state(generation_id, "verifying")
@@ -97,8 +157,11 @@ class IndexingRuntime:
         self.generations.set_state(generation_id, "candidate" if ok else "failed", verification=receipt)
         return receipt
 
-    def activate(self, generation_id: str) -> dict[str, Any]:
+    def activate(self, generation_id: str, *, owner_work_id: str | None = None) -> dict[str, Any]:
         generation = self.generations.get(generation_id)
+        owner = generation.get("build_owner_work_id")
+        if owner is not None and owner != owner_work_id:
+            raise self._busy(generation, owner_work_id)
         if generation["state"] != "candidate":
             raise ValueError("only a verified candidate generation can be activated")
         previous = self.generations.active()
@@ -109,15 +172,39 @@ class IndexingRuntime:
     # ---- indexing
 
     def index(self, *, source_artifact_id: str, extraction_artifact_id: str,
-              generation_id: str | None = None, occurrence_hint: str = "knowledge.index") -> dict[str, Any]:
+              generation_id: str | None = None, occurrence_hint: str = "knowledge.index",
+              owner_work_id: str | None = None) -> dict[str, Any]:
         artifact = self.artifacts.get(extraction_artifact_id)
         facet = next((row for row in artifact["facets"]
                       if row["kind"] == "local_file" and (row["relative_path"] or "").startswith(DERIVED_MARKER)), None)
         if facet is None:
             raise PermissionError("extraction artifact has no managed derived-area representation")
-        generation = self.generations.get(generation_id) if generation_id else self.ensure_generation(occurrence_hint)
-        if generation["state"] != "building":
-            raise ValueError("only a building generation accepts passages")
+        rebased_from: str | None = None
+        if generation_id:
+            generation = self.generations.get(generation_id)
+            if generation["state"] != "building":
+                # Durable resume compatibility: an older workflow may point at a generation
+                # that another intake activated while this work was paused. Rebase only if
+                # this source was already part of that generation; arbitrary writes to a
+                # closed generation remain forbidden.
+                if generation["state"] in {"active", "retired", "failed"} and self._contains_source(generation_id, source_artifact_id):
+                    rebased_from = generation_id
+                    generation = self.ensure_generation(source_artifact_id, occurrence_hint, owner_work_id)
+                else:
+                    raise ValueError("only a building generation accepts passages")
+            else:
+                owner = generation.get("build_owner_work_id")
+                if owner_work_id is None:
+                    if owner is not None:
+                        raise self._busy(generation)
+                else:
+                    if owner is None:
+                        generation = self.generations.claim_build_owner(generation["generation_id"], owner_work_id)
+                        owner = owner_work_id
+                    if owner != owner_work_id:
+                        raise self._busy(generation, owner_work_id)
+        else:
+            generation = self.ensure_generation(source_artifact_id, occurrence_hint, owner_work_id)
 
         root = self.sources.store.get(facet["root_id"])
         read = self.sources.kernel.read(root.provider_namespace, root.root_id, facet["relative_path"])
@@ -141,6 +228,7 @@ class IndexingRuntime:
                 passage_ids.append(passage_id)
         return {
             "generation_id": generation["generation_id"],
+            **({"rebased_from_generation_id": rebased_from} if rebased_from else {}),
             "source_artifact_id": source_artifact_id,
             "extraction_artifact_id": extraction_artifact_id,
             "passages": len(passage_ids), "new_contents": created, "shared_contents": shared,
@@ -180,11 +268,17 @@ class IndexingRuntime:
 
 def index_result(payload: dict[str, Any], runtime: IndexingRuntime) -> ActionResult:
     try:
+        owner_work_id = payload.pop("__work_id", None)
+        payload.pop("__step_id", None)
         out = runtime.index(
             source_artifact_id=payload["source_artifact_id"],
             extraction_artifact_id=payload["extraction_artifact_id"],
             generation_id=payload.get("generation_id"),
+            owner_work_id=owner_work_id,
         )
+    except KnowledgeGenerationBusy as exc:
+        return ActionResult(False, {}, {"ok": False, "operation": "index", "retryable": True},
+                            error_code="knowledge_generation_busy", error=str(exc))
     except PermissionError as exc:
         return ActionResult(False, {}, {"ok": False, "operation": "index"},
                             error_code="knowledge_index_source_invalid", error=str(exc))

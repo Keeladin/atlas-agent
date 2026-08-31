@@ -248,7 +248,10 @@ class WorkflowCatalog:
                 first_index_ordinal = index_ordinal
 
         assert first_index_ordinal is not None
-        generation_ref = {"$ref": {"step": first_index_ordinal, "output": "/generation_id"}}
+        # Verify and activate the generation returned by the LAST index step.
+        # Normally all representations share one building generation; on durable
+        # resume an older closed generation may be safely rebased to a new build.
+        generation_ref = {"$ref": {"step": index_ordinals[-1], "output": "/generation_id"}}
         steps.extend([
             {"capability_id": "knowledge.verify_generation", "description": "Verify complete multi-representation knowledge generation",
              "input": {"generation_id": generation_ref, "required_extraction_artifact_ids": extraction_refs}},

@@ -194,7 +194,12 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     memory_store = MemoryStore(work_db); memory_store.initialize(); memory = MemoryRuntime(
         memory_store, registry, actions_store, grounding_validator=chat_store.owner_grounding_matches,
     )
-    work_store = WorkStore(work_db); work_store.initialize(); work = WorkRuntime(work_store, capabilities, actions_store)
+    def cancel_work_cleanup(item) -> None:
+        if item.metadata.get("workflow_intent") == "knowledge.ingest":
+            indexing.abandon_for_work(item.work_id)
+    work_store = WorkStore(work_db); work_store.initialize(); work = WorkRuntime(
+        work_store, capabilities, actions_store, cancel_hook=cancel_work_cleanup,
+    )
     artifact_intake_store = ArtifactIntakeStore(work_db); artifact_intake_store.initialize()
     artifact_intake = ArtifactIntakeRuntime(
         artifact_intake_store, artifact_store, providers, work, registry, capabilities,

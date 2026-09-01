@@ -349,6 +349,30 @@ class LocalSourceKernel:
             display_locator=f"{display_root}/{path}" if path != "." else display_root,
         )
 
+    def open_binary(
+        self, provider_namespace: str, root_id: str, relative_path: str, *,
+        configuration_revision: str | None = None, cancellation: CancellationToken | None = None,
+        timeout_seconds: float = READ_HASH_TIMEOUT_SECONDS,
+    ) -> tuple[int, SourceRef, os.stat_result]:
+        """Open one governed regular file for bounded caller-controlled streaming.
+
+        The returned descriptor is already containment-checked and no-follow opened.
+        The caller owns and must close it.
+        """
+        deadline = self._deadline(timeout_seconds, READ_HASH_TIMEOUT_SECONDS)
+        root, ref = self._prepare(
+            provider_namespace, root_id, relative_path, configuration_revision, cancellation, deadline
+        )
+        fd = self._open_content(root, ref.relative_path)
+        try:
+            info = os.fstat(fd)
+            self._require_regular(info, root_id, ref.relative_path)
+            self._check(cancellation, deadline, root_id, ref.relative_path)
+            return fd, ref, info
+        except BaseException:
+            os.close(fd)
+            raise
+
     def stat(
         self, provider_namespace: str, root_id: str, relative_path: str, *,
         configuration_revision: str | None = None, cancellation: CancellationToken | None = None,

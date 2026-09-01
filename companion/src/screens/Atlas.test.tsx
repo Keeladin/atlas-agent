@@ -1,10 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ComponentProps } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Provider } from '../api/types'
-import { AtlasPage, PolicyPanel, Providers, RuntimeOverview } from './Atlas'
+import { AtlasPage, PolicyPanel, Providers, RuntimeOverview, WebProviders } from './Atlas'
 import { capabilityLensFor, policyLensFor } from './policyLens'
 
 type RuntimeState = NonNullable<ComponentProps<typeof RuntimeOverview>['state']>
@@ -13,6 +13,7 @@ const state: RuntimeState = {
   version: '3.0.0',
   policy_revision: 36,
   providers: [],
+  web_providers: [],
   mcp_servers: [],
   source_roots: [],
   capabilities: [],
@@ -25,6 +26,8 @@ const state: RuntimeState = {
     storage: { filesystems: [{ path: '/', total: 1024 ** 4, free: 512 * 1024 ** 3 }] },
   },
 }
+
+afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('RuntimeOverview', () => {
   it('shows operator-friendly runtime truth while keeping raw evidence collapsed', () => {
@@ -52,6 +55,29 @@ describe('Providers', () => {
     const init = fetchMock.mock.calls[0][1] as RequestInit
     expect(JSON.parse(String(init.body))).toMatchObject({ key: 'xai:expert', priority: 100 })
     vi.unstubAllGlobals()
+  })
+})
+
+describe('WebProviders', () => {
+  it('shows the stable web capability boundary without exposing credentials', () => {
+    const providers = [{ key: 'web-primary', kind: 'brave' as const, enabled: true, priority: 100, credential_configured: true, metadata: {}, updated_at: 'now' }]
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    render(<QueryClientProvider client={client}><WebProviders providers={providers} onDone={async () => undefined} /></QueryClientProvider>)
+    expect(screen.getByText('web.search')).toBeInTheDocument()
+    expect(screen.getByText('web/search')).toBeInTheDocument()
+    expect(screen.getByText(/Task-specific reasoning stays in Atlas/)).toBeInTheDocument()
+    expect(screen.getByText(/never returned here/)).toBeInTheDocument()
+  })
+
+  it('presents a successful verification as readable status instead of raw JSON', async () => {
+    const providers = [{ key: 'web-primary', kind: 'brave' as const, enabled: true, priority: 100, credential_configured: true, metadata: {}, updated_at: 'now' }]
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true, provider: 'Atlas', kind: 'brave', result_count: 1 }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    render(<QueryClientProvider client={client}><WebProviders providers={providers} onDone={async () => undefined} /></QueryClientProvider>)
+    fireEvent.click(screen.getByRole('button', { name: 'Verify web search' }))
+    expect(await screen.findByText('Verification successful')).toBeInTheDocument()
+    expect(screen.getByText('Results returned')).toBeInTheDocument()
+    expect(screen.queryByText(/"result_count"/)).not.toBeInTheDocument()
   })
 })
 
@@ -97,6 +123,19 @@ describe('PolicyPanel', () => {
     fireEvent.change(screen.getByRole('textbox', { name: /filter provider tools/i }), { target: { value: 'delete' } })
     expect(screen.getByText('gmail.users.messages.delete: Permanently deletes a message.')).toBeInTheDocument()
     expect(screen.queryByText('gmail.users.messages.send: Sends a message.')).not.toBeInTheDocument()
+  })
+
+  it('writes the selected literal decision through the canonical policy route', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ revision: 37 }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false }, queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><PolicyPanel rules={rules} capabilities={capabilities} servers={[server]} revision={36} onDone={async () => undefined} /></QueryClientProvider>)
+    fireEvent.click(screen.getByRole('button', { name: 'YES' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/policy')
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect(JSON.parse(String(init.body))).toEqual({ scope: 'host/service', operation: 'restart', decision: 'YES' })
+    vi.unstubAllGlobals()
   })
 })
 

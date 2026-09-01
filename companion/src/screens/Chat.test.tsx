@@ -17,7 +17,7 @@ function renderChat() {
     if (path === '/api/actions/pending') return Response.json({ actions: [] })
     if (path === '/api/chat/conversations/conversation_1' && (!init?.method || init.method === 'GET')) return Response.json({ conversation, turns: [
       { turn_id: 'u1', conversation_id: 'conversation_1', role: 'user', content: 'Hello Atlas', metadata: {} },
-      { turn_id: 'a1', conversation_id: 'conversation_1', role: 'assistant', content: 'Hello there', metadata: {} },
+      { turn_id: 'a1', conversation_id: 'conversation_1', role: 'assistant', content: 'Hello there', metadata: { tools_used: ['knowledge.search'] } },
     ] })
     if (path === '/api/chat/conversations/conversation_1' && init?.method === 'DELETE') return Response.json({ ok: true })
     throw new Error(`unexpected fetch ${path}`)
@@ -39,6 +39,15 @@ describe('Chat', () => {
     expect(selected).toHaveClass('active')
     expect(screen.getByText('Hello there').closest('.chat-turn')).toHaveClass('assistant')
     expect(screen.getByText('Hello there').closest('.card')).toBeNull()
+    expect(screen.getAllByText('knowledge.search')).not.toHaveLength(0)
+  })
+
+  it('filters the local conversation rail without changing the active thread', async () => {
+    renderChat()
+    expect(await screen.findByText('Hello there')).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search conversations' }), { target: { value: 'missing' } })
+    expect(screen.getByText('No matching conversations')).toBeInTheDocument()
+    expect(screen.getByText('Hello there')).toBeInTheDocument()
   })
 
   it('deletes a conversation through the authenticated API surface', async () => {
@@ -98,4 +107,27 @@ it('does not resurrect a stale embedded confirmation after the runtime has resol
   expect(await screen.findByText('Restart user service atlas-api.service')).toBeInTheDocument()
   await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/actions/pending')).toBe(true))
   expect(screen.queryByText('Confirm exact action')).not.toBeInTheDocument()
+})
+
+it('anchors a live confirmation to the assistant turn that recorded it', async () => {
+  const pending = {
+    occurrence_id: 'action-restart', capability_id: 'host.service.restart', operation: 'restart', scope: 'host/service/atlas-api.service',
+    payload_sha256: 'a'.repeat(64), policy_decision: 'CONFIRM', policy_revision: 1, status: 'pending_confirmation', created_at: 'now',
+  }
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input)
+    if (path === '/api/chat/conversations') return Response.json({ conversations: [conversation] })
+    if (path === '/api/actions/pending') return Response.json({ actions: [pending] })
+    if (path === '/api/chat/conversations/conversation_1') return Response.json({ conversation, turns: [
+      { turn_id: 'u1', conversation_id: 'conversation_1', role: 'user', content: 'Restart Atlas', metadata: {} },
+      { turn_id: 'a1', conversation_id: 'conversation_1', role: 'assistant', content: 'Confirmation is required.', metadata: { requires_confirmation: true, action: pending } },
+    ] })
+    throw new Error(`unexpected fetch ${path}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={client}><Chat /></QueryClientProvider>)
+  const confirm = await screen.findByRole('button', { name: 'Confirm exact action' })
+  expect(confirm.closest('.chat-turn')).toHaveTextContent('Confirmation is required.')
+  expect(screen.getAllByText('host.service.restart')).not.toHaveLength(0)
 })

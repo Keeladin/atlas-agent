@@ -20,6 +20,7 @@ from atlas_core.knowledge import KnowledgeRuntime, KnowledgeStore
 from atlas_core.knowledge.generations import GenerationStore
 from atlas_core.knowledge.indexing import IndexingRuntime
 from atlas_core.knowledge.passages import PassageStore
+from atlas_core.library import LibraryRuntime, LibraryStore
 from atlas_core.mcp import MCPRuntime, MCPServerStore
 from atlas_core.memory import MemoryRuntime, MemoryStore
 from atlas_core.model_runtime import ModelInferenceRuntime
@@ -30,6 +31,9 @@ from atlas_core.secrets import CredentialStore
 from atlas_core.sources import SourceRootStore, SourceRuntime
 from atlas_core.work import WorkRuntime, WorkStore
 from atlas_core.work.runtime import register_work_capabilities
+from atlas_core.web import WebProviderSettingsStore, WebRuntime
+from atlas_providers.web_browser import PlaywrightBrowserProvider
+from atlas_providers.web_configured import ConfiguredWebProvider
 
 
 @dataclass
@@ -50,9 +54,14 @@ class AtlasRuntime:
     mcp: MCPRuntime
     source_roots: SourceRootStore
     sources: SourceRuntime
+    web_provider_settings: WebProviderSettingsStore
+    web_providers: ConfiguredWebProvider
+    web: WebRuntime
     host: HostRuntime
     knowledge_store: KnowledgeStore
     knowledge: KnowledgeRuntime
+    library_store: LibraryStore
+    library: LibraryRuntime
     passages: PassageStore
     generations: GenerationStore
     indexing: IndexingRuntime
@@ -79,6 +88,7 @@ class AtlasRuntime:
             "owner": owner.as_dict(),
             "policy_revision": self.policy_store.revision(),
             "providers": list(self.providers.public_state()),
+            "web_providers": list(self.web_providers.public_state()),
             "mcp_servers": list(self.mcp.public_state()),
             "source_roots": [row for row in self.sources.public_state() if row.get("provider_namespace") != MANAGED_PROVIDER_NAMESPACE],
             "connections": [item.as_dict() for item in self.identities.connections(owner_principal_id=owner.principal_id)],
@@ -97,6 +107,9 @@ class AtlasRuntime:
             ("atlas/knowledge/index", "index", "YES"),
             ("atlas/knowledge/index", "verify", "YES"),
             ("atlas/knowledge/index", "activate", "CONFIRM"),
+            ("atlas/library", "scan", "YES"),
+            ("atlas/library", "materialize", "YES"),
+            ("atlas/library", "review", "YES"),
             ("atlas/artifacts", "search", "YES"),
             ("atlas/artifacts", "inspect", "YES"),
             ("atlas/artifacts/intake", "classify", "YES"),
@@ -109,6 +122,13 @@ class AtlasRuntime:
             ("atlas/memory", "purge", "CONFIRM"),
             ("atlas/work", "create", "YES"),
             ("atlas/cadence", "create", "YES"),
+            ("web", "search", "YES"),
+            ("web", "read", "YES"),
+            ("web", "fetch", "YES"),
+            ("web", "extract", "YES"),
+            ("web", "crawl", "YES"),
+            ("web", "download", "CONFIRM"),
+            ("web", "render", "YES"),
             ("host/status", "inspect", "YES"),
             ("host/resources", "inspect", "YES"),
             ("host/storage", "inspect", "YES"),
@@ -164,12 +184,19 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     provider_settings = ProviderSettingsStore(identity_db); provider_settings.initialize(); provider_settings.seed_local()
     providers = ProviderRuntime(provider_settings, credentials)
     mcp_store = MCPServerStore(identity_db); mcp_store.initialize()
+    web_provider_settings = WebProviderSettingsStore(identity_db); web_provider_settings.initialize()
     source_roots = SourceRootStore(identity_db); source_roots.initialize()
     managed_root = root / "managed-intake"
     managed_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     source_roots.put(
         root_id=MANAGED_ROOT_ID, host_path=str(managed_root), display_name="Atlas managed intake",
         provider_namespace=MANAGED_PROVIDER_NAMESPACE, quarantine_relative_path=None, enabled=True,
+    )
+    library_root = root / "library-clean"
+    library_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    source_roots.put(
+        root_id="atlas-library-clean", host_path=str(library_root), display_name="Atlas clean library",
+        provider_namespace="atlas-library", quarantine_relative_path=".atlas-quarantine", enabled=True,
     )
 
     # ActionRuntime resolves the executor at execution time so pending CONFIRM
@@ -180,6 +207,9 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     mcp = MCPRuntime(mcp_store, credentials, registry); mcp.refresh_all()
     artifact_store = ArtifactStore(work_db); artifact_store.initialize()
     sources = SourceRuntime(source_roots, registry, artifact_store)
+    web_providers = ConfiguredWebProvider(web_provider_settings, credentials)
+    web_browser = PlaywrightBrowserProvider()
+    web = WebRuntime(registry, web_providers, managed_root / "web", browser=web_browser)
     artifacts = ArtifactRuntime(artifact_store, registry, sources)
     managed_intake = ManagedIntakeRuntime(artifact_store, sources, registry)
     host = HostRuntime(registry, actions_store)
@@ -188,6 +218,8 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     generations = GenerationStore(work_db); generations.initialize()
     indexing = IndexingRuntime(passages, generations, artifact_store, sources)
     knowledge = KnowledgeRuntime(knowledge_store, registry, indexing)
+    library_store = LibraryStore(work_db); library_store.initialize()
+    library = LibraryRuntime(library_store, sources, registry)
     model_inference = ModelInferenceRuntime(providers, registry)
     representations = RepresentationRuntime(artifact_store, sources, registry, model_provider=providers)
     chat_store = ChatStore(chat_db); chat_store.initialize()
@@ -214,7 +246,7 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     runtime = AtlasRuntime(
         root, identities, policy_store, policy, actions_store, evidence, registry,
         actions, capabilities, credentials, provider_settings, providers,
-        mcp_store, mcp, source_roots, sources, host, knowledge_store, knowledge,
+        mcp_store, mcp, source_roots, sources, web_provider_settings, web_providers, web, host, knowledge_store, knowledge, library_store, library,
         passages, generations, indexing, artifact_store, artifacts, managed_intake, artifact_intake_store, artifact_intake, model_inference, representations, memory_store, memory,
         work_store, work, cadence_store, cadence, chat_store, chat,
     )

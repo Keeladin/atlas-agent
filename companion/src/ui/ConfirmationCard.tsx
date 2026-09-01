@@ -4,7 +4,7 @@ import type { ActionOccurrence } from '../api/types'
 import { Panel } from './Panel'
 import { useMediaQuery } from './useMediaQuery'
 
-export function ConfirmationCard({ item, onDone, onResolved }: { item: ActionOccurrence; onDone: () => Promise<unknown>; onResolved?: (item: ActionOccurrence) => void }) {
+export function ConfirmationCard({ item, onDone, onResolved, title = 'Confirm action', confirmLabel = 'Confirm', cancelLabel = 'Cancel' }: { item: ActionOccurrence; onDone: () => Promise<unknown>; onResolved?: (item: ActionOccurrence) => void; title?: string; confirmLabel?: string; cancelLabel?: string }) {
   const [busy, setBusy] = useState<'confirm' | 'cancel' | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [resolved, setResolved] = useState<ActionOccurrence | null>(null)
@@ -35,13 +35,13 @@ export function ConfirmationCard({ item, onDone, onResolved }: { item: ActionOcc
   </div> : null
 
   const actionControls = current.status === 'pending_confirmation' ? <div className="actions confirmation-actions">
-    <button className="confirm" type="button" disabled={Boolean(busy)} onClick={() => void act('confirm')}>{busy === 'confirm' ? 'Confirming…' : 'Confirm'}</button>
-    <button className="danger" type="button" disabled={Boolean(busy)} onClick={() => void act('cancel')}>{busy === 'cancel' ? 'Cancelling…' : 'Cancel'}</button>
+    <button className="confirm" type="button" disabled={Boolean(busy)} onClick={() => void act('confirm')}>{busy === 'confirm' ? 'Confirming…' : confirmLabel}</button>
+    <button className="danger" type="button" disabled={Boolean(busy)} onClick={() => void act('cancel')}>{busy === 'cancel' ? 'Cancelling…' : cancelLabel}</button>
   </div> : <div className="actions confirmation-actions"><span className={`chip ${current.status === 'succeeded' ? 'done' : current.status === 'failed' || current.status === 'cancelled' ? 'failed' : 'running'}`}>{current.status}</span></div>
 
   const messageNode = message ? <p className={message.startsWith('Action ') ? 'meta confirmation-message' : 'offline-banner confirmation-message'}>{message}</p> : null
 
-  return <Panel title="Confirm action" tone="decision-confirm" className="confirmation-card">
+  return <Panel title={title} tone="decision-confirm" className="confirmation-card">
     <p className="confirmation-summary">{current.summary || current.capability_id}</p>
     {phone ? <>
       <div className="confirmation-target"><span>{current.operation}</span><strong>{current.scope}</strong></div>

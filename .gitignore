@@ -19,3 +19,6 @@ companion/dist/
 .vscode/
 .idea/
 .DS_Store
+
+# Local browser runtime libraries
+.browser-libs/

@@ -618,6 +618,54 @@ async def provider_delete(request: Request) -> JSONResponse:
     except Exception as exc:return _error(exc)
 
 
+async def web_providers_list(request: Request) -> JSONResponse:
+    gate=require_session(request)
+    if isinstance(gate,JSONResponse):return gate
+    return JSONResponse({"providers":list(_runtime(request).web_providers.public_state())})
+
+
+async def web_provider_put(request: Request) -> JSONResponse:
+    gate=require_mutation_auth(request)
+    if isinstance(gate,JSONResponse):return gate
+    try:
+        body=await _body(request);rt=_runtime(request);key=str(body.get("key") or "")
+        try:existing=rt.web_provider_settings.get(key);credential_ref=existing.credential_ref
+        except KeyError:credential_ref=None
+        api_key=str(body.get("api_key") or "").strip()
+        if api_key:
+            if credential_ref:rt.credentials.replace(credential_ref,{"api_key":api_key})
+            else:credential_ref=rt.credentials.create(kind="web_provider_api_key",secret={"api_key":api_key})
+        item=rt.web_provider_settings.put(
+            key=key,kind=str(body.get("kind") or ""),enabled=bool(body.get("enabled",True)),
+            priority=int(body.get("priority",50)),credential_ref=credential_ref,
+            metadata=body.get("metadata") if isinstance(body.get("metadata"),dict) else None,
+        )
+        return JSONResponse(item.public())
+    except Exception as exc:return _error(exc)
+
+
+async def web_provider_verify(request: Request) -> JSONResponse:
+    gate=require_mutation_auth(request)
+    if isinstance(gate,JSONResponse):return gate
+    try:return JSONResponse(await run_in_threadpool(_runtime(request).web_providers.verify,request.path_params["provider_key"]))
+    except Exception as exc:return _error(exc)
+
+
+async def web_provider_delete(request: Request) -> JSONResponse:
+    gate=require_mutation_auth(request)
+    if isinstance(gate,JSONResponse):return gate
+    try:
+        rt=_runtime(request);key=request.path_params["provider_key"]
+        try:item=rt.web_provider_settings.get(key)
+        except KeyError:return _error(KeyError("web provider not found"),404)
+        rt.web_provider_settings.delete(key)
+        if item.credential_ref:
+            try:rt.credentials.disable(item.credential_ref)
+            except Exception:logger.warning("failed to disable deleted web provider credential",exc_info=True)
+        return JSONResponse({"ok":True})
+    except Exception as exc:return _error(exc)
+
+
 async def connections_list(request: Request) -> JSONResponse:
     gate=require_session(request)
     if isinstance(gate,JSONResponse):return gate

@@ -76,6 +76,36 @@ def test_csrf_is_required_for_runtime_mutations(tmp_path, monkeypatch):
         assert response.status_code == 403
 
 
+def test_web_provider_credentials_are_runtime_managed_and_never_returned(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        csrf = _login(client); headers = {"X-CSRF-Token": csrf}
+        before = client.get("/api/capabilities").json()["capabilities"]
+        search_before = next(item for item in before if item["id"] == "web.search")
+        assert search_before["available"] is False
+        assert search_before["availability_reason"] == "search_provider_not_configured"
+
+        created = client.post("/api/web/providers", json={
+            "key": "primary-search", "kind": "brave", "api_key": "web-secret-value",
+            "enabled": True, "priority": 100,
+        }, headers=headers)
+        assert created.status_code == 200
+        assert created.json()["credential_configured"] is True
+        assert "web-secret-value" not in created.text
+        listed = client.get("/api/web/providers")
+        assert listed.status_code == 200
+        assert listed.json()["providers"][0]["kind"] == "brave"
+        assert "web-secret-value" not in listed.text
+        system = client.get("/api/system")
+        assert system.json()["web_providers"][0]["key"] == "primary-search"
+        assert "web-secret-value" not in system.text
+        after = client.get("/api/capabilities").json()["capabilities"]
+        assert next(item for item in after if item["id"] == "web.search")["available"] is True
+
+        deleted = client.delete("/api/web/providers/primary-search", headers=headers)
+        assert deleted.status_code == 200
+        assert client.get("/api/web/providers").json()["providers"] == []
+
+
 def test_conversation_delete_requires_csrf_and_removes_conversation(tmp_path, monkeypatch):
     with _client(tmp_path, monkeypatch) as client:
         csrf = _login(client)

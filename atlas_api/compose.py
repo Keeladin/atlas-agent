@@ -31,6 +31,9 @@ from atlas_core.secrets import CredentialStore
 from atlas_core.sources import SourceRootStore, SourceRuntime
 from atlas_core.work import WorkRuntime, WorkStore
 from atlas_core.work.runtime import register_work_capabilities
+from atlas_core.web import WebProviderSettingsStore, WebRuntime
+from atlas_providers.web_browser import PlaywrightBrowserProvider
+from atlas_providers.web_configured import ConfiguredWebProvider
 
 
 @dataclass
@@ -51,6 +54,9 @@ class AtlasRuntime:
     mcp: MCPRuntime
     source_roots: SourceRootStore
     sources: SourceRuntime
+    web_provider_settings: WebProviderSettingsStore
+    web_providers: ConfiguredWebProvider
+    web: WebRuntime
     host: HostRuntime
     knowledge_store: KnowledgeStore
     knowledge: KnowledgeRuntime
@@ -82,6 +88,7 @@ class AtlasRuntime:
             "owner": owner.as_dict(),
             "policy_revision": self.policy_store.revision(),
             "providers": list(self.providers.public_state()),
+            "web_providers": list(self.web_providers.public_state()),
             "mcp_servers": list(self.mcp.public_state()),
             "source_roots": [row for row in self.sources.public_state() if row.get("provider_namespace") != MANAGED_PROVIDER_NAMESPACE],
             "connections": [item.as_dict() for item in self.identities.connections(owner_principal_id=owner.principal_id)],
@@ -115,6 +122,13 @@ class AtlasRuntime:
             ("atlas/memory", "purge", "CONFIRM"),
             ("atlas/work", "create", "YES"),
             ("atlas/cadence", "create", "YES"),
+            ("web", "search", "YES"),
+            ("web", "read", "YES"),
+            ("web", "fetch", "YES"),
+            ("web", "extract", "YES"),
+            ("web", "crawl", "YES"),
+            ("web", "download", "CONFIRM"),
+            ("web", "render", "YES"),
             ("host/status", "inspect", "YES"),
             ("host/resources", "inspect", "YES"),
             ("host/storage", "inspect", "YES"),
@@ -170,6 +184,7 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     provider_settings = ProviderSettingsStore(identity_db); provider_settings.initialize(); provider_settings.seed_local()
     providers = ProviderRuntime(provider_settings, credentials)
     mcp_store = MCPServerStore(identity_db); mcp_store.initialize()
+    web_provider_settings = WebProviderSettingsStore(identity_db); web_provider_settings.initialize()
     source_roots = SourceRootStore(identity_db); source_roots.initialize()
     managed_root = root / "managed-intake"
     managed_root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -192,6 +207,9 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     mcp = MCPRuntime(mcp_store, credentials, registry); mcp.refresh_all()
     artifact_store = ArtifactStore(work_db); artifact_store.initialize()
     sources = SourceRuntime(source_roots, registry, artifact_store)
+    web_providers = ConfiguredWebProvider(web_provider_settings, credentials)
+    web_browser = PlaywrightBrowserProvider()
+    web = WebRuntime(registry, web_providers, managed_root / "web", browser=web_browser)
     artifacts = ArtifactRuntime(artifact_store, registry, sources)
     managed_intake = ManagedIntakeRuntime(artifact_store, sources, registry)
     host = HostRuntime(registry, actions_store)
@@ -228,7 +246,7 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     runtime = AtlasRuntime(
         root, identities, policy_store, policy, actions_store, evidence, registry,
         actions, capabilities, credentials, provider_settings, providers,
-        mcp_store, mcp, source_roots, sources, host, knowledge_store, knowledge, library_store, library,
+        mcp_store, mcp, source_roots, sources, web_provider_settings, web_providers, web, host, knowledge_store, knowledge, library_store, library,
         passages, generations, indexing, artifact_store, artifacts, managed_intake, artifact_intake_store, artifact_intake, model_inference, representations, memory_store, memory,
         work_store, work, cadence_store, cadence, chat_store, chat,
     )

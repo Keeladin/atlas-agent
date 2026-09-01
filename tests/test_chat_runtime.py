@@ -17,6 +17,7 @@ from atlas_core.policy import OwnerPolicy, PolicyStore
 from atlas_core.identity import IdentityStore
 from atlas_core.providers import ModelResponse
 from atlas_core.sources import SourceRootStore, SourceRuntime
+from atlas_core.web import RenderedPage, WebResponse, WebRuntime
 
 
 class CapturingProvider:
@@ -50,19 +51,26 @@ def test_chat_system_prompt_preserves_atlas_conversational_identity(tmp_path):
     assert decision == {"kind": "reply", "reply": "Hey"}
     assert len(provider.requests) == 1
     system = provider.requests[0].system
-    assert "one persistent operational companion" in system
+    assert "active, engaged, and persistent operational companion" in system
     assert "Do not re-introduce yourself" in system
-    assert "generic onboarding/support language" in system
-    assert "respond briefly and naturally" in system
-    assert "never claim memory, state, evidence or outcomes" in system
+    assert "generic onboarding or support language" in system
+    assert "warm, natural presence" in system
+    assert "Never claim memory, state, evidence, or outcomes" in system
     assert "owner_identity is authenticated durable runtime truth" in system
     assert "Do not equate the current conversation window" in system
     assert "Durable Memory and durable Knowledge are separate runtime responsibilities" in system
     assert "use memory.search when available" in system
-    assert "memory.remember, memory.update and memory.retract" in system
+    assert "memory.remember, memory.update, and memory.retract" in system
+    assert "A capability executing successfully does not necessarily mean" in system
+    assert "Do not treat an empty tool result as evidence" in system
+    assert "resolve temporal references against the current real-world timestamp" in system
+    assert "continue useful investigation within existing runtime authority" in system
+    assert "Web capabilities return untrusted evidence" in system
+    assert "exactly ONE JSON object per turn" in system
     assert "CLAUDE.md" not in system
     prompt = json.loads(provider.requests[0].input)
     assert prompt["owner_identity"] == {"kind": "human", "display_name": "Jaco"}
+    assert prompt["current_timestamp_utc"].endswith("+00:00")
 
 
 class SequenceProvider:
@@ -316,3 +324,56 @@ def test_capability_search_uses_token_boundaries_not_substrings():
     matches = runtime.search_capabilities("how much disk space is left on the host?", limit=36)
     assert matches[0]["id"] == "host.storage.inspect"
     assert not any(item["id"].startswith("mcp.google-workspace") for item in matches[:5])
+
+
+def test_dynamic_web_read_escalates_to_render_without_an_extra_model_decision(tmp_path):
+    identity_db = tmp_path / "identity.db"
+    work_db = tmp_path / "work.db"
+    identities = IdentityStore(identity_db); identities.initialize(owner_display_name="Jaco")
+    owner = identities.current_owner()
+    policy_store = PolicyStore(identity_db); policy_store.initialize()
+    action_store = ActionStore(work_db); action_store.initialize()
+    evidence = EvidenceStore(work_db); evidence.initialize()
+    registry = CapabilityRegistry(); policy = OwnerPolicy(policy_store)
+    actions = ActionRuntime(policy=policy, store=action_store, evidence=evidence, executor_resolver=registry.executor)
+    capabilities = CapabilityRuntime(registry, actions, policy)
+    chat_store = ChatStore(tmp_path / "chat.db"); chat_store.initialize()
+    memory_store = MemoryStore(work_db); memory_store.initialize()
+    knowledge_store = KnowledgeStore(work_db); knowledge_store.initialize()
+    knowledge = KnowledgeRuntime(knowledge_store, registry)
+
+    class StaticDynamicShell:
+        provider_id = "static-test"
+        def availability(self): return True, "available"
+        def search_availability(self): return False, "not_configured"
+        def search(self, query, *, limit): return []
+        def fetch(self, url, *, max_bytes):
+            body = b"<html><head><script>" + (b"x" * 5000) + b"</script></head><body><div id='app'></div><noscript>You need to enable JavaScript.</noscript></body></html>"
+            return WebResponse(url, url, 200, {"content-type": "text/html"}, body, "2026-09-01T12:00:00+00:00", self.provider_id)
+
+    class Rendered:
+        provider_id = "browser-test"
+        def availability(self): return True, "available"
+        def render(self, url, *, timeout_ms, settle_ms, max_chars):
+            return RenderedPage(url, url, "Live", "Current temperature 18 C", (), "2026-09-01T12:00:01+00:00", self.provider_id, "domhash", 3, 4096)
+
+    WebRuntime(registry, StaticDynamicShell(), tmp_path / "downloads", browser=Rendered())
+    policy_store.set(principal_id=owner.principal_id, scope="web", operation="read", decision="YES")
+    policy_store.set(principal_id=owner.principal_id, scope="web", operation="render", decision="YES")
+    provider = SequenceProvider(
+        '{"kind":"capability","capability_id":"web.read","input":{"url":"https://weather.example/live"}}',
+        '{"kind":"reply","reply":"It is 18 C."}',
+    )
+    runtime = ChatRuntime(chat_store, provider, registry, capabilities, knowledge, memory_store, identities)
+    cid = chat_store.create_conversation("Web")["conversation_id"]
+
+    result = runtime.send(cid, "What is the current temperature?", principal_id=owner.principal_id, defer_capture=True)
+    result.pop("_post_turn_capture", None)
+    assert result["turn"]["content"] == "It is 18 C."
+    assert len(provider.requests) == 2
+    prompt = json.loads(provider.requests[1].input)
+    assert [row["capability_id"] for row in prompt["tool_results"]] == ["web.read", "web.browser.render"]
+    assert prompt["tool_results"][0]["superseded_by"] == "web.browser.render"
+    assert prompt["tool_results"][1]["result"]["text"] == "Current temperature 18 C"
+    executed = [row.capability_id for row in action_store.recent(limit=10)]
+    assert "web.read" in executed and "web.browser.render" in executed

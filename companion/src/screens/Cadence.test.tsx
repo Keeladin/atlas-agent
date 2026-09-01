@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CadenceList } from './Cadence'
@@ -22,6 +22,7 @@ describe('Cadence', () => {
     }))
     renderPage()
     expect(await screen.findByText('No standing duties yet')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'New standing duty' }))
     expect(screen.getByLabelText('Repeat')).toBeInTheDocument()
     expect(screen.getByLabelText('Timezone')).toBeInTheDocument()
     expect(screen.queryByText('Schedule JSON')).not.toBeInTheDocument()

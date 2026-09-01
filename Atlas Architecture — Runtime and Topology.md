@@ -158,6 +158,27 @@ Google Discovery / provider tool
 
 If Google exposes a method and the connected account is technically authorized for it, Atlas can inventory that method. Whether Atlas may invoke it is an owner-policy decision.
 
+### Provider-neutral web capability layer
+
+Current public-web access is expressed as stable Atlas capabilities rather than task-specific agents or provider-specific tools:
+
+```text
+Atlas reasoning / Work
+        -> web.search | web.read | web.fetch | web.extract | web.download | web.crawl | web.browser.render
+        -> exact web/search or web/<public-host> scope
+        -> NO | YES | CONFIRM
+        -> replaceable search / HTTP provider
+        -> structured evidence + provenance
+```
+
+The baseline read/fetch provider uses bounded direct HTTP. `web.search` becomes technically available only when an enabled, credentialed search provider is configured; current adapters support Brave Search, Jina Search, Tavily and Serper in priority/fallback order. Search credentials live in `CredentialStore`, never in the browser or process environment. Provider-native response streams terminate at a deterministic evidence-translation boundary before they enter Atlas reasoning: search adapters emit one stable search-result contract, while HTTP responses are parsed by media type into normalized page, structured-data, text-document or metadata-only evidence with an explicit translator version, `data_only` trust marker and provenance/content identity. Raw transport bytes and executable/presentation markup are not model context. Legitimate source wording is preserved as evidence rather than regex-sanitized simply because it resembles an instruction.
+
+This evidence boundary is not an authority mechanism. Runtime policy remains the sole authority gate for actions: external data cannot grant `YES`, remove `CONFIRM`, widen a scope or mutate policy merely because the source text requests it. Translation constrains the shape and provenance of external evidence; `CapabilityRuntime` / `ActionRuntime` enforce what Atlas may actually do.
+
+Direct fetches accept only HTTP(S) on the normal web ports, reject credentials in URLs, resolve exclusively to public addresses, pin the connection to the validated address, and cap time and bytes. Every redirect target is canonicalized and independently resolved through the same public-address boundary. Cross-origin redirects are allowed for ordinary OEM/CDN flows, but an HTTPS request cannot downgrade to HTTP and credentials, cookies, API-key/token headers, origin and referrer are irreversibly stripped when the origin changes. Caller request headers and response headers remain separate so response metadata can never be replayed on a later hop; same-origin provider authorization survives a redirect. Crawl itself remains robots-aware, bounded to ten pages and same-origin so discovered links cannot silently widen one crawl action into a different policy scope. Downloads materialize without overwrite inside Atlas managed intake and use exact-action `CONFIRM` by default.
+
+`web.browser.render` is an implemented read-only rendered-page capability backed by Playwright/Chromium. Static `web.read` remains the first path; deterministic structural quality signals can escalate an inadequate static page to `web.browser.render` without another model decision. The render action still crosses runtime policy independently. Browser network requests are forced through Atlas controlled HTTP transport, service workers/downloads are disabled, non-GET/HEAD requests are rejected, top-level navigation cannot silently widen to an unrelated host, and executable DOM state never crosses the evidence boundary: only normalized visible-text evidence, links and provenance reach reasoning. CAPTCHA/access-control detection is reported rather than bypassed. Form submission and general interaction are not exposed; adding them requires explicit mutation contracts and runtime-policy decisions rather than treating browser possession as authority.
+
 ## 9. Local filesystem
 
 Source enrollment registers a canonical host directory with the hardened local-source kernel. Enrollment exposes technical read and mutation operations; it does not encode owner authority.
@@ -256,7 +277,7 @@ The production instance root is external to the Git checkout. This prevents code
 
 ```text
 atlas-identity.db
-  principals, connections, service bindings, provider settings,
+  principals, connections, service bindings, model/web provider settings,
   MCP servers, source roots, append-only policy events
 
 atlas-work.db

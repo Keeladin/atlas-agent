@@ -88,7 +88,8 @@ The greenfield runtime currently owns:
 - Work and Cadence;
 - Knowledge references/notes and first-class owner Memory with supersession, retraction, recall and governed purge;
 - native file and host capabilities;
-- provider configuration and model execution;
+- provider-neutral public-web search, read, fetch, extraction, confirmed download, bounded same-origin crawl, and read-only JavaScript rendering, with deterministic translation of provider-native streams into versioned `data_only` evidence plus provenance before reasoning;
+- model and web-provider configuration, encrypted credential custody, and model execution;
 - generic MCP/n8n discovery and invocation;
 - generic Streamable HTTP and stdio MCP capability providers;
 - Discovery-driven Google Workspace capabilities for Gmail, Drive and Calendar;
@@ -102,7 +103,7 @@ Morning is not an Atlas responsibility. It is a separate product, has no runtime
 
 Atlas does not create autonomous named sub-agents, use service configuration as discretionary policy, grant authority merely because a provider advertises an operation, or preserve obsolete architecture solely for compatibility.
 
-The current product also does not claim that every possible domain workflow is already implemented. New responsibilities should enter through capabilities and explicit external boundaries rather than by expanding Atlas's identity.
+The current product also does not claim that every possible domain workflow is already implemented. Read-only rendered browser execution is implemented; web form submission, authenticated interaction and other browser mutations remain unavailable until they have explicit capability contracts and runtime-policy semantics. New responsibilities should enter through capabilities and explicit external boundaries rather than by expanding Atlas's identity.
 
 ## Completion standard
 

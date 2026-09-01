@@ -2,9 +2,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
-import type { ActionOccurrence, Capability, Decision, MCPServer, PolicyRule, Provider, SourceRoot } from '../api/types'
+import type { ActionOccurrence, Capability, Decision, MCPServer, PolicyRule, Provider, SourceRoot, WebProvider } from '../api/types'
 import { ConfirmationCard } from '../ui/ConfirmationCard'
+import { FactList, InspectorPanel, InspectorSection, OperationalRibbon, OperationalRow, StatusLamp } from '../ui/OperationsPrimitives'
+import type { LampTone } from '../ui/operationState'
 import { Panel } from '../ui/Panel'
+import { SegmentedNav } from '../ui/SegmentedNav'
+import { Sheet } from '../ui/Sheet'
 import { Workspace } from '../ui/Workspace'
 import { CapabilityBrowser } from './CapabilityBrowser'
 import { capabilityLensFor, policyLensFor, type PolicyLens } from './policyLens'
@@ -13,6 +17,7 @@ type SystemState = {
   version: string
   policy_revision: number
   providers: Provider[]
+  web_providers: WebProvider[]
   mcp_servers: MCPServer[]
   source_roots: SourceRoot[]
   capabilities: Capability[]
@@ -45,6 +50,38 @@ type HostStorage = { filesystems?: HostFilesystem[]; timestamp?: string }
 type HostState = { status?: HostStatus; resources?: HostResources; storage?: HostStorage }
 type AtlasBack = { path: string; parent?: AtlasBack }
 
+const ATLAS_TABS = [
+  { to: '/atlas', label: 'Overview', end: true },
+  { to: '/atlas/runtime', label: 'Runtime' },
+  { to: '/atlas/policies', label: 'Policies' },
+  { to: '/atlas/models', label: 'Providers' },
+  { to: '/atlas/connections', label: 'Connections' },
+  { to: '/atlas/filesystem', label: 'Filesystem' },
+  { to: '/atlas/capabilities', label: 'Capabilities' },
+]
+
+function when(value?: string | null) {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+function VerificationResult({ result }: { result: unknown }) {
+  const data = result && typeof result === 'object' ? result as Record<string, unknown> : {}
+  const successful = data.ok !== false
+  const facts = [
+    { label: 'Provider', value: data.provider },
+    { label: 'Adapter', value: data.kind },
+    { label: 'Model', value: data.model },
+    { label: 'Results returned', value: data.result_count },
+  ].filter(item => item.value !== undefined && item.value !== null)
+    .map(item => ({ label: item.label, value: String(item.value), mono: item.label !== 'Results returned' }))
+  return <div className={`provider-verification-result ${successful ? 'success' : 'failed'}`} role="status">
+    <StatusLamp tone={successful ? 'green' : 'red'} />
+    <div><strong>Verification {successful ? 'successful' : 'failed'}</strong><span>{successful ? 'The provider responded successfully.' : 'The provider did not pass verification.'}</span>{facts.length ? <FactList items={facts} /> : null}</div>
+  </div>
+}
+
 function useAtlasControl() {
   const qc = useQueryClient()
   const system = useQuery({ queryKey: ['system'], queryFn: () => api<SystemState>('/api/system'), refetchInterval: 10000 })
@@ -53,12 +90,13 @@ function useAtlasControl() {
   return { system, policy, refresh }
 }
 
-export function AtlasPage({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
+export function AtlasPage({ title, subtitle, children, banner, headerActions }: { title: string; subtitle: string; children: ReactNode; banner?: ReactNode; headerActions?: ReactNode }) {
   const location = useLocation()
   const navigate = useNavigate()
   const back = (location.state as { atlasBack?: AtlasBack } | null)?.atlasBack
   const goBack = () => back ? navigate(back.path, { state: back.parent ? { atlasBack: back.parent } : null }) : navigate('/atlas')
-  return <Workspace className="atlas-control-workspace" title={title} subtitle={subtitle} crumb={<button type="button" className="atlas-back" onClick={goBack}><span aria-hidden>←</span> Back</button>}><div className="stack">{children}</div></Workspace>
+  const crumb = location.pathname === '/atlas' ? undefined : <button type="button" className="atlas-back" onClick={goBack}><span aria-hidden>←</span> Back</button>
+  return <Workspace className="operations-workspace atlas-control-workspace atlas-technical-workspace" title={title} subtitle={subtitle} crumb={crumb} headerActions={headerActions} tabs={<SegmentedNav items={ATLAS_TABS} />} banner={banner}><div className="atlas-page-body">{children}</div></Workspace>
 }
 
 export function Atlas() {
@@ -67,17 +105,56 @@ export function Atlas() {
   const enabledProviders = state?.providers.filter(provider => provider.enabled).length ?? 0
   const availableCapabilities = state?.capabilities.filter(capability => capability.available).length ?? 0
   const pending = state?.pending_confirmations.length ?? 0
-  const cards = [
-    { to: '/atlas/runtime', eyebrow: 'Observe', title: 'Runtime', description: 'Process, resources, storage and pending confirmations.', metric: state ? `${state.version} · ${pending} pending` : 'Loading…' },
-    { to: '/atlas/policies', eyebrow: 'Control', title: 'Policies', description: 'Owner authority for System, n8n tools and MCP tools.', metric: state ? `revision ${state.policy_revision}` : 'Loading…' },
-    { to: '/atlas/models', eyebrow: 'Configure', title: 'Models & Providers', description: 'Model endpoints, credentials, priority and verification.', metric: state ? `${enabledProviders}/${state.providers.length} enabled` : 'Loading…' },
-    { to: '/atlas/connections', eyebrow: 'Connect', title: 'Connections', description: 'MCP/n8n servers, external identities and technical bindings.', metric: state ? `${state.mcp_servers.length} services · ${state.connections.length} accounts` : 'Loading…' },
-    { to: '/atlas/filesystem', eyebrow: 'Configure', title: 'Filesystem', description: 'Enrolled roots and deterministic source boundaries.', metric: state ? `${state.source_roots.length} roots` : 'Loading…' },
-    { to: '/atlas/capabilities', eyebrow: 'Inspect', title: 'Capabilities', description: 'The complete live toolbox Atlas can currently see.', metric: state ? `${availableCapabilities}/${state.capabilities.length} available` : 'Loading…' },
+  const runtimeTone: LampTone = system.isError ? 'red' : state ? 'green' : 'dim'
+  const runtimeLabel = system.isError ? 'Unavailable' : state ? 'Available' : 'Checking'
+  const unavailableCapabilities = state?.capabilities.filter(capability => !capability.available) ?? []
+  const missingCredentials = state?.providers.filter(provider => provider.enabled && !provider.local && !provider.credential_configured) ?? []
+  const discoveryErrors = state?.mcp_servers.filter(server => Boolean(server.last_error)) ?? []
+  const attention = [
+    ...state?.pending_confirmations.map(item => ({ key: item.occurrence_id, tone: 'red' as const, title: item.summary || item.capability_id, detail: `${item.operation} · ${item.scope}`, status: 'confirmation pending', to: '/atlas/runtime' })) ?? [],
+    ...discoveryErrors.map(server => ({ key: server.server_id, tone: 'red' as const, title: `${server.display_name} discovery error`, detail: server.last_error ?? server.server_id, status: 'discovery error', to: '/atlas/connections' })),
+    ...missingCredentials.map(provider => ({ key: provider.key, tone: 'amber' as const, title: `${provider.key} has no configured credential`, detail: `${provider.kind} · ${provider.model}`, status: 'not configured', to: '/atlas/models' })),
+    ...(unavailableCapabilities.length ? [{ key: 'unavailable-capabilities', tone: 'amber' as const, title: `${unavailableCapabilities.length} unavailable capabilities`, detail: 'Inspect exact availability reasons in the capability browser.', status: 'unavailable', to: '/atlas/capabilities' }] : []),
   ]
-  return <Workspace title="Atlas" subtitle="Runtime truth and control. Choose a control surface instead of scrolling through one long settings document.">
-    <div className="atlas-dashboard-grid">{cards.map(card => <Link className="atlas-dashboard-card" to={card.to} state={{ atlasBack: { path: '/atlas' } }} key={card.to}><span className="eyebrow">{card.eyebrow}</span><div className="atlas-dashboard-card-head"><h2>{card.title}</h2><span aria-hidden>→</span></div><p>{card.description}</p><strong>{card.metric}</strong></Link>)}</div>
-  </Workspace>
+  const topology: Array<{ to: string; label: string; detail: string; tone: LampTone }> = [
+    { to: '/atlas/runtime', label: 'Runtime', detail: state ? `v${state.version}` : runtimeLabel, tone: runtimeTone },
+    { to: '/atlas/policies', label: 'Policy', detail: state ? `revision ${state.policy_revision}` : '—', tone: state ? 'green' as const : 'dim' as const },
+    { to: '/atlas/models', label: 'Providers', detail: state ? `${enabledProviders} / ${state.providers.length} enabled` : '—', tone: state && enabledProviders ? 'green' as const : 'dim' as const },
+    { to: '/atlas/connections', label: 'Connections', detail: state ? `${state.mcp_servers.length} configured` : '—', tone: discoveryErrors.length ? 'red' as const : state?.mcp_servers.length ? 'green' as const : 'dim' as const },
+    { to: '/atlas/filesystem', label: 'Filesystem', detail: state ? `${state.source_roots.length} roots` : '—', tone: state?.source_roots.some(root => root.enabled) ? 'green' as const : 'dim' as const },
+    { to: '/atlas/capabilities', label: 'Capabilities', detail: state ? `${availableCapabilities} / ${state.capabilities.length} available` : '—', tone: unavailableCapabilities.length ? 'amber' as const : state?.capabilities.length ? 'green' as const : 'dim' as const },
+  ]
+  const snapshot = <InspectorPanel title="Runtime snapshot" eyebrow="Live control plane" status={<StatusLamp tone={runtimeTone} label={runtimeLabel} />}>
+    <InspectorSection title="Process"><FactList items={[
+      { label: 'Version', value: state?.version ?? '—', mono: true },
+      { label: 'Host', value: state?.host.status?.hostname ?? '—', mono: true },
+      { label: 'PID', value: state?.host.status?.pid ?? '—', mono: true },
+      { label: 'Observed', value: when(state?.host.status?.timestamp), mono: true },
+    ]} /></InspectorSection>
+    <InspectorSection title="Control"><FactList items={[
+      { label: 'Policy revision', value: state?.policy_revision ?? '—', mono: true },
+      { label: 'Pending', value: pending },
+      { label: 'Providers', value: state ? `${enabledProviders} / ${state.providers.length} enabled` : '—' },
+      { label: 'Capabilities', value: state ? `${availableCapabilities} / ${state.capabilities.length} available` : '—' },
+    ]} /></InspectorSection>
+    <InspectorSection title="Navigation"><Link className="button-link" to="/atlas/runtime">Open runtime</Link></InspectorSection>
+  </InspectorPanel>
+  return <AtlasPage title="Atlas" subtitle="Runtime, authority, and technical capability." banner={<OperationalRibbon items={[
+    { label: 'Runtime', value: runtimeLabel, tone: runtimeTone },
+    { label: 'Policy revision', value: state?.policy_revision ?? '—', tone: state ? 'green' : 'dim' },
+    { label: 'Providers enabled', value: state ? `${enabledProviders} / ${state.providers.length}` : '—', tone: state && enabledProviders ? 'green' : 'dim' },
+    { label: 'Services configured', value: state?.mcp_servers.length ?? '—', tone: state?.mcp_servers.length ? 'green' : 'dim' },
+    { label: 'Capabilities available', value: state ? `${availableCapabilities} / ${state.capabilities.length}` : '—', tone: unavailableCapabilities.length ? 'amber' : state?.capabilities.length ? 'green' : 'dim' },
+    { label: 'Confirmations pending', value: pending, tone: pending ? 'red' : 'dim' },
+  ]} />}>
+    <div className="atlas-overview-grid">
+      <div className="atlas-overview-main">
+        <section className="ops-surface atlas-attention-surface"><header className="ops-surface-head"><div><span className="eyebrow">Configuration attention</span><strong>{attention.length ? `${attention.length} exact runtime facts to inspect` : 'No configuration exceptions reported'}</strong></div></header><div className="atlas-attention-list">{attention.map(item => <Link to={item.to} key={`${item.key}:${item.status}`}><OperationalRow lamp={item.tone} label={item.title} secondary={item.detail} status={<span className={`chip ${item.tone === 'red' ? 'failed' : 'running'}`}>{item.status}</span>} /></Link>)}{!attention.length ? <div className="empty-state compact"><strong>No pending confirmations, discovery errors, missing provider credentials, or unavailable capabilities.</strong></div> : null}</div></section>
+        <section className="ops-surface atlas-topology-surface"><header className="ops-surface-head"><div><span className="eyebrow">System topology</span><strong>One runtime, six technical control surfaces</strong></div></header><div className="atlas-topology-grid">{topology.map(item => <Link to={item.to} key={item.to}><StatusLamp tone={item.tone} /><span><strong>{item.label}</strong><small className="mono">{item.detail}</small></span><span aria-hidden>→</span></Link>)}</div></section>
+      </div>
+      {snapshot}
+    </div>
+  </AtlasPage>
 }
 
 type Generation = {
@@ -121,32 +198,77 @@ function KnowledgeGenerations({ onDone }: { onDone: () => Promise<unknown> }) {
 
 export function AtlasRuntime() {
   const { system, refresh } = useAtlasControl()
-  return <AtlasPage title="Runtime" subtitle="Live process and host truth. This page observes Atlas; it does not grant authority."><RuntimeOverview state={system.data} /><Pending items={system.data?.pending_confirmations ?? []} onDone={refresh} /><KnowledgeGenerations onDone={refresh} /></AtlasPage>
+  const state = system.data
+  const filesystems = state?.host.storage?.filesystems ?? []
+  return <AtlasPage title="Runtime" subtitle="Live process and host truth. Observation does not grant authority." banner={<OperationalRibbon items={[
+    { label: 'API state', value: system.isError ? 'Unavailable' : state ? 'Available' : 'Checking', tone: system.isError ? 'red' : state ? 'green' : 'dim' },
+    { label: 'Version', value: state?.version ?? '—', tone: state ? 'green' : 'dim' },
+    { label: 'Policy revision', value: state?.policy_revision ?? '—', tone: state ? 'green' : 'dim' },
+    { label: 'Capabilities', value: state?.capabilities.length ?? '—', tone: state?.capabilities.length ? 'green' : 'dim' },
+    { label: 'Storage observed', value: filesystems.length, tone: filesystems.length ? 'green' : 'dim' },
+    { label: 'Confirmations', value: state?.pending_confirmations.length ?? 0, tone: state?.pending_confirmations.length ? 'red' : 'dim' },
+  ]} />}><div className="atlas-runtime-page"><RuntimeOverview state={state} /><div className="atlas-runtime-secondary"><Pending items={state?.pending_confirmations ?? []} onDone={refresh} /><KnowledgeGenerations onDone={refresh} /></div></div></AtlasPage>
 }
 
 export function AtlasPolicies() {
   const { system, policy, refresh } = useAtlasControl()
-  return <AtlasPage title="Policies" subtitle="The live owner authority surface. Description first; exact scope and operation remain visible as evidence."><PolicyPanel rules={policy.data?.rules ?? []} capabilities={system.data?.capabilities ?? []} servers={system.data?.mcp_servers ?? []} revision={policy.data?.revision ?? 0} onDone={refresh} /></AtlasPage>
+  const rules = policy.data?.rules ?? []
+  return <AtlasPage title="Policies" subtitle="Owner authority for consequential actions." banner={<OperationalRibbon items={[
+    { label: 'Revision', value: policy.data?.revision ?? '—', tone: policy.data ? 'green' : 'dim' },
+    { label: 'Rules', value: rules.length, tone: rules.length ? 'green' : 'dim' },
+    { label: 'YES', value: rules.filter(rule => rule.decision === 'YES').length },
+    { label: 'CONFIRM', value: rules.filter(rule => rule.decision === 'CONFIRM').length, tone: rules.some(rule => rule.decision === 'CONFIRM') ? 'amber' : 'dim' },
+    { label: 'NO', value: rules.filter(rule => rule.decision === 'NO').length },
+  ]} />}><PolicyPanel rules={rules} capabilities={system.data?.capabilities ?? []} servers={system.data?.mcp_servers ?? []} revision={policy.data?.revision ?? 0} onDone={refresh} /></AtlasPage>
 }
 
 export function AtlasModels() {
   const { system, refresh } = useAtlasControl()
-  return <AtlasPage title="Models & Providers" subtitle="Technical model capability: endpoints, credentials, ordering and verification."><Providers providers={system.data?.providers ?? []} onDone={refresh} /></AtlasPage>
+  const providers = system.data?.providers ?? []
+  const webProviders = system.data?.web_providers ?? []
+  return <AtlasPage title="Providers" subtitle="Replaceable model and web access beneath stable Atlas capabilities." banner={<OperationalRibbon items={[
+    { label: 'Model providers', value: providers.length, tone: providers.length ? 'green' : 'dim' },
+    { label: 'Models enabled', value: providers.filter(provider => provider.enabled).length, tone: providers.some(provider => provider.enabled) ? 'green' : 'dim' },
+    { label: 'Web search providers', value: webProviders.length, tone: webProviders.length ? 'green' : 'dim' },
+    { label: 'Web search ready', value: webProviders.some(provider => provider.enabled && provider.credential_configured) ? 'Yes' : 'No', tone: webProviders.some(provider => provider.enabled && provider.credential_configured) ? 'green' : 'amber' },
+  ]} />}><div className="atlas-provider-stack"><Providers providers={providers} onDone={refresh} /><WebProviders providers={webProviders} onDone={refresh} /></div></AtlasPage>
 }
 
 export function AtlasIntegrations() {
   const { system, refresh } = useAtlasControl()
-  return <AtlasPage title="Connections" subtitle="Technical connections and account custody. Tool authority is managed under Policies."><Mcp servers={system.data?.mcp_servers ?? []} onDone={refresh} /><ExternalAccounts connections={system.data?.connections ?? []} bindings={system.data?.service_bindings ?? []} /></AtlasPage>
+  const state = system.data
+  const servers = state?.mcp_servers ?? []
+  return <AtlasPage title="Connections" subtitle="External services, accounts, and discovered capability." banner={<OperationalRibbon items={[
+    { label: 'Services configured', value: servers.length, tone: servers.length ? 'green' : 'dim' },
+    { label: 'Enabled', value: servers.filter(server => server.enabled).length, tone: servers.some(server => server.enabled) ? 'green' : 'dim' },
+    { label: 'Tools discovered', value: servers.reduce((total, server) => total + server.discovered_tool_count, 0), tone: servers.some(server => server.discovered_tool_count) ? 'green' : 'dim' },
+    { label: 'Discovery errors', value: servers.filter(server => server.last_error).length, tone: servers.some(server => server.last_error) ? 'red' : 'dim' },
+    { label: 'External accounts', value: state?.connections.length ?? 0, tone: state?.connections.length ? 'green' : 'dim' },
+  ]} />}><Mcp servers={servers} capabilities={state?.capabilities ?? []} connections={state?.connections ?? []} bindings={state?.service_bindings ?? []} onDone={refresh} /></AtlasPage>
 }
 
 export function AtlasFilesystem() {
   const { system, refresh } = useAtlasControl()
-  return <AtlasPage title="Filesystem" subtitle="Enroll deterministic roots here; read/write/delete authority remains a runtime policy decision."><Roots roots={system.data?.source_roots ?? []} onDone={refresh} /></AtlasPage>
+  const roots = system.data?.source_roots ?? []
+  return <AtlasPage title="Filesystem" subtitle="Enrolled roots and managed host paths." banner={<OperationalRibbon items={[
+    { label: 'Roots enrolled', value: roots.length, tone: roots.length ? 'green' : 'dim' },
+    { label: 'Enabled', value: roots.filter(root => root.enabled).length, tone: roots.some(root => root.enabled) ? 'green' : 'dim' },
+    { label: 'Disabled', value: roots.filter(root => !root.enabled).length, tone: roots.some(root => !root.enabled) ? 'dim' : undefined },
+    { label: 'Quarantine configured', value: roots.filter(root => root.quarantine_relative_path).length, tone: roots.some(root => root.quarantine_relative_path) ? 'green' : 'dim' },
+  ]} />}><Roots roots={roots} capabilities={system.data?.capabilities ?? []} onDone={refresh} /></AtlasPage>
 }
 
 export function AtlasCapabilities() {
   const { system, refresh } = useAtlasControl()
-  return <AtlasPage title="Capabilities" subtitle="Live capability discovery drives navigation, input controls, authority and execution."><CapabilityBrowser items={system.data?.capabilities ?? []} servers={system.data?.mcp_servers ?? []} onDone={refresh} /></AtlasPage>
+  const capabilities = system.data?.capabilities ?? []
+  return <AtlasPage title="Capabilities" subtitle="Live capability inventory, exact authority, and execution." banner={<OperationalRibbon items={[
+    { label: 'Discovered', value: capabilities.length, tone: capabilities.length ? 'green' : 'dim' },
+    { label: 'Available', value: capabilities.filter(item => item.available).length, tone: capabilities.some(item => item.available) ? 'green' : 'dim' },
+    { label: 'Unavailable', value: capabilities.filter(item => !item.available).length, tone: capabilities.some(item => !item.available) ? 'amber' : 'dim' },
+    { label: 'YES', value: capabilities.filter(item => item.policy_decision === 'YES').length },
+    { label: 'CONFIRM', value: capabilities.filter(item => item.policy_decision === 'CONFIRM').length, tone: capabilities.some(item => item.policy_decision === 'CONFIRM') ? 'amber' : 'dim' },
+    { label: 'NO', value: capabilities.filter(item => item.policy_decision === 'NO').length },
+  ]} />}><CapabilityBrowser items={capabilities} servers={system.data?.mcp_servers ?? []} onDone={refresh} /></AtlasPage>
 }
 
 function formatBytes(value?: number) {
@@ -171,45 +293,33 @@ export function RuntimeOverview({ state }: { state?: SystemState }) {
   const filesystems = storage.filesystems ?? []
   const invocation = status.invocation_id ? `${status.invocation_id.slice(0, 12)}…` : '—'
 
-  return <Panel title="Runtime" className="runtime-overview">
-    <div className="grid-3 runtime-kpis">
-      <div><div className="meta">Version</div><strong>{state?.version ?? '—'}</strong></div>
-      <div><div className="meta">Policy revision</div><strong>{state?.policy_revision ?? '—'}</strong></div>
-      <div><div className="meta">Capabilities</div><strong>{state?.capabilities.length ?? '—'}</strong></div>
-    </div>
-    <div className="runtime-grid">
-      <section className="runtime-section">
-        <div className="runtime-section-head"><h3>Process</h3><span className="chip done">live</span></div>
-        <div className="runtime-facts">
-          <div><span>Host</span><strong>{status.hostname ?? '—'}</strong></div>
-          <div><span>Kernel</span><strong>{status.kernel ?? '—'}</strong></div>
-          <div><span>PID / UID</span><strong>{status.pid ?? '—'} / {status.uid ?? '—'}</strong></div>
-          <div title={status.invocation_id ?? undefined}><span>Invocation</span><strong>{invocation}</strong></div>
-        </div>
-      </section>
-      <section className="runtime-section">
-        <div className="runtime-section-head"><h3>Resources</h3><span className="meta">{resources.cpu_count ?? '—'} CPU</span></div>
-        <div className="runtime-facts">
-          <div><span>Load 1 / 5 / 15</span><strong>{[resources.load_1, resources.load_5, resources.load_15].map(v => v == null ? '—' : v.toFixed(2)).join(' / ')}</strong></div>
-          <div><span>Memory available</span><strong>{formatMem(resources.memory?.MemAvailable)}</strong></div>
-          <div><span>Memory total</span><strong>{formatMem(resources.memory?.MemTotal)}</strong></div>
-          <div><span>Swap free</span><strong>{formatMem(resources.memory?.SwapFree)}</strong></div>
-        </div>
-      </section>
-      <section className="runtime-section">
-        <div className="runtime-section-head"><h3>Storage</h3><span className="meta">{filesystems.length} observed</span></div>
-        <div className="runtime-storage">
-          {filesystems.length ? filesystems.map((fs, index) => <div className="runtime-storage-row" key={`${fs.path ?? 'fs'}:${index}`}><strong>{fs.path ?? '—'}</strong><span>{formatBytes(fs.free)} free / {formatBytes(fs.total)}</span></div>) : <div className="meta">No storage telemetry</div>}
-        </div>
-      </section>
-    </div>
-    <details className="inspect runtime-evidence"><summary>Raw host evidence</summary><pre>{JSON.stringify(state?.host ?? {}, null, 2)}</pre></details>
-  </Panel>
+  const load = [resources.load_1, resources.load_5, resources.load_15].map(value => value == null ? '—' : value.toFixed(2)).join(' / ')
+  return <div className="atlas-control-grid atlas-runtime-control">
+    <section className="ops-rail-panel atlas-runtime-process"><div className="atlas-panel-heading"><span className="eyebrow">Process</span><StatusLamp tone={state ? 'green' : 'dim'} label={state ? 'Observed' : 'Unknown'} /></div><FactList items={[
+      { label: 'Host', value: status.hostname ?? '—', mono: true },
+      { label: 'Kernel', value: status.kernel ?? '—', mono: true },
+      { label: 'PID / UID', value: `${status.pid ?? '—'} / ${status.uid ?? '—'}`, mono: true },
+      { label: 'Invocation', value: invocation, mono: true },
+      { label: 'Timestamp', value: when(status.timestamp), mono: true },
+    ]} /></section>
+    <section className="ops-surface atlas-runtime-telemetry"><header className="ops-surface-head"><div><span className="eyebrow">Telemetry</span><strong>Host resources and storage</strong></div><span className="meta mono">{resources.cpu_count ?? '—'} CPU</span></header><div className="atlas-telemetry-grid"><section><h3>Resources</h3><FactList items={[
+      { label: 'Load 1 / 5 / 15', value: load, mono: true },
+      { label: 'Memory available', value: formatMem(resources.memory?.MemAvailable), mono: true },
+      { label: 'Memory total', value: formatMem(resources.memory?.MemTotal), mono: true },
+      { label: 'Swap free', value: formatMem(resources.memory?.SwapFree), mono: true },
+      { label: 'Observed', value: when(resources.timestamp), mono: true },
+    ]} /></section><section><h3>Storage</h3><div className="runtime-storage">{filesystems.length ? filesystems.map((fs, index) => <div className="runtime-storage-row" key={`${fs.path ?? 'fs'}:${index}`}><strong className="mono">{fs.path ?? '—'}</strong><span>{formatBytes(fs.free)} free / {formatBytes(fs.total)}</span></div>) : <div className="empty-state compact"><strong>No storage telemetry</strong></div>}</div></section></div></section>
+    <InspectorPanel title="Runtime identity" eyebrow="Control plane" status={<StatusLamp tone={state ? 'green' : 'dim'} label={state ? 'Available' : 'Unknown'} />}><InspectorSection title="Runtime"><FactList items={[
+      { label: 'Version', value: state?.version ?? '—', mono: true },
+      { label: 'Policy revision', value: state?.policy_revision ?? '—', mono: true },
+      { label: 'Capabilities', value: state?.capabilities.length ?? '—' },
+      { label: 'Storage samples', value: filesystems.length },
+    ]} /></InspectorSection><InspectorSection title="Evidence"><details className="inspect runtime-evidence"><summary>Raw host evidence</summary><pre>{JSON.stringify(state?.host ?? {}, null, 2)}</pre></details></InspectorSection></InspectorPanel>
+  </div>
 }
 
 function Pending({ items, onDone }: { items: ActionOccurrence[]; onDone: () => Promise<unknown> }) {
-  if (!items.length) return null
-  return <Panel title="Needs you" tone="decision-confirm"><div className="stack">{items.map(item => <ConfirmationCard key={item.occurrence_id} item={item} onDone={onDone} />)}</div></Panel>
+  return <Panel title="Pending confirmations" tone={items.length ? 'decision-confirm' : undefined} className="atlas-runtime-pending">{items.length ? <div className="stack">{items.map(item => <ConfirmationCard key={item.occurrence_id} item={item} onDone={onDone} />)}</div> : <div className="empty-state compact"><strong>No pending confirmations</strong><span>Exact-action confirmations will appear here.</span></div>}</Panel>
 }
 
 function policyDescription(rule: PolicyRule, capabilities: Capability[]) {
@@ -224,6 +334,7 @@ function policyDescription(rule: PolicyRule, capabilities: Capability[]) {
 
 export function PolicyPanel({ rules, capabilities, servers, revision, onDone }: { rules: PolicyRule[]; capabilities: Capability[]; servers: MCPServer[]; revision: number; onDone: () => Promise<unknown> }) {
   const [lens, setLens] = useState<PolicyLens>('system')
+  const [selectedKey, setSelectedKey] = useState('')
   const [scope, setScope] = useState('')
   const [operation, setOperation] = useState('')
   const [decision, setDecision] = useState<Decision>('CONFIRM')
@@ -241,37 +352,35 @@ export function PolicyPanel({ rules, capabilities, servers, revision, onDone }: 
   ]
   const toolGroups = servers.filter(server => server.kind === lens).map(server => ({ server, tools: filteredToolCapabilities.filter(capability => capability.metadata?.server_id === server.server_id) })).filter(group => group.tools.length)
   const disconnectedTools = filteredToolCapabilities.filter(capability => !servers.some(server => server.server_id === capability.metadata?.server_id))
+  const rows = lens === 'system'
+    ? systemRules.map(rule => ({ key: `${rule.scope}:${rule.operation}`, description: policyDescription(rule, capabilities), id: capabilities.find(capability => capability.operation === rule.operation && capability.scope_hint === rule.scope)?.id ?? rule.event_id, scope: rule.scope, operation: rule.operation, decision: rule.decision, group: 'System' }))
+    : filteredToolCapabilities.map(tool => ({ key: tool.id, description: tool.description, id: tool.id, scope: tool.scope_hint ?? '', operation: tool.operation, decision: tool.policy_decision, group: servers.find(server => server.server_id === tool.metadata?.server_id)?.display_name ?? 'Disconnected tools' }))
+  const selected = rows.find(row => row.key === selectedKey) ?? rows[0] ?? null
 
-  const decisionSelect = (scopeValue: string, operationValue: string, value: Decision, label: string) => <select className="policy-decision" aria-label={label} value={value} onChange={e => save.mutate({ scope: scopeValue, operation: operationValue, decision: e.target.value as Decision })}><option>NO</option><option>YES</option><option>CONFIRM</option></select>
-
-  return <Panel title="Policies" className="policy-panel">
-    <div className="policy-head">
-      <p className="meta">Revision {revision} · changes apply immediately to the running Atlas. No service restart or provider reconfiguration.</p>
-      <div className="policy-tabs" role="tablist" aria-label="Policy lenses">
-        {tabs.map(tab => <button key={tab.id} type="button" role="tab" aria-selected={lens === tab.id} className={lens === tab.id ? 'policy-tab active' : 'policy-tab'} onClick={() => setLens(tab.id)}>{tab.label}<span>{tab.count}</span></button>)}
-      </div>
-    </div>
-
-    {lens !== 'system' ? <input value={toolFilter} onChange={e => setToolFilter(e.target.value)} placeholder="Filter provider tools" aria-label="Filter provider tools" /> : null}
-
-    {lens === 'system' ? <div className="policy-list">
-      {systemRules.map(rule => <div className="policy-item" key={`${rule.scope}:${rule.operation}`}><div className="policy-copy"><strong>{policyDescription(rule, capabilities)}</strong><div className="policy-syntax">{rule.scope} · {rule.operation}</div></div>{decisionSelect(rule.scope, rule.operation, rule.decision, `${rule.scope} ${rule.operation} decision`)}</div>)}
-    </div> : <div className="policy-tool-groups">
-      {toolGroups.map(({ server, tools }) => <section className="policy-tool-group" key={server.server_id}><div className="policy-tool-group-head"><div><span className="eyebrow">{server.kind}</span><h3>{server.display_name}</h3></div><span className="chip">{tools.length} tools</span></div><div className="policy-list">{tools.map(tool => <div className="policy-item" key={tool.id}><div className="policy-copy"><strong>{tool.description}</strong><div className="policy-syntax">{tool.id}</div><div className="policy-syntax">{tool.scope_hint} · {tool.operation}</div></div>{decisionSelect(tool.scope_hint ?? '', tool.operation, tool.policy_decision, `${tool.id} decision`)}</div>)}</div></section>)}
-      {disconnectedTools.length ? <section className="policy-tool-group"><div className="policy-tool-group-head"><div><span className="eyebrow">Stored</span><h3>Disconnected tools</h3></div><span className="chip">{disconnectedTools.length}</span></div><div className="policy-list">{disconnectedTools.map(tool => <div className="policy-item" key={tool.id}><div className="policy-copy"><strong>{tool.description}</strong><div className="policy-syntax">{tool.id}</div><div className="policy-syntax">{tool.scope_hint} · {tool.operation}</div></div>{decisionSelect(tool.scope_hint ?? '', tool.operation, tool.policy_decision, `${tool.id} decision`)}</div>)}</div></section> : null}
-      {!toolGroups.length && !disconnectedTools.length ? <div className="empty">No {lens === 'n8n' ? 'n8n' : 'MCP'} tools are currently discovered.</div> : null}
-    </div>}
-
-    <details className="inspect policy-advanced"><summary>Advanced policy override</summary><form className="grid-3 policy-add" onSubmit={submit}><input value={scope} onChange={e => setScope(e.target.value)} placeholder="resource scope" /><input value={operation} onChange={e => setOperation(e.target.value)} placeholder="operation" /><div className="actions"><select value={decision} onChange={e => setDecision(e.target.value as Decision)}><option>NO</option><option>YES</option><option>CONFIRM</option></select><button className="primary" type="submit">Set</button></div></form></details>
-  </Panel>
+  return <div className="atlas-control-grid atlas-policy-control">
+    <section className="ops-rail-panel"><div className="atlas-panel-heading"><span className="eyebrow">Policy lenses</span><span className="mono meta">rev {revision}</span></div><div className="ops-filter-stack policy-tabs" role="tablist" aria-label="Policy lenses">{tabs.map(tab => <button key={tab.id} type="button" role="tab" aria-selected={lens === tab.id} className={lens === tab.id ? 'active' : ''} onClick={() => { setLens(tab.id); setSelectedKey('') }}><span>{tab.label}</span><strong>{tab.count}</strong></button>)}</div>{lens !== 'system' ? <div className="policy-provider-summary">{toolGroups.map(({ server, tools }) => <div key={server.server_id}><span><strong>{server.display_name}</strong><small>{server.kind}</small></span><span className="chip">{tools.length} tools</span></div>)}{disconnectedTools.length ? <div><span><strong>Disconnected tools</strong><small>Stored inventory</small></span><span className="chip">{disconnectedTools.length} tools</span></div> : null}</div> : <p className="ops-authority-note"><StatusLamp tone="amber" />Missing rules resolve to literal NO. Changes apply immediately to the running Atlas.</p>}</section>
+    <section className="ops-surface atlas-policy-list"><header className="ops-surface-head"><div><span className="eyebrow">Authority rules</span><strong>{rows.length} controls in this lens</strong></div>{lens !== 'system' ? <input value={toolFilter} onChange={e => setToolFilter(e.target.value)} placeholder="Filter provider tools" aria-label="Filter provider tools" /> : null}</header><div className="atlas-table-head policy-table-columns"><span>Decision</span><span>Capability / tool</span><span>Operation</span><span>Scope</span></div><div className="atlas-table-body">{rows.map(row => <button type="button" className={`atlas-table-row policy-table-columns ${selected?.key === row.key ? 'active' : ''}`} key={row.key} onClick={() => setSelectedKey(row.key)}><span className={`authority-value decision-${row.decision.toLowerCase()}`}>{row.decision}</span><span className="atlas-table-copy"><strong>{row.description}</strong><small className="mono">{row.id}</small><small className="policy-syntax">{row.scope || '—'} · {row.operation}</small></span><span className="mono">{row.operation}</span><span className="mono">{row.scope || '—'}</span></button>)}{!rows.length ? <div className="empty-state"><strong>No {lens === 'system' ? 'system rules' : lens === 'n8n' ? 'n8n tools' : 'MCP tools'} in the current runtime snapshot.</strong></div> : null}</div></section>
+    <InspectorPanel title={selected?.id ?? 'Select an authority rule'} eyebrow="Selected authority rule" status={selected ? <span className={`authority-value decision-${selected.decision.toLowerCase()}`}>{selected.decision}</span> : undefined}>
+      {selected ? <><InspectorSection title="Exact control"><FactList items={[
+        { label: 'Capability / rule', value: selected.id, mono: true },
+        { label: 'Operation', value: selected.operation, mono: true },
+        { label: 'Exact scope', value: selected.scope || '—', mono: true },
+        { label: 'Revision', value: revision, mono: true },
+      ]} /></InspectorSection><InspectorSection title="Current decision"><div className="authority-selector" role="group" aria-label={`${selected.scope} ${selected.operation} decision`}>{(['NO', 'YES', 'CONFIRM'] as Decision[]).map(value => <button type="button" className={`${selected.decision === value ? 'active' : ''} decision-${value.toLowerCase()}`} disabled={save.isPending} onClick={() => save.mutate({ scope: selected.scope, operation: selected.operation, decision: value })} key={value}>{value}</button>)}</div><p className="ops-authority-note"><StatusLamp tone={selected.decision === 'CONFIRM' ? 'red' : selected.decision === 'YES' ? 'amber' : 'dim'} />{selected.decision === 'CONFIRM' ? 'Confirmation is required before this action can execute.' : selected.decision === 'YES' ? 'The runtime may execute the resolved action without owner confirmation.' : 'The runtime blocks this operation at the exact matching scope.'}</p></InspectorSection></> : <div className="empty-state compact"><strong>No rule selected</strong></div>}
+      {save.isError ? <p className="offline-banner">{save.error.message}</p> : null}
+      <InspectorSection title="Advanced"><details className="inspect policy-advanced"><summary>Set explicit override</summary><form className="policy-add" onSubmit={submit}><input value={scope} onChange={e => setScope(e.target.value)} placeholder="resource scope" aria-label="Resource scope" /><input value={operation} onChange={e => setOperation(e.target.value)} placeholder="operation" aria-label="Operation" /><select value={decision} onChange={e => setDecision(e.target.value as Decision)} aria-label="Override decision"><option>NO</option><option>YES</option><option>CONFIRM</option></select><button className="primary" type="submit">Set override</button></form></details></InspectorSection>
+    </InspectorPanel>
+  </div>
 }
 
 export function Providers({ providers, onDone }: { providers: Provider[]; onDone: () => Promise<unknown> }) {
+  const [selectedKey, setSelectedKey] = useState('')
+  const [addOpen, setAddOpen] = useState(false)
   const [key, setKey] = useState(''); const [kind, setKind] = useState('openai_compatible'); const [model, setModel] = useState(''); const [base, setBase] = useState(''); const [secret, setSecret] = useState(''); const [workspaceId, setWorkspaceId] = useState(''); const [priority, setPriority] = useState(50)
   const [replacementKeys, setReplacementKeys] = useState<Record<string, string>>({})
   const [providerPriorities, setProviderPriorities] = useState<Record<string, number>>({})
   const [providerWorkspaceIds, setProviderWorkspaceIds] = useState<Record<string, string>>({})
-  const save = useMutation({ mutationFn: (payload: object) => api('/api/providers', { method: 'POST', body: JSON.stringify(payload) }), onSuccess: onDone })
+  const save = useMutation({ mutationFn: (payload: object) => api('/api/providers', { method: 'POST', body: JSON.stringify(payload) }), onSuccess: async () => { setAddOpen(false); setKey(''); setModel(''); setBase(''); setSecret(''); setWorkspaceId(''); await onDone() } })
   const update = useMutation({
     mutationFn: ({ item, apiKey, enabled, priority: nextPriority, workspaceId: nextWorkspaceId }: { item: Provider; apiKey?: string; enabled?: boolean; priority?: number; workspaceId?: string }) => api('/api/providers', {
       method: 'POST',
@@ -283,52 +392,135 @@ export function Providers({ providers, onDone }: { providers: Provider[]; onDone
   const remove = useMutation({ mutationFn: (providerKey: string) => api(`/api/providers/${providerKey}`, { method: 'DELETE' }), onSuccess: onDone })
   function submit(event: FormEvent) { event.preventDefault(); save.mutate({ key, kind, model, base_url: base || null, api_key: secret || undefined, enabled: true, local: kind === 'openai_compatible' && base.includes('127.0.0.1'), priority, metadata: kind === 'anthropic' && workspaceId.trim() ? { workspace_id: workspaceId.trim() } : undefined }) }
   const ordered = [...providers].sort((a, b) => b.priority - a.priority || a.key.localeCompare(b.key))
-  return <Panel title="Models & providers" className="providers-panel"><p className="meta provider-help">Higher priority runs first. If it fails, Atlas tries the next enabled provider.</p><div className="provider-list">{ordered.map(item => {
-    const draftPriority = providerPriorities[item.key] ?? item.priority
-    const configuredWorkspaceId = typeof item.metadata?.workspace_id === 'string' ? item.metadata.workspace_id : ''
-    const draftWorkspaceId = providerWorkspaceIds[item.key] ?? configuredWorkspaceId
-    return <div className="provider-row" key={item.key}>
-      <div className="provider-copy"><div className="provider-title"><strong>{item.key}</strong><span className={`chip ${item.enabled ? 'done' : ''}`}>{item.enabled ? 'enabled' : 'disabled'}</span></div><div className="meta">{item.model} · {item.kind} · {item.base_url || 'default endpoint'} · {item.credential_configured ? 'credential configured' : 'no credential'}</div></div>
-      <div className="provider-priority"><label><span>Priority</span><input type="number" aria-label={`Priority for ${item.key}`} value={draftPriority} onChange={e => setProviderPriorities(current => ({ ...current, [item.key]: Number(e.target.value) }))} /></label><button type="button" disabled={draftPriority === item.priority || update.isPending} onClick={() => update.mutate({ item, priority: draftPriority })}>Save</button></div>
-      <div className="provider-actions"><button onClick={() => verify.mutate(item.key)}>Verify</button><button onClick={() => update.mutate({ item, enabled: !item.enabled })}>{item.enabled ? 'Disable' : 'Enable'}</button><button className="danger" onClick={() => remove.mutate(item.key)}>Remove</button></div>
-      {item.kind === 'anthropic' ? <div className="provider-priority"><label><span>Workspace ID</span><input aria-label={`Workspace ID for ${item.key}`} value={draftWorkspaceId} onChange={e => setProviderWorkspaceIds(current => ({ ...current, [item.key]: e.target.value }))} placeholder="wrkspc_… (optional for workspace-scoped keys)" /></label><button type="button" disabled={draftWorkspaceId === configuredWorkspaceId || update.isPending} onClick={() => update.mutate({ item, workspaceId: draftWorkspaceId })}>Save</button></div> : null}
-      <details className="provider-credential"><summary>{item.credential_configured ? 'Replace API key' : 'Add API key'}</summary><div className="provider-key-row"><input type="password" aria-label={`Replace API key for ${item.key}`} value={replacementKeys[item.key] ?? ''} onChange={e => setReplacementKeys(current => ({ ...current, [item.key]: e.target.value }))} placeholder="API key" /><button type="button" disabled={!replacementKeys[item.key]?.trim() || update.isPending} onClick={() => update.mutate({ item, apiKey: replacementKeys[item.key].trim(), enabled: true })}>Save key & enable</button></div></details>
+  const selected = ordered.find(item => item.key === selectedKey) ?? ordered[0] ?? null
+  const draftPriority = selected ? providerPriorities[selected.key] ?? selected.priority : 0
+  const configuredWorkspaceId = selected && typeof selected.metadata?.workspace_id === 'string' ? selected.metadata.workspace_id : ''
+  const draftWorkspaceId = selected ? providerWorkspaceIds[selected.key] ?? configuredWorkspaceId : ''
+  return <>
+    <div className="atlas-control-grid atlas-provider-control">
+      <section className="ops-rail-panel"><div className="atlas-panel-heading"><span className="eyebrow">Provider registry</span><button type="button" className="compact-button" onClick={() => setAddOpen(true)}>Add provider</button></div><p className="meta">Higher priority runs first. Failure falls through to the next enabled provider.</p><div className="atlas-registry-list">{ordered.map(item => <OperationalRow key={item.key} active={selected?.key === item.key} lamp={item.enabled ? 'green' : 'dim'} label={item.key} secondary={`${item.kind} · ${item.model}`} meta={`priority ${item.priority}`} onClick={() => setSelectedKey(item.key)} />)}{!ordered.length ? <div className="empty-state compact"><strong>No providers configured</strong></div> : null}</div></section>
+      <section className="ops-surface atlas-configuration-surface"><header className="ops-surface-head"><div><span className="eyebrow">Provider configuration</span><strong>{selected?.key ?? 'Select a provider'}</strong></div>{selected ? <StatusLamp tone={selected.enabled ? 'green' : 'dim'} label={selected.enabled ? 'Enabled' : 'Disabled'} /> : null}</header>{selected ? <div className="atlas-configuration-body"><FactList items={[
+        { label: 'Provider ID', value: selected.key, mono: true },
+        { label: 'Adapter', value: selected.kind, mono: true },
+        { label: 'Model', value: selected.model, mono: true },
+        { label: 'Endpoint', value: selected.base_url || 'Provider default', mono: true },
+        { label: 'Local', value: selected.local ? 'Yes' : 'No' },
+        { label: 'Updated', value: when(selected.updated_at), mono: true },
+      ]} /><section className="atlas-inline-control"><div><span className="eyebrow">Priority</span><strong>Provider ordering</strong></div><div className="provider-priority"><label><span>Priority</span><input type="number" aria-label={`Priority for ${selected.key}`} value={draftPriority} onChange={e => setProviderPriorities(current => ({ ...current, [selected.key]: Number(e.target.value) }))} /></label><button type="button" disabled={draftPriority === selected.priority || update.isPending} onClick={() => update.mutate({ item: selected, priority: draftPriority })}>Save</button></div></section>{selected.kind === 'anthropic' ? <section className="atlas-inline-control"><div><span className="eyebrow">Workspace</span><strong>Optional workspace-scoped key</strong></div><div className="provider-priority"><label><span>Workspace ID</span><input aria-label={`Workspace ID for ${selected.key}`} value={draftWorkspaceId} onChange={e => setProviderWorkspaceIds(current => ({ ...current, [selected.key]: e.target.value }))} placeholder="wrkspc_…" /></label><button type="button" disabled={draftWorkspaceId === configuredWorkspaceId || update.isPending} onClick={() => update.mutate({ item: selected, workspaceId: draftWorkspaceId })}>Save workspace</button></div></section> : null}<section className="atlas-credential-state"><div><StatusLamp tone={selected.credential_configured ? 'green' : 'dim'} /><span><strong>Credential {selected.credential_configured ? 'configured' : 'not configured'}</strong><small>Secret values are never returned to the browser.</small></span></div><details className="inspect provider-credential"><summary>{selected.credential_configured ? 'Replace API key' : 'Add API key'}</summary><div className="provider-key-row"><input type="password" aria-label={`Replace API key for ${selected.key}`} value={replacementKeys[selected.key] ?? ''} onChange={e => setReplacementKeys(current => ({ ...current, [selected.key]: e.target.value }))} placeholder="API key" /><button type="button" disabled={!replacementKeys[selected.key]?.trim() || update.isPending} onClick={() => update.mutate({ item: selected, apiKey: replacementKeys[selected.key].trim(), enabled: true })}>Save key & enable</button></div></details></section>{update.isError ? <p className="offline-banner">{update.error.message}</p> : null}</div> : <div className="empty-state"><strong>Select a configured provider</strong></div>}</section>
+      <InspectorPanel title={selected?.key ?? 'Provider actions'} eyebrow="Provider actions" status={selected ? <StatusLamp tone={selected.enabled ? 'green' : 'dim'} label={selected.enabled ? 'Enabled' : 'Disabled'} /> : undefined} actions={selected ? <><button type="button" onClick={() => verify.mutate(selected.key)} disabled={verify.isPending}>{verify.isPending ? 'Verifying…' : 'Verify provider'}</button><button type="button" onClick={() => update.mutate({ item: selected, enabled: !selected.enabled })}>{selected.enabled ? 'Disable' : 'Enable'}</button><button type="button" className="danger" onClick={() => remove.mutate(selected.key)}>Remove provider</button></> : undefined}>
+        {selected ? <><InspectorSection title="Selected provider"><FactList items={[{ label: 'Provider', value: selected.key, mono: true }, { label: 'Adapter', value: selected.kind, mono: true }, { label: 'Credential', value: selected.credential_configured ? 'Configured' : 'Not configured' }, { label: 'Priority', value: selected.priority, mono: true }]} /></InspectorSection><InspectorSection title="Verification">{verify.data && verify.variables === selected.key ? <VerificationResult result={verify.data} /> : <p className="meta">No verification result for this provider in this browser session.</p>}{verify.isError && verify.variables === selected.key ? <p className="offline-banner">{verify.error.message}</p> : null}</InspectorSection></> : <div className="empty-state compact"><strong>No provider selected</strong></div>}
+      </InspectorPanel>
     </div>
-  })}</div>
-    {update.isError ? <p className="offline-banner">{update.error.message}</p> : null}
-    {save.isError ? <p className="offline-banner">{save.error.message}</p> : null}
-    <details className="inspect provider-add"><summary>Add provider</summary><form className="grid-3" onSubmit={submit} style={{ marginTop: '1rem' }}><input value={key} onChange={e => setKey(e.target.value)} placeholder="provider key" /><select value={kind} onChange={e => setKind(e.target.value)}><option value="openai_compatible">OpenAI compatible</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option></select><input value={model} onChange={e => setModel(e.target.value)} placeholder="model" /><input value={base} onChange={e => setBase(e.target.value)} placeholder="base URL (optional)" /><input type="password" value={secret} onChange={e => setSecret(e.target.value)} placeholder="API key (optional)" />{kind === 'anthropic' ? <input value={workspaceId} onChange={e => setWorkspaceId(e.target.value)} placeholder="Workspace ID (optional)" aria-label="New Anthropic workspace ID" /> : null}<input type="number" value={priority} onChange={e => setPriority(Number(e.target.value))} aria-label="New provider priority" /><button className="primary" type="submit">Save provider</button></form></details>
-    {verify.data ? <pre className="mono provider-verify-result">{JSON.stringify(verify.data, null, 2)}</pre> : null}
-    {verify.isError ? <p className="offline-banner">{verify.error.message}</p> : null}
-  </Panel>
+    {addOpen ? <Sheet title="Add provider" onClose={() => setAddOpen(false)}><form className="atlas-sheet-form" onSubmit={submit}><input value={key} onChange={e => setKey(e.target.value)} placeholder="provider key" aria-label="Provider key" /><select value={kind} onChange={e => setKind(e.target.value)} aria-label="Provider adapter"><option value="openai_compatible">OpenAI compatible</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option></select><input value={model} onChange={e => setModel(e.target.value)} placeholder="model" aria-label="Model" /><input value={base} onChange={e => setBase(e.target.value)} placeholder="base URL (optional)" aria-label="Base URL" /><input type="password" value={secret} onChange={e => setSecret(e.target.value)} placeholder="API key (optional)" aria-label="API key" />{kind === 'anthropic' ? <input value={workspaceId} onChange={e => setWorkspaceId(e.target.value)} placeholder="Workspace ID (optional)" aria-label="New Anthropic workspace ID" /> : null}<input type="number" value={priority} onChange={e => setPriority(Number(e.target.value))} aria-label="New provider priority" /><button className="primary" type="submit" disabled={!key || !model || save.isPending}>{save.isPending ? 'Saving…' : 'Save provider'}</button>{save.isError ? <p className="offline-banner">{save.error.message}</p> : null}</form></Sheet> : null}
+  </>
 }
 
-function Mcp({ servers, onDone }: { servers: MCPServer[]; onDone: () => Promise<unknown> }) {
+export function WebProviders({ providers, onDone }: { providers: WebProvider[]; onDone: () => Promise<unknown> }) {
+  const [selectedKey, setSelectedKey] = useState('')
+  const [addOpen, setAddOpen] = useState(false)
+  const [key, setKey] = useState(''); const [kind, setKind] = useState<WebProvider['kind']>('brave'); const [secret, setSecret] = useState(''); const [priority, setPriority] = useState(50)
+  const [replacementKeys, setReplacementKeys] = useState<Record<string, string>>({})
+  const save = useMutation({ mutationFn: (payload: object) => api('/api/web/providers', { method: 'POST', body: JSON.stringify(payload) }), onSuccess: async () => { setAddOpen(false); setKey(''); setSecret(''); await onDone() } })
+  const update = useMutation({
+    mutationFn: ({ item, apiKey, enabled }: { item: WebProvider; apiKey?: string; enabled?: boolean }) => api('/api/web/providers', { method: 'POST', body: JSON.stringify({ key: item.key, kind: item.kind, api_key: apiKey || undefined, enabled: enabled ?? item.enabled, priority: item.priority, metadata: item.metadata }) }),
+    onSuccess: async (_data, variables) => { setReplacementKeys(current => ({ ...current, [variables.item.key]: '' })); await onDone() },
+  })
+  const verify = useMutation({ mutationFn: (providerKey: string) => api(`/api/web/providers/${providerKey}/verify`, { method: 'POST', body: '{}' }) })
+  const remove = useMutation({ mutationFn: (providerKey: string) => api(`/api/web/providers/${providerKey}`, { method: 'DELETE' }), onSuccess: onDone })
+  function submit(event: FormEvent) { event.preventDefault(); save.mutate({ key, kind, api_key: secret, enabled: true, priority }) }
+  const ordered = [...providers].sort((a, b) => b.priority - a.priority || a.key.localeCompare(b.key))
+  const selected = ordered.find(item => item.key === selectedKey) ?? ordered[0] ?? null
+  return <>
+    <div className="atlas-control-grid atlas-provider-control">
+      <section className="ops-rail-panel"><div className="atlas-panel-heading"><span className="eyebrow">Web provider registry</span><button type="button" className="compact-button" onClick={() => setAddOpen(true)}>Add web provider</button></div><p className="meta">Search providers are tried by priority. Direct public-page reading remains provider-neutral.</p><div className="atlas-registry-list">{ordered.map(item => <OperationalRow key={item.key} active={selected?.key === item.key} lamp={item.enabled && item.credential_configured ? 'green' : 'dim'} label={item.key} secondary={item.kind} meta={`priority ${item.priority}`} onClick={() => setSelectedKey(item.key)} />)}{!ordered.length ? <div className="empty-state compact"><strong>No web search provider configured</strong><span>web.read remains available; web.search reports unavailable until a credentialed provider is added.</span></div> : null}</div></section>
+      <section className="ops-surface atlas-configuration-surface"><header className="ops-surface-head"><div><span className="eyebrow">Web search transport</span><strong>{selected?.key ?? 'Provider-neutral web layer'}</strong></div>{selected ? <StatusLamp tone={selected.enabled && selected.credential_configured ? 'green' : 'dim'} label={selected.enabled ? 'Enabled' : 'Disabled'} /> : null}</header>{selected ? <div className="atlas-configuration-body"><FactList items={[
+        { label: 'Provider ID', value: selected.key, mono: true },
+        { label: 'Adapter', value: selected.kind, mono: true },
+        { label: 'Priority', value: selected.priority, mono: true },
+        { label: 'Credential', value: selected.credential_configured ? 'Configured' : 'Not configured' },
+        { label: 'Updated', value: when(selected.updated_at), mono: true },
+      ]} /><section className="atlas-credential-state"><div><StatusLamp tone={selected.credential_configured ? 'green' : 'dim'} /><span><strong>Search credential {selected.credential_configured ? 'configured' : 'missing'}</strong><small>The key stays in Atlas encrypted credential storage and is never returned here.</small></span></div><details className="inspect provider-credential"><summary>{selected.credential_configured ? 'Replace API key' : 'Add API key'}</summary><div className="provider-key-row"><input type="password" aria-label={`Replace web API key for ${selected.key}`} value={replacementKeys[selected.key] ?? ''} onChange={e => setReplacementKeys(current => ({ ...current, [selected.key]: e.target.value }))} placeholder="Web search API key" /><button type="button" disabled={!replacementKeys[selected.key]?.trim() || update.isPending} onClick={() => update.mutate({ item: selected, apiKey: replacementKeys[selected.key].trim(), enabled: true })}>Save key & enable</button></div></details></section>{update.isError ? <p className="offline-banner">{update.error.message}</p> : null}</div> : <div className="empty-state"><strong>Add Brave, Jina, Tavily, or Serper to enable web.search.</strong><span>Stable Atlas capability names do not change when the provider changes.</span></div>}</section>
+      <InspectorPanel title={selected?.key ?? 'Web provider actions'} eyebrow="Web provider actions" status={selected ? <StatusLamp tone={selected.enabled && selected.credential_configured ? 'green' : 'dim'} label={selected.enabled ? 'Enabled' : 'Disabled'} /> : undefined} actions={selected ? <><button type="button" onClick={() => verify.mutate(selected.key)} disabled={verify.isPending}>{verify.isPending ? 'Verifying…' : 'Verify web search'}</button><button type="button" onClick={() => update.mutate({ item: selected, enabled: !selected.enabled })}>{selected.enabled ? 'Disable' : 'Enable'}</button><button type="button" className="danger" onClick={() => remove.mutate(selected.key)}>Remove web provider</button></> : undefined}>
+        {selected ? <><InspectorSection title="Capability boundary"><FactList items={[{ label: 'Provides', value: 'web.search', mono: true }, { label: 'Authority scope', value: 'web/search', mono: true }, { label: 'Adapter', value: selected.kind, mono: true }]} /><p className="ops-authority-note"><StatusLamp tone="amber" />Provider access makes search technically available; owner policy still decides whether Atlas may invoke it. Task-specific reasoning stays in Atlas.</p></InspectorSection><InspectorSection title="Verification">{verify.data && verify.variables === selected.key ? <VerificationResult result={verify.data} /> : <p className="meta">Verification performs one real provider search and may consume provider quota.</p>}{verify.isError && verify.variables === selected.key ? <p className="offline-banner">{verify.error.message}</p> : null}</InspectorSection></> : <InspectorSection title="Separation"><p className="ops-authority-note"><StatusLamp tone="dim" />Task-specific reasoning stays in Atlas. The provider only returns evidence and provenance.</p></InspectorSection>}
+      </InspectorPanel>
+    </div>
+    {addOpen ? <Sheet title="Add web search provider" onClose={() => setAddOpen(false)}><form className="atlas-sheet-form" onSubmit={submit}><input value={key} onChange={e => setKey(e.target.value)} placeholder="provider key" aria-label="Web provider key" /><select value={kind} onChange={e => setKind(e.target.value as WebProvider['kind'])} aria-label="Web provider adapter"><option value="brave">Brave Search</option><option value="jina">Jina Search</option><option value="tavily">Tavily</option><option value="serper">Serper</option></select><input type="password" value={secret} onChange={e => setSecret(e.target.value)} placeholder="API key" aria-label="Web provider API key" /><input type="number" value={priority} onChange={e => setPriority(Number(e.target.value))} aria-label="Web provider priority" /><button className="primary" type="submit" disabled={!key || !secret || save.isPending}>{save.isPending ? 'Saving…' : 'Save web provider'}</button>{save.isError ? <p className="offline-banner">{save.error.message}</p> : null}</form></Sheet> : null}
+  </>
+}
+
+function Mcp({ servers, capabilities, connections, bindings, onDone }: { servers: MCPServer[]; capabilities: Capability[]; connections: Array<Record<string, unknown>>; bindings: Array<Record<string, unknown>>; onDone: () => Promise<unknown> }) {
   const location = useLocation()
   const parentBack = (location.state as { atlasBack?: AtlasBack } | null)?.atlasBack
+  const [mode, setMode] = useState<'services' | 'accounts' | 'bindings'>('services')
+  const [selectedId, setSelectedId] = useState('')
+  const [addOpen, setAddOpen] = useState(false)
   const [serverId, setServerId] = useState(''); const [name, setName] = useState(''); const [kind, setKind] = useState<'mcp' | 'n8n'>('mcp'); const [transport, setTransport] = useState<'streamable-http' | 'stdio'>('streamable-http'); const [url, setUrl] = useState(''); const [token, setToken] = useState(''); const [command, setCommand] = useState(''); const [argsText, setArgsText] = useState(''); const [cwd, setCwd] = useState('')
-  const save = useMutation({ mutationFn: (payload: object) => api('/api/mcp', { method: 'POST', body: JSON.stringify(payload) }), onSuccess: onDone })
+  const save = useMutation({ mutationFn: (payload: object) => api('/api/mcp', { method: 'POST', body: JSON.stringify(payload) }), onSuccess: async () => { setAddOpen(false); setServerId(''); setName(''); setUrl(''); setToken(''); setCommand(''); setArgsText(''); setCwd(''); await onDone() } })
   const refresh = useMutation({ mutationFn: (id: string) => api(`/api/mcp/${id}/refresh`, { method: 'POST', body: '{}' }), onSuccess: onDone })
   const remove = useMutation({ mutationFn: (id: string) => api(`/api/mcp/${id}`, { method: 'DELETE' }), onSuccess: onDone })
   function submit(event: FormEvent) { event.preventDefault(); save.mutate({ server_id: serverId, display_name: name || serverId, kind, transport, url: transport === 'streamable-http' ? url : null, token: transport === 'streamable-http' ? token || undefined : undefined, command: transport === 'stdio' ? command : null, args: transport === 'stdio' ? argsText.split('\n').map(item => item.trim()).filter(Boolean) : [], cwd: transport === 'stdio' ? cwd || null : null, enabled: true }) }
-  return <Panel title="MCP & n8n connections"><p className="meta">Configure technical provider connections here. Discovered tools and NO / YES / CONFIRM controls live under Policies.</p><div className="stack">{servers.map(item => <div className="list-row" key={item.server_id}><div><strong>{item.display_name}</strong><div className="actions" style={{ marginTop: '0.35rem' }}><span className="chip">{item.kind}</span><span className="chip">{item.transport}</span><span className="chip">{item.enabled ? 'enabled' : 'disabled'}</span></div><div className="meta">{item.transport === 'stdio' ? [item.command, ...(item.args ?? [])].filter(Boolean).join(' ') : item.url}</div></div>{item.last_error ? <p className="offline-banner">{item.last_error}</p> : null}<div className="actions"><Link className="settings-link" to="/atlas/policies" state={{ atlasBack: { path: location.pathname, parent: parentBack ?? { path: '/atlas' } } }}>Tools & policy</Link><button onClick={() => refresh.mutate(item.server_id)}>Refresh discovery</button><button className="danger" onClick={() => remove.mutate(item.server_id)}>Remove</button></div></div>)}</div>
-    <form className="grid-3" onSubmit={submit} style={{ marginTop: '1rem' }}><input value={serverId} onChange={e => setServerId(e.target.value)} placeholder="server id" /><input value={name} onChange={e => setName(e.target.value)} placeholder="display name" /><select value={kind} onChange={e => setKind(e.target.value as 'mcp' | 'n8n')}><option value="mcp">MCP</option><option value="n8n">n8n</option></select><select value={transport} onChange={e => setTransport(e.target.value as 'streamable-http' | 'stdio')}><option value="streamable-http">Streamable HTTP</option><option value="stdio">stdio</option></select>{transport === 'streamable-http' ? <><input value={url} onChange={e => setUrl(e.target.value)} placeholder="Streamable HTTP URL" /><input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="Bearer token (optional)" /></> : <><input value={command} onChange={e => setCommand(e.target.value)} placeholder="command / executable" /><textarea value={argsText} onChange={e => setArgsText(e.target.value)} placeholder={'one argument per line'} /><input value={cwd} onChange={e => setCwd(e.target.value)} placeholder="working directory (optional)" /></>}<button className="primary" type="submit">Save server</button></form>
-  </Panel>
+  const selected = servers.find(server => server.server_id === selectedId) ?? servers[0] ?? null
+  const tools = selected ? capabilities.filter(item => item.metadata?.server_id === selected.server_id) : []
+  const externalRows = mode === 'accounts' ? connections : bindings
+  const externalTitle = mode === 'accounts' ? 'External accounts' : 'Technical service bindings'
+  const externalFacts = (item: Record<string, unknown>) => mode === 'accounts' ? [
+    { label: 'Connection ID', value: String(item.connection_id ?? '—'), mono: true },
+    { label: 'Provider', value: String(item.provider_id ?? '—'), mono: true },
+    { label: 'Address', value: String(item.canonical_address ?? '—'), mono: true },
+    { label: 'Status', value: String(item.status ?? '—') },
+  ] : [
+    { label: 'Binding ID', value: String(item.binding_id ?? '—'), mono: true },
+    { label: 'Service', value: String(item.service ?? '—'), mono: true },
+    { label: 'Channel', value: String(item.channel ?? '—'), mono: true },
+    { label: 'Attested operations', value: Array.isArray(item.attested_operations) ? item.attested_operations.join(', ') : '—', mono: true },
+  ]
+  return <>
+    <div className="atlas-control-grid atlas-connection-control">
+      <section className="ops-rail-panel"><div className="atlas-mode-switch" role="tablist" aria-label="Connection registry"><button type="button" role="tab" aria-selected={mode === 'services'} className={mode === 'services' ? 'active' : ''} onClick={() => setMode('services')}>Services</button><button type="button" role="tab" aria-selected={mode === 'accounts'} className={mode === 'accounts' ? 'active' : ''} onClick={() => setMode('accounts')}>Accounts</button><button type="button" role="tab" aria-selected={mode === 'bindings'} className={mode === 'bindings' ? 'active' : ''} onClick={() => setMode('bindings')}>Bindings</button></div>{mode === 'services' ? <><div className="atlas-panel-heading"><span className="eyebrow">Connection registry</span><button type="button" className="compact-button" onClick={() => setAddOpen(true)}>Add service</button></div><div className="atlas-registry-list">{servers.map(item => <OperationalRow key={item.server_id} active={selected?.server_id === item.server_id} lamp={item.last_error ? 'red' : item.enabled ? 'green' : 'dim'} label={item.display_name} secondary={`${item.kind} · ${item.transport}`} meta={`${item.discovered_tool_count} tools`} onClick={() => setSelectedId(item.server_id)} />)}{!servers.length ? <div className="empty-state compact"><strong>No services configured</strong></div> : null}</div></> : <><div className="atlas-panel-heading"><span className="eyebrow">{externalTitle}</span><span className="chip">{externalRows.length}</span></div><p className="meta">These are technical custody records, not an authority model.</p></>}</section>
+      <section className="ops-surface atlas-configuration-surface">{mode === 'services' ? <><header className="ops-surface-head"><div><span className="eyebrow">Service configuration</span><strong>{selected?.display_name ?? 'Select a service'}</strong></div>{selected ? <StatusLamp tone={selected.last_error ? 'red' : selected.enabled ? 'green' : 'dim'} label={selected.last_error ? 'Discovery error' : selected.enabled ? 'Enabled' : 'Disabled'} /> : null}</header>{selected ? <div className="atlas-configuration-body"><FactList items={[
+        { label: 'Server ID', value: selected.server_id, mono: true },
+        { label: 'Kind', value: selected.kind, mono: true },
+        { label: 'Transport', value: selected.transport, mono: true },
+        { label: 'Endpoint', value: selected.transport === 'stdio' ? selected.command ?? '—' : selected.url ?? '—', mono: true },
+        { label: 'Enabled', value: selected.enabled ? 'Yes' : 'No' },
+        { label: 'Credential configured', value: selected.credential_configured ? 'Yes' : 'No' },
+        { label: 'Last discovery', value: when(selected.last_discovered_at), mono: true },
+      ]} />{selected.last_error ? <p className="offline-banner">{selected.last_error}</p> : null}<section className="atlas-discovered-tools"><div className="atlas-panel-heading"><span className="eyebrow">Discovered tools</span><span className="mono meta">{tools.length} inventory items</span></div><div className="atlas-capability-rows">{tools.slice(0, 12).map(item => <OperationalRow key={item.id} lamp={item.available ? 'green' : 'dim'} label={String(item.metadata?.tool_name ?? item.id)} secondary={item.description} status={<span className="meta">{item.available ? 'available' : 'unavailable'}</span>} />)}{!tools.length ? <div className="empty-state compact"><strong>No tools in the current capability snapshot.</strong></div> : null}</div></section></div> : <div className="empty-state"><strong>Select a configured service</strong></div>}</> : <><header className="ops-surface-head"><div><span className="eyebrow">{externalTitle}</span><strong>{externalRows.length} runtime records</strong></div></header><div className="atlas-external-records">{externalRows.map((item, index) => <article className="atlas-external-record" key={String(item.connection_id ?? item.binding_id ?? index)}><strong>{String(item.display_name ?? item.canonical_address ?? item.service ?? item.connection_id ?? item.binding_id ?? `Record ${index + 1}`)}</strong><FactList items={externalFacts(item)} /></article>)}{!externalRows.length ? <div className="empty-state"><strong>No {mode} are present in the runtime snapshot.</strong></div> : null}</div></>}</section>
+      <InspectorPanel title={mode === 'services' ? selected?.display_name ?? 'Service actions' : externalTitle} eyebrow={mode === 'services' ? 'Service actions' : 'Technical custody'} status={mode === 'services' && selected ? <StatusLamp tone={selected.last_error ? 'red' : selected.enabled ? 'green' : 'dim'} label={selected.last_error ? 'Error' : selected.enabled ? 'Enabled' : 'Disabled'} /> : undefined} actions={mode === 'services' && selected ? <><button type="button" disabled={refresh.isPending} onClick={() => refresh.mutate(selected.server_id)}>{refresh.isPending ? 'Refreshing…' : 'Refresh discovery'}</button><Link className="button-link" to="/atlas/policies" state={{ atlasBack: { path: location.pathname, parent: parentBack ?? { path: '/atlas' } } }}>Open policy rules</Link><button type="button" className="danger" onClick={() => remove.mutate(selected.server_id)}>Remove service</button></> : undefined}>
+        {mode === 'services' && selected ? <><InspectorSection title="Discovery"><FactList items={[{ label: 'Tools discovered', value: selected.discovered_tool_count }, { label: 'Last discovery', value: when(selected.last_discovered_at), mono: true }, { label: 'Last error', value: selected.last_error ?? 'None reported' }]} /></InspectorSection><InspectorSection title="Authority"><p className="ops-authority-note"><StatusLamp tone="amber" />Discovery populates capability inventory only. NO / YES / CONFIRM remains under owner policy.</p></InspectorSection>{refresh.isError ? <p className="offline-banner">{refresh.error.message}</p> : null}</> : <InspectorSection title="Boundary"><p className="ops-authority-note"><StatusLamp tone="dim" />Connections and bindings describe technical custody. They do not grant action authority.</p></InspectorSection>}
+      </InspectorPanel>
+    </div>
+    {addOpen ? <Sheet title="Add service" onClose={() => setAddOpen(false)}><form className="atlas-sheet-form" onSubmit={submit}><input value={serverId} onChange={e => setServerId(e.target.value)} placeholder="server id" aria-label="Server ID" /><input value={name} onChange={e => setName(e.target.value)} placeholder="display name" aria-label="Display name" /><select value={kind} onChange={e => setKind(e.target.value as 'mcp' | 'n8n')} aria-label="Connection kind"><option value="mcp">MCP</option><option value="n8n">n8n</option></select><select value={transport} onChange={e => setTransport(e.target.value as 'streamable-http' | 'stdio')} aria-label="Transport"><option value="streamable-http">Streamable HTTP</option><option value="stdio">stdio</option></select>{transport === 'streamable-http' ? <><input value={url} onChange={e => setUrl(e.target.value)} placeholder="Streamable HTTP URL" aria-label="Streamable HTTP URL" /><input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="Bearer token (optional)" aria-label="Bearer token" /></> : <><input value={command} onChange={e => setCommand(e.target.value)} placeholder="command / executable" aria-label="Command" /><textarea value={argsText} onChange={e => setArgsText(e.target.value)} placeholder="one argument per line" aria-label="Arguments" /><input value={cwd} onChange={e => setCwd(e.target.value)} placeholder="working directory (optional)" aria-label="Working directory" /></>}<button className="primary" type="submit" disabled={!serverId || save.isPending}>{save.isPending ? 'Saving…' : 'Save service'}</button>{save.isError ? <p className="offline-banner">{save.error.message}</p> : null}</form></Sheet> : null}
+  </>
 }
 
 
-function ExternalAccounts({ connections, bindings }: { connections: Array<Record<string, unknown>>; bindings: Array<Record<string, unknown>> }) {
-  if (!connections.length && !bindings.length) return null
-  return <Panel title="External accounts"><div className="grid-2"><div><h3>Connections</h3>{connections.map((item, i) => <div className="list-row" key={String(item.connection_id ?? i)}><strong>{String(item.display_name ?? item.canonical_address ?? item.connection_id)}</strong><div className="meta">{String(item.provider_id ?? '')} · {String(item.status ?? '')}</div></div>)}</div><div><h3>Technical service bindings</h3>{bindings.map((item, i) => <div className="list-row" key={String(item.binding_id ?? i)}><strong>{String(item.service ?? '')}</strong><div className="meta">{String(item.channel ?? '')}</div><div>{Array.isArray(item.attested_operations) ? item.attested_operations.join(', ') : ''}</div></div>)}</div></div></Panel>
-}
-
-
-function Roots({ roots, onDone }: { roots: SourceRoot[]; onDone: () => Promise<unknown> }) {
+function Roots({ roots, capabilities, onDone }: { roots: SourceRoot[]; capabilities: Capability[]; onDone: () => Promise<unknown> }) {
+  const [selectedId, setSelectedId] = useState('')
+  const [addOpen, setAddOpen] = useState(false)
   const [id, setId] = useState(''); const [path, setPath] = useState(''); const [name, setName] = useState('')
   const save = useMutation({
     mutationFn: () => api('/api/sources/roots', { method: 'POST', body: JSON.stringify({ root_id: id, host_path: path, display_name: name || id, enabled: true, quarantine_relative_path: '.atlas-quarantine' }) }),
-    onSuccess: async () => { await onDone(); setId(''); setName(''); setPath('') },
+    onSuccess: async () => { setAddOpen(false); await onDone(); setId(''); setName(''); setPath('') },
   })
   const remove = useMutation({ mutationFn: (rootId: string) => api(`/api/sources/roots/${rootId}`, { method: 'DELETE' }), onSuccess: onDone })
-  return <Panel title="Filesystem roots"><p className="meta">Enrollment exposes the kernel capability. Read/write/delete authority is controlled only by the runtime policy above.</p><div className="stack">{roots.map(root => <div className="list-row" key={root.root_id}><strong>{root.display_name}</strong><span className="chip">{root.provider_namespace === 'atlas-library' ? 'Atlas managed' : root.enabled ? 'enabled' : 'disabled'}</span><div className="meta">{root.host_path}</div>{root.provider_namespace !== 'atlas-library' ? <button className="danger" onClick={() => remove.mutate(root.root_id)}>Remove</button> : null}</div>)}</div>{save.isError ? <p className="offline-banner">Enrollment failed: {save.error.message}</p> : null}{remove.isError ? <p className="offline-banner">Remove failed: {remove.error.message}</p> : null}<div className="grid-3" style={{ marginTop: '1rem' }}><input value={id} onChange={e => setId(e.target.value)} placeholder="root id" /><input value={name} onChange={e => setName(e.target.value)} placeholder="display name" /><input value={path} onChange={e => setPath(e.target.value)} placeholder="absolute host path" /><button className="primary" onClick={() => save.mutate()} disabled={!id || !path || save.isPending}>{save.isPending ? 'Enrolling…' : 'Enroll root'}</button></div></Panel>
+  const selected = roots.find(root => root.root_id === selectedId) ?? roots[0] ?? null
+  const filesystemCapabilities = capabilities.filter(item => item.source === 'filesystem' || item.id.includes('filesystem'))
+  return <>
+    <div className="atlas-control-grid atlas-filesystem-control">
+      <section className="ops-rail-panel"><div className="atlas-panel-heading"><span className="eyebrow">Root registry</span><button type="button" className="compact-button" onClick={() => setAddOpen(true)}>Enroll root</button></div><div className="atlas-registry-list">{roots.map(root => <OperationalRow key={root.root_id} active={selected?.root_id === root.root_id} lamp={root.enabled ? 'green' : 'dim'} label={root.display_name} secondary={<span className="mono">{root.host_path}</span>} meta={root.provider_namespace} onClick={() => setSelectedId(root.root_id)} />)}{!roots.length ? <div className="empty-state compact"><strong>No roots enrolled</strong></div> : null}</div></section>
+      <section className="ops-surface atlas-configuration-surface"><header className="ops-surface-head"><div><span className="eyebrow">Root configuration</span><strong>{selected?.display_name ?? 'Select a root'}</strong></div>{selected ? <StatusLamp tone={selected.enabled ? 'green' : 'dim'} label={selected.enabled ? 'Enabled' : 'Disabled'} /> : null}</header>{selected ? <div className="atlas-configuration-body"><FactList items={[
+        { label: 'Root ID', value: selected.root_id, mono: true },
+        { label: 'Provider namespace', value: selected.provider_namespace, mono: true },
+        { label: 'Host path', value: selected.host_path, mono: true },
+        { label: 'Quarantine relative path', value: selected.quarantine_relative_path ?? 'Not configured', mono: true },
+        { label: 'Enabled', value: selected.enabled ? 'Yes' : 'No' },
+        { label: 'Updated', value: when(selected.updated_at), mono: true },
+      ]} /><p className="atlas-boundary-notice"><StatusLamp tone="amber" /><span><strong>Capability is not authority.</strong> Enrollment exposes a technical boundary. Owner policy still resolves every consequential operation.</span></p><section className="atlas-discovered-tools"><div className="atlas-panel-heading"><span className="eyebrow">Runtime filesystem capabilities</span><span className="mono meta">{filesystemCapabilities.length} inventory items</span></div><div className="atlas-capability-rows">{filesystemCapabilities.map(item => <OperationalRow key={item.id} lamp={item.available ? 'green' : 'dim'} label={item.id} secondary={item.description} status={<span className="meta">{item.available ? 'available' : 'unavailable'}</span>} />)}{!filesystemCapabilities.length ? <div className="empty-state compact"><strong>No filesystem capabilities in the current runtime snapshot.</strong></div> : null}</div></section></div> : <div className="empty-state"><strong>Select an enrolled root</strong></div>}</section>
+      <InspectorPanel title={selected?.display_name ?? 'Root actions'} eyebrow="Root actions" status={selected ? <StatusLamp tone={selected.enabled ? 'green' : 'dim'} label={selected.enabled ? 'Enabled' : 'Disabled'} /> : undefined} actions={selected ? <><Link className="button-link" to="/atlas/policies">Open policy rules</Link><Link className="button-link" to="/sources">Browse source</Link>{selected.provider_namespace !== 'atlas-library' ? <button type="button" className="danger" onClick={() => remove.mutate(selected.root_id)}>Remove root</button> : null}</> : undefined}>
+        {selected ? <><InspectorSection title="Selected root"><FactList items={[{ label: 'Root', value: selected.root_id, mono: true }, { label: 'Namespace', value: selected.provider_namespace, mono: true }, { label: 'Path', value: selected.host_path, mono: true }]} /></InspectorSection><InspectorSection title="Authority boundary"><p className="ops-authority-note"><StatusLamp tone="amber" />Enrollment does not mean readable, writable, trusted, or authorized. Policy resolves the normalized resource when an operation runs.</p></InspectorSection>{remove.isError ? <p className="offline-banner">Remove failed: {remove.error.message}</p> : null}</> : <div className="empty-state compact"><strong>No root selected</strong></div>}
+      </InspectorPanel>
+    </div>
+    {addOpen ? <Sheet title="Enroll root" onClose={() => setAddOpen(false)}><form className="atlas-sheet-form" onSubmit={event => { event.preventDefault(); save.mutate() }}><input value={id} onChange={e => setId(e.target.value)} placeholder="root id" aria-label="Root ID" /><input value={name} onChange={e => setName(e.target.value)} placeholder="display name" aria-label="Display name" /><input value={path} onChange={e => setPath(e.target.value)} placeholder="absolute host path" aria-label="Absolute host path" /><p className="ops-authority-note"><StatusLamp tone="amber" />This enrolls a technical filesystem boundary only. It does not grant read or mutation authority.</p><button className="primary" type="submit" disabled={!id || !path || save.isPending}>{save.isPending ? 'Enrolling…' : 'Enroll root'}</button>{save.isError ? <p className="offline-banner">Enrollment failed: {save.error.message}</p> : null}</form></Sheet> : null}
+  </>
 }

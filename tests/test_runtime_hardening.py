@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 
 import pytest
 import time
@@ -17,6 +18,8 @@ from atlas_core.evidence import EvidenceStore
 from atlas_core.policy import OwnerPolicy, PolicyStore
 from atlas_core.providers.runtime import ProviderRuntime
 from atlas_core.providers.settings import ProviderSettings
+from atlas_core.web import WebProviderSettings, WebResponse
+from atlas_providers.web_configured import ConfiguredWebProvider
 
 
 def _client(tmp_path, monkeypatch):
@@ -70,6 +73,44 @@ def test_provider_runtime_does_not_publish_decrypted_key_to_process_env(monkeypa
     provider = runtime._build(row)
     assert provider.api_key == "TOP-SECRET-KEY"
     assert env_name not in os.environ
+
+
+def test_web_provider_key_is_passed_directly_without_process_environment(monkeypatch):
+    row = WebProviderSettings("search", "brave", True, 100, "cred_test", {}, "now")
+    class Settings:
+        def all(self): return (row,)
+        def get(self, key): assert key == "search"; return row
+    captured = {}
+    def request(url, **kwargs):
+        captured.update(kwargs)
+        return WebResponse(url, url, 200, {"content-type": "application/json"}, b'{"web":{"results":[{"title":"Atlas","url":"https://example.com","description":"Evidence"}]}}', "now", "test")
+    monkeypatch.setattr("atlas_providers.web_configured._request", request)
+    env_name = "ATLAS_WEB_PROVIDER_SEARCH"
+    monkeypatch.delenv(env_name, raising=False)
+    provider = ConfiguredWebProvider(Settings(), _SecretStub())
+    results = provider.search("Atlas", limit=1)
+    assert results[0]["url"] == "https://example.com"
+    assert captured["headers"]["X-Subscription-Token"] == "TOP-SECRET-KEY"
+    assert env_name not in os.environ
+
+
+@pytest.mark.parametrize(("kind", "payload", "expected_url"), [
+    ("jina", {"data": [{"title": "Jina", "url": "https://jina.example", "description": "Evidence"}]}, "https://jina.example"),
+    ("tavily", {"results": [{"title": "Tavily", "url": "https://tavily.example", "content": "Evidence"}]}, "https://tavily.example"),
+    ("serper", {"organic": [{"title": "Serper", "link": "https://serper.example", "snippet": "Evidence"}]}, "https://serper.example"),
+])
+def test_configured_web_search_adapters_normalize_provider_evidence(monkeypatch, kind, payload, expected_url):
+    row = WebProviderSettings("search", kind, True, 100, "cred_test", {}, "now")
+    class Settings:
+        def all(self): return (row,)
+        def get(self, key): return row
+    monkeypatch.setattr("atlas_providers.web_configured._request", lambda url, **kwargs: WebResponse(
+        url, url, 200, {"content-type": "application/json"}, json.dumps(payload).encode(), "now", "test",
+    ))
+    result = ConfiguredWebProvider(Settings(), _SecretStub()).search("evidence", limit=1)
+    assert result[0]["url"] == expected_url
+    assert result[0]["provider"] == "search"
+    assert result[0]["retrieved_at"]
 
 def test_capability_snapshot_reads_policy_once(tmp_path, monkeypatch):
     policy_store = PolicyStore(tmp_path / "identity.db"); policy_store.initialize()
@@ -132,6 +173,7 @@ def test_unmatched_capability_search_falls_back_only_to_core_signposts():
     runtime = ChatRuntime(None, None, registry, None, None, None, None)
     matches = runtime.search_capabilities("zzzxxyy unmatched nonsense", limit=36)
     assert [row["id"] for row in matches] == ["memory.search"]
+    assert matches[0]["available"] is True
 
 
 def test_auth_requires_stable_session_secret(monkeypatch):

@@ -96,6 +96,10 @@ def create_app(*, instance_root: str | Path = "instance", static_dir: str | Path
         Route("/api/providers", api.provider_put, methods=["POST"]),
         Route("/api/providers/{provider_key:str}/verify", api.provider_verify, methods=["POST"]),
         Route("/api/providers/{provider_key:str}", api.provider_delete, methods=["DELETE"]),
+        Route("/api/web/providers", api.web_providers_list, methods=["GET"]),
+        Route("/api/web/providers", api.web_provider_put, methods=["POST"]),
+        Route("/api/web/providers/{provider_key:str}/verify", api.web_provider_verify, methods=["POST"]),
+        Route("/api/web/providers/{provider_key:str}", api.web_provider_delete, methods=["DELETE"]),
         Route("/api/connections", api.connections_list, methods=["GET"]),
     ]
     resolved_static = (

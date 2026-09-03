@@ -11,10 +11,9 @@ describe('Operations overview', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       let body: object
-      if (url.includes('/api/health')) body = { ok: true, service: 'atlas-api', version: '3.0.0' }
+      if (url.includes('/api/health')) body = { ok: true, service: 'atlas-api', version: '3.5.0' }
       else if (url.includes('/api/sources/roots')) body = { roots: [{ root_id: 'proof', provider_namespace: 'local', host_path: '/srv/proof', display_name: 'Proof', enabled: true, updated_at: 'now' }] }
       else if (url.includes('/api/artifacts')) body = { artifacts: [{ artifact_id: 'a1', display_name: 'Proof', managed_content: { storage_name: 'proof' } }] }
-      else if (url.includes('/api/actions/pending')) body = { actions: [{ occurrence_id: 'o1', capability_id: 'files.write', operation: 'write', scope: 'files/local/proof', payload_sha256: 'x', policy_decision: 'CONFIRM', policy_revision: 1, status: 'pending_confirmation', work_id: 'w1', summary: 'Approve exact write', created_at: 'now' }] }
       else if (url.includes('/api/cadence')) body = { cadences: [] }
       else if (url.includes('/api/library/scans')) body = { scans: [] }
       else body = { work: [{ work_id: 'w1', display_ref: 'DOC-1', objective: 'Review contract', status: 'active', owner_principal_id: 'owner', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-02T00:00:00Z', metadata: {}, steps: [{ step_id: 's1', ordinal: 1, description: 'Review', capability_id: 'knowledge.search', input: {}, status: 'active' }] }] }
@@ -22,7 +21,6 @@ describe('Operations overview', () => {
     }))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<QueryClientProvider client={client}><MemoryRouter><Operations /></MemoryRouter></QueryClientProvider>)
-    expect(await screen.findByText('Approve exact write')).toBeInTheDocument()
     expect((await screen.findAllByText('Review contract')).length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('atlas-api')).toBeInTheDocument()
     expect(screen.queryByText(/at risk/i)).not.toBeInTheDocument()

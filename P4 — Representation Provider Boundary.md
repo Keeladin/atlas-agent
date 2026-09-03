@@ -1,6 +1,6 @@
 # P4 — Representation Provider Boundary
 
-> **Current status (2026-09-03):** Implemented historical slice with one terminology change superseded by P5: `ocr` is no longer a model-facing semantic representation need. Current semantic needs are `text`, `layout`, `tables`, and `visual`; OCR is a runtime extraction mechanism used when native searchable text is unavailable.
+> **Current status (2026-09-03):** Implemented historical slice with two changes since: `ocr` is no longer a model-facing semantic representation need (superseded by P5) — current semantic needs are `text`, `layout`, `tables`, and `visual`, with OCR now a runtime extraction mechanism used when native searchable text is unavailable — and policy is now `NO`/`YES` only, so generation activation executes directly when principal authority allows it.
 
 ## Responsibility
 
@@ -14,7 +14,7 @@ Artifact inspection
 → runtime-owned knowledge.ingest template
 → deterministic extractor OR representation provider
 → derived Artifact with lineage
-→ Knowledge index → verify → CONFIRM activation
+→ Knowledge index → verify → governed activation
 ```
 
 ## First executable need: OCR
@@ -39,6 +39,6 @@ The OCR engine lives in a separate external virtual environment under `atlas-age
 
 For PDFs, the provider rasterizes each page and OCRs the raster, emitting page markers plus ordered recognized lines. For image artifacts it OCRs the supplied image directly. Output metadata records page count, recognized-line count, confidence and provider version.
 
-A live scanned-PDF smoke proved the full path: raster-only PDF → `representations.derive` → OCR derived Artifact → `knowledge.index` → verification → CONFIRM activation → grounded retrieval of OCR-only facts from the original source Artifact.
+A live scanned-PDF smoke proved the full path: raster-only PDF → `representations.derive` → OCR derived Artifact → `knowledge.index` → verification → governed activation → grounded retrieval of OCR-only facts from the original source Artifact.
 
 Production activation still requires configuring `ATLAS_REPRESENTATION_PROVIDER_COMMAND` to the external provider Python plus the provider script; this implementation does not silently alter the running service configuration.

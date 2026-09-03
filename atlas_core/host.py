@@ -35,7 +35,10 @@ def _run(args:list[str],*,timeout:float=20)->subprocess.CompletedProcess[str]:
 
 class HostRuntime:
     """Deterministic host observation and user-systemd administration."""
-    def __init__(self,registry:CapabilityRegistry,actions:ActionStore)->None:self.registry=registry;self.actions=actions;self._register()
+    def __init__(self,registry:CapabilityRegistry,actions:ActionStore,*,protected_paths:tuple[Path,...]=())->None:
+        self.registry=registry;self.actions=actions
+        self.protected_paths=tuple(path.expanduser().resolve(strict=False) for path in protected_paths)
+        self._register()
     def _register(self)->None:
         empty={"type":"object","properties":{},"additionalProperties":False}
         self.registry.register(CapabilityRegistration(CapabilityDefinition("host.status.inspect","Inspect Atlas host runtime and process status.","inspect","none",empty,source="host",tags=("host","observation")),lambda p:ScopeResolution("host/status",{},"Inspect host status"),lambda p:self.status(),metadata={"scope_hint":"host/status"}),replace=True)
@@ -75,7 +78,10 @@ class HostRuntime:
     def _fs_scope(self,payload:dict[str,Any],op:str)->ScopeResolution:
         path=Path(str(payload.get("path") or "")).expanduser()
         # strict=True for observation blocks policy path-smuggling through a symlink alias.
-        canonical=path.resolve(strict=True);clean={"path":str(canonical)}
+        canonical=path.resolve(strict=True)
+        if any(canonical == protected or protected in canonical.parents for protected in self.protected_paths):
+            raise ValueError("path is outside the host filesystem capability boundary")
+        clean={"path":str(canonical)}
         if "max_entries" in payload:clean["max_entries"]=int(payload["max_entries"])
         return ScopeResolution("host/filesystem"+str(canonical),clean,f"{op.title()} {canonical}")
     def _fs_execute(self,op:str,payload:dict[str,Any])->ActionResult:

@@ -9,7 +9,7 @@ from .models import PolicyDecision, PolicyRule, VALID_DECISIONS, normalize_opera
 
 
 class PolicyStore:
-    """Append-only owner-policy history. No row means NO."""
+    """Append-only principal-policy history. NO | YES; no row means NO."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -38,7 +38,7 @@ class PolicyStore:
                     principal_id TEXT NOT NULL,
                     scope TEXT NOT NULL,
                     operation TEXT NOT NULL,
-                    decision TEXT NOT NULL CHECK(decision IN ('NO','YES','CONFIRM')),
+                    decision TEXT NOT NULL CHECK(decision IN ('NO','YES')),
                     reason TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );

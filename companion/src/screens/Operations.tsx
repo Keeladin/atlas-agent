@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client'
-import type { ActionOccurrence, Cadence, SourceRoot, WorkItem } from '../api/types'
+import type { Cadence, SourceRoot, WorkItem } from '../api/types'
 import {
   FactList,
   InspectorPanel,
@@ -29,18 +29,16 @@ export function Operations() {
   const roots = useQuery({ queryKey: ['source-roots'], queryFn: () => api<{ roots: SourceRoot[] }>('/api/sources/roots') })
   const work = useQuery({ queryKey: ['work'], queryFn: () => api<{ work: WorkItem[] }>('/api/work') })
   const artifacts = useQuery({ queryKey: ['artifacts'], queryFn: () => api<{ artifacts: Artifact[] }>('/api/artifacts') })
-  const pending = useQuery({ queryKey: ['pending-actions'], queryFn: () => api<{ actions: ActionOccurrence[] }>('/api/actions/pending') })
   const cadence = useQuery({ queryKey: ['cadence'], queryFn: () => api<{ cadences: Cadence[] }>('/api/cadence') })
   const scans = useQuery({ queryKey: ['library-scans'], queryFn: () => api<{ scans: LibraryScan[] }>('/api/library/scans') })
 
   const rootRows = (roots.data?.roots ?? []).filter(root => root.enabled)
   const workRows = work.data?.work ?? []
   const artifactRows = artifacts.data?.artifacts ?? []
-  const pendingRows = pending.data?.actions ?? []
   const cadenceRows = cadence.data?.cadences ?? []
   const scanRows = scans.data?.scans ?? []
   const activeWork = workRows.filter(item => ['active', 'running'].includes(item.status))
-  const waitingWork = workRows.filter(item => ['waiting', 'waiting_confirmation', 'paused'].includes(item.status))
+  const waitingWork = workRows.filter(item => ['waiting', 'paused'].includes(item.status))
   const failedWork = workRows.filter(item => item.status === 'failed')
   const enabledCadence = cadenceRows.filter(item => item.enabled)
   const upcoming = enabledCadence.filter(item => item.next_run_at).sort((a, b) => String(a.next_run_at).localeCompare(String(b.next_run_at))).slice(0, 5)
@@ -51,7 +49,6 @@ export function Operations() {
   const runtimeLabel = health.isError ? 'Unavailable' : health.data?.ok ? 'Available' : 'Checking'
 
   const attentionItems = [
-    ...pendingRows.map(action => ({ key: action.occurrence_id, lamp: 'red' as const, title: action.summary || action.capability_id, detail: `${action.operation} · ${action.scope}`, status: 'confirmation required', to: action.work_id ? `/work/${action.work_id}` : '/chat' })),
     ...failedWork.map(item => ({ key: item.work_id, lamp: 'red' as const, title: item.objective, detail: item.display_ref ?? item.work_id, status: 'failed', to: `/work/${item.work_id}` })),
     ...workRows.filter(item => item.status === 'paused').map(item => ({ key: item.work_id, lamp: 'amber' as const, title: item.objective, detail: item.display_ref ?? item.work_id, status: 'paused', to: `/work/${item.work_id}` })),
     ...failedScans.map(scan => ({ key: scan.scan_id, lamp: 'red' as const, title: 'Library consolidation failed', detail: scan.error ?? scan.scan_id, status: 'failed', to: '/sources' })),
@@ -81,7 +78,7 @@ export function Operations() {
     { label: 'Runtime', value: runtimeLabel, tone: runtimeTone },
   ]} />}>
     <div className="overview-grid">
-      <section className="ops-surface overview-attention" aria-label="Needs attention"><header className="ops-surface-head"><div><span className="eyebrow">Needs attention</span><strong>{attentionItems.length ? `${attentionItems.length} actionable items` : 'Nothing requires owner action'}</strong></div></header><div className="ops-attention-list">{attentionItems.slice(0, 6).map(item => <Link to={item.to} key={`${item.key}:${item.status}`}><OperationalRow lamp={item.lamp} label={item.title} secondary={item.detail} status={<span className={`chip ${item.lamp === 'red' ? 'failed' : 'running'}`}>{item.status}</span>} /></Link>)}{!attentionItems.length ? <div className="empty-state compact"><strong>No pending confirmations, paused Work, failed Work, or failed library scans.</strong></div> : null}</div></section>
+      <section className="ops-surface overview-attention" aria-label="Needs attention"><header className="ops-surface-head"><div><span className="eyebrow">Needs attention</span><strong>{attentionItems.length ? `${attentionItems.length} actionable items` : 'Nothing requires owner action'}</strong></div></header><div className="ops-attention-list">{attentionItems.slice(0, 6).map(item => <Link to={item.to} key={`${item.key}:${item.status}`}><OperationalRow lamp={item.lamp} label={item.title} secondary={item.detail} status={<span className={`chip ${item.lamp === 'red' ? 'failed' : 'running'}`}>{item.status}</span>} /></Link>)}{!attentionItems.length ? <div className="empty-state compact"><strong>No paused Work, failed Work, or failed library scans.</strong></div> : null}</div></section>
       <section className="ops-surface overview-active" aria-label="Active responsibilities"><header className="ops-surface-head"><div><span className="eyebrow">Currently running</span><strong>Active responsibilities</strong></div><Link to="/work">View all Work →</Link></header><div className="overview-work-list">{activeWork.slice(0, 10).map(item => {
         const completed = item.steps?.filter(step => step.status === 'completed').length ?? 0
         const total = item.steps?.length ?? 0

@@ -3,7 +3,6 @@ import { useState, type FormEvent, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import type { ActionOccurrence, Capability, Decision, MCPServer, PolicyRule, Provider, SourceRoot, WebProvider } from '../api/types'
-import { ConfirmationCard } from '../ui/ConfirmationCard'
 import { FactList, InspectorPanel, InspectorSection, OperationalRibbon, OperationalRow, StatusLamp } from '../ui/OperationsPrimitives'
 import type { LampTone } from '../ui/operationState'
 import { Panel } from '../ui/Panel'
@@ -11,7 +10,6 @@ import { SegmentedNav } from '../ui/SegmentedNav'
 import { Sheet } from '../ui/Sheet'
 import { Workspace } from '../ui/Workspace'
 import { CapabilityBrowser } from './CapabilityBrowser'
-import { capabilityLensFor, policyLensFor, type PolicyLens } from './policyLens'
 
 type SystemState = {
   version: string
@@ -23,7 +21,6 @@ type SystemState = {
   capabilities: Capability[]
   connections: Array<Record<string, unknown>>
   service_bindings: Array<Record<string, unknown>>
-  pending_confirmations: ActionOccurrence[]
   host: HostState
 }
 
@@ -86,7 +83,7 @@ function useAtlasControl() {
   const qc = useQueryClient()
   const system = useQuery({ queryKey: ['system'], queryFn: () => api<SystemState>('/api/system'), refetchInterval: 10000 })
   const policy = useQuery({ queryKey: ['policy'], queryFn: () => api<{ revision: number; rules: PolicyRule[] }>('/api/policy') })
-  const refresh = async () => { await Promise.all([qc.invalidateQueries({ queryKey: ['system'] }), qc.invalidateQueries({ queryKey: ['policy'] }), qc.invalidateQueries({ queryKey: ['pending-actions'] }), qc.invalidateQueries({ queryKey: ['knowledge-generations'] })]) }
+  const refresh = async () => { await Promise.all([qc.invalidateQueries({ queryKey: ['system'] }), qc.invalidateQueries({ queryKey: ['policy'] }), qc.invalidateQueries({ queryKey: ['knowledge-generations'] })]) }
   return { system, policy, refresh }
 }
 
@@ -104,14 +101,12 @@ export function Atlas() {
   const state = system.data
   const enabledProviders = state?.providers.filter(provider => provider.enabled).length ?? 0
   const availableCapabilities = state?.capabilities.filter(capability => capability.available).length ?? 0
-  const pending = state?.pending_confirmations.length ?? 0
   const runtimeTone: LampTone = system.isError ? 'red' : state ? 'green' : 'dim'
   const runtimeLabel = system.isError ? 'Unavailable' : state ? 'Available' : 'Checking'
   const unavailableCapabilities = state?.capabilities.filter(capability => !capability.available) ?? []
   const missingCredentials = state?.providers.filter(provider => provider.enabled && !provider.local && !provider.credential_configured) ?? []
   const discoveryErrors = state?.mcp_servers.filter(server => Boolean(server.last_error)) ?? []
   const attention = [
-    ...state?.pending_confirmations.map(item => ({ key: item.occurrence_id, tone: 'red' as const, title: item.summary || item.capability_id, detail: `${item.operation} · ${item.scope}`, status: 'confirmation pending', to: '/atlas/runtime' })) ?? [],
     ...discoveryErrors.map(server => ({ key: server.server_id, tone: 'red' as const, title: `${server.display_name} discovery error`, detail: server.last_error ?? server.server_id, status: 'discovery error', to: '/atlas/connections' })),
     ...missingCredentials.map(provider => ({ key: provider.key, tone: 'amber' as const, title: `${provider.key} has no configured credential`, detail: `${provider.kind} · ${provider.model}`, status: 'not configured', to: '/atlas/models' })),
     ...(unavailableCapabilities.length ? [{ key: 'unavailable-capabilities', tone: 'amber' as const, title: `${unavailableCapabilities.length} unavailable capabilities`, detail: 'Inspect exact availability reasons in the capability browser.', status: 'unavailable', to: '/atlas/capabilities' }] : []),
@@ -133,7 +128,6 @@ export function Atlas() {
     ]} /></InspectorSection>
     <InspectorSection title="Control"><FactList items={[
       { label: 'Policy revision', value: state?.policy_revision ?? '—', mono: true },
-      { label: 'Pending', value: pending },
       { label: 'Providers', value: state ? `${enabledProviders} / ${state.providers.length} enabled` : '—' },
       { label: 'Capabilities', value: state ? `${availableCapabilities} / ${state.capabilities.length} available` : '—' },
     ]} /></InspectorSection>
@@ -145,11 +139,10 @@ export function Atlas() {
     { label: 'Providers enabled', value: state ? `${enabledProviders} / ${state.providers.length}` : '—', tone: state && enabledProviders ? 'green' : 'dim' },
     { label: 'Services configured', value: state?.mcp_servers.length ?? '—', tone: state?.mcp_servers.length ? 'green' : 'dim' },
     { label: 'Capabilities available', value: state ? `${availableCapabilities} / ${state.capabilities.length}` : '—', tone: unavailableCapabilities.length ? 'amber' : state?.capabilities.length ? 'green' : 'dim' },
-    { label: 'Confirmations pending', value: pending, tone: pending ? 'red' : 'dim' },
   ]} />}>
     <div className="atlas-overview-grid">
       <div className="atlas-overview-main">
-        <section className="ops-surface atlas-attention-surface"><header className="ops-surface-head"><div><span className="eyebrow">Configuration attention</span><strong>{attention.length ? `${attention.length} exact runtime facts to inspect` : 'No configuration exceptions reported'}</strong></div></header><div className="atlas-attention-list">{attention.map(item => <Link to={item.to} key={`${item.key}:${item.status}`}><OperationalRow lamp={item.tone} label={item.title} secondary={item.detail} status={<span className={`chip ${item.tone === 'red' ? 'failed' : 'running'}`}>{item.status}</span>} /></Link>)}{!attention.length ? <div className="empty-state compact"><strong>No pending confirmations, discovery errors, missing provider credentials, or unavailable capabilities.</strong></div> : null}</div></section>
+        <section className="ops-surface atlas-attention-surface"><header className="ops-surface-head"><div><span className="eyebrow">Configuration attention</span><strong>{attention.length ? `${attention.length} exact runtime facts to inspect` : 'No configuration exceptions reported'}</strong></div></header><div className="atlas-attention-list">{attention.map(item => <Link to={item.to} key={`${item.key}:${item.status}`}><OperationalRow lamp={item.tone} label={item.title} secondary={item.detail} status={<span className={`chip ${item.tone === 'red' ? 'failed' : 'running'}`}>{item.status}</span>} /></Link>)}{!attention.length ? <div className="empty-state compact"><strong>No discovery errors, missing provider credentials, or unavailable capabilities.</strong></div> : null}</div></section>
         <section className="ops-surface atlas-topology-surface"><header className="ops-surface-head"><div><span className="eyebrow">System topology</span><strong>One runtime, six technical control surfaces</strong></div></header><div className="atlas-topology-grid">{topology.map(item => <Link to={item.to} key={item.to}><StatusLamp tone={item.tone} /><span><strong>{item.label}</strong><small className="mono">{item.detail}</small></span><span aria-hidden>→</span></Link>)}</div></section>
       </div>
       {snapshot}
@@ -171,14 +164,9 @@ type Generation = {
 function KnowledgeGenerations({ onDone }: { onDone: () => Promise<unknown> }) {
   const generations = useQuery({ queryKey: ['knowledge-generations'], queryFn: () => api<{ generations: Generation[] }>('/api/knowledge/generations') })
   const [message, setMessage] = useState<string | null>(null)
-  const [pending, setPending] = useState<ActionOccurrence | null>(null)
   const activate = useMutation({
     mutationFn: (generationId: string) => api<{ action: ActionOccurrence }>('/api/capabilities/knowledge.activate_generation/invoke', { method: 'POST', body: JSON.stringify({ input: { generation_id: generationId } }) }),
-    onSuccess: async ({ action }) => {
-      setPending(action.status === 'pending_confirmation' ? action : null)
-      setMessage(action.status === 'pending_confirmation' ? 'Confirm to make this the default retrieval corpus.' : `Activation ${action.status}.`)
-      await onDone()
-    },
+    onSuccess: async ({ action }) => { setMessage(`Activation ${action.status}.`); await onDone() },
     onError: error => setMessage(error instanceof Error ? error.message : String(error)),
   })
   const rows = generations.data?.generations ?? []
@@ -192,7 +180,6 @@ function KnowledgeGenerations({ onDone }: { onDone: () => Promise<unknown> }) {
       {row.state === 'candidate' ? <div className="actions"><button type="button" disabled={activate.isPending} onClick={() => activate.mutate(row.generation_id)}>Activate</button></div> : null}
     </article>)}</div>
     {message ? <p className="meta">{message}</p> : null}
-    {pending ? <ConfirmationCard item={pending} onDone={async () => { setPending(null); setMessage(null); await onDone() }} /> : null}
   </Panel>
 }
 
@@ -206,18 +193,16 @@ export function AtlasRuntime() {
     { label: 'Policy revision', value: state?.policy_revision ?? '—', tone: state ? 'green' : 'dim' },
     { label: 'Capabilities', value: state?.capabilities.length ?? '—', tone: state?.capabilities.length ? 'green' : 'dim' },
     { label: 'Storage observed', value: filesystems.length, tone: filesystems.length ? 'green' : 'dim' },
-    { label: 'Confirmations', value: state?.pending_confirmations.length ?? 0, tone: state?.pending_confirmations.length ? 'red' : 'dim' },
-  ]} />}><div className="atlas-runtime-page"><RuntimeOverview state={state} /><div className="atlas-runtime-secondary"><Pending items={state?.pending_confirmations ?? []} onDone={refresh} /><KnowledgeGenerations onDone={refresh} /></div></div></AtlasPage>
+  ]} />}><div className="atlas-runtime-page"><RuntimeOverview state={state} /><div className="atlas-runtime-secondary"><KnowledgeGenerations onDone={refresh} /></div></div></AtlasPage>
 }
 
 export function AtlasPolicies() {
   const { system, policy, refresh } = useAtlasControl()
   const rules = policy.data?.rules ?? []
-  return <AtlasPage title="Policies" subtitle="Owner authority for consequential actions." banner={<OperationalRibbon items={[
+  return <AtlasPage title="Policies" subtitle="Coarse principal authority. Capability contracts carry the fine-grained execution boundary." banner={<OperationalRibbon items={[
     { label: 'Revision', value: policy.data?.revision ?? '—', tone: policy.data ? 'green' : 'dim' },
     { label: 'Rules', value: rules.length, tone: rules.length ? 'green' : 'dim' },
     { label: 'YES', value: rules.filter(rule => rule.decision === 'YES').length },
-    { label: 'CONFIRM', value: rules.filter(rule => rule.decision === 'CONFIRM').length, tone: rules.some(rule => rule.decision === 'CONFIRM') ? 'amber' : 'dim' },
     { label: 'NO', value: rules.filter(rule => rule.decision === 'NO').length },
   ]} />}><PolicyPanel rules={rules} capabilities={system.data?.capabilities ?? []} servers={system.data?.mcp_servers ?? []} revision={policy.data?.revision ?? 0} onDone={refresh} /></AtlasPage>
 }
@@ -261,12 +246,11 @@ export function AtlasFilesystem() {
 export function AtlasCapabilities() {
   const { system, refresh } = useAtlasControl()
   const capabilities = system.data?.capabilities ?? []
-  return <AtlasPage title="Capabilities" subtitle="Live capability inventory, exact authority, and execution." banner={<OperationalRibbon items={[
+  return <AtlasPage title="Capabilities" subtitle="Live registry contracts, technical availability, and resolved principal authority." banner={<OperationalRibbon items={[
     { label: 'Discovered', value: capabilities.length, tone: capabilities.length ? 'green' : 'dim' },
     { label: 'Available', value: capabilities.filter(item => item.available).length, tone: capabilities.some(item => item.available) ? 'green' : 'dim' },
     { label: 'Unavailable', value: capabilities.filter(item => !item.available).length, tone: capabilities.some(item => !item.available) ? 'amber' : 'dim' },
     { label: 'YES', value: capabilities.filter(item => item.policy_decision === 'YES').length },
-    { label: 'CONFIRM', value: capabilities.filter(item => item.policy_decision === 'CONFIRM').length, tone: capabilities.some(item => item.policy_decision === 'CONFIRM') ? 'amber' : 'dim' },
     { label: 'NO', value: capabilities.filter(item => item.policy_decision === 'NO').length },
   ]} />}><CapabilityBrowser items={capabilities} servers={system.data?.mcp_servers ?? []} onDone={refresh} /></AtlasPage>
 }
@@ -318,57 +302,102 @@ export function RuntimeOverview({ state }: { state?: SystemState }) {
   </div>
 }
 
-function Pending({ items, onDone }: { items: ActionOccurrence[]; onDone: () => Promise<unknown> }) {
-  return <Panel title="Pending confirmations" tone={items.length ? 'decision-confirm' : undefined} className="atlas-runtime-pending">{items.length ? <div className="stack">{items.map(item => <ConfirmationCard key={item.occurrence_id} item={item} onDone={onDone} />)}</div> : <div className="empty-state compact"><strong>No pending confirmations</strong><span>Exact-action confirmations will appear here.</span></div>}</Panel>
+type AuthorityDomain = {
+  key: string
+  label: string
+  detail: string
+  scope: string
+  operation: string
+  decision: Decision
+  explicit: boolean
+  capabilityCount: number
+  kind: 'runtime' | 'service'
 }
 
-function policyDescription(rule: PolicyRule, capabilities: Capability[]) {
-  const matching = capabilities.filter(capability => capability.operation === rule.operation && capability.scope_hint)
-  const exact = matching.find(capability => capability.scope_hint === rule.scope)
-  const related = matching.find(capability => rule.scope.startsWith(capability.scope_hint ?? '') || (capability.scope_hint ?? '').startsWith(rule.scope))
-  if (exact?.description) return exact.description
-  if (related?.description) return related.description
-  const operation = rule.operation.replace(/[._-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
-  return `${operation} on this resource`
+const DOMAIN_LABELS: Record<string, { label: string; detail: string }> = {
+  atlas: { label: 'Atlas runtime', detail: 'Work, Memory, Knowledge, artifacts, model inference, and Cadence.' },
+  files: { label: 'Enrolled files', detail: 'Capabilities constrained to enrolled source-root contracts.' },
+  web: { label: 'Public web', detail: 'Search, read, fetch, extract, crawl, render, and managed download.' },
+  'host/status': { label: 'Host status', detail: 'Runtime and process observation.' },
+  'host/resources': { label: 'Host resources', detail: 'CPU, memory, and load observation.' },
+  'host/storage': { label: 'Host storage', detail: 'Filesystem-capacity observation.' },
+  'host/filesystem': { label: 'Host filesystem', detail: 'Host-path observation within the registry-enforced protected-path boundary.' },
+  'host/service': { label: 'Host services', detail: 'Exact user-systemd service observation and mutation.' },
+  'host/package': { label: 'Host packages', detail: 'Debian package inspection and broker-constrained package mutation.' },
+}
+
+function scopeCovers(domain: string, candidate?: string | null) {
+  if (!candidate) return false
+  return candidate === domain || candidate.startsWith(`${domain}/`)
 }
 
 export function PolicyPanel({ rules, capabilities, servers, revision, onDone }: { rules: PolicyRule[]; capabilities: Capability[]; servers: MCPServer[]; revision: number; onDone: () => Promise<unknown> }) {
-  const [lens, setLens] = useState<PolicyLens>('system')
   const [selectedKey, setSelectedKey] = useState('')
   const [scope, setScope] = useState('')
   const [operation, setOperation] = useState('')
-  const [decision, setDecision] = useState<Decision>('CONFIRM')
-  const [toolFilter, setToolFilter] = useState('')
+  const [decision, setDecision] = useState<Decision>('NO')
   const save = useMutation({ mutationFn: (payload: { scope: string; operation: string; decision: Decision }) => api('/api/policy', { method: 'POST', body: JSON.stringify(payload) }), onSuccess: onDone })
   function submit(event: FormEvent) { event.preventDefault(); save.mutate({ scope, operation, decision }) }
 
-  const systemRules = rules.filter(rule => policyLensFor(rule, servers) === 'system')
-  const toolCapabilities = capabilities.filter(capability => capabilityLensFor(capability, servers) === lens && capability.scope_hint?.startsWith('mcp/'))
-  const filteredToolCapabilities = toolCapabilities.filter(capability => !toolFilter || `${capability.id} ${capability.description} ${String(capability.metadata?.tool_name ?? '')}`.toLowerCase().includes(toolFilter.toLowerCase()))
-  const tabs: Array<{ id: PolicyLens; label: string; count: number }> = [
-    { id: 'system', label: 'System', count: systemRules.length },
-    { id: 'n8n', label: 'n8n Tools', count: capabilities.filter(capability => capabilityLensFor(capability, servers) === 'n8n' && capability.scope_hint?.startsWith('mcp/')).length },
-    { id: 'mcp', label: 'MCP Tools', count: capabilities.filter(capability => capabilityLensFor(capability, servers) === 'mcp' && capability.scope_hint?.startsWith('mcp/')).length },
-  ]
-  const toolGroups = servers.filter(server => server.kind === lens).map(server => ({ server, tools: filteredToolCapabilities.filter(capability => capability.metadata?.server_id === server.server_id) })).filter(group => group.tools.length)
-  const disconnectedTools = filteredToolCapabilities.filter(capability => !servers.some(server => server.server_id === capability.metadata?.server_id))
-  const rows = lens === 'system'
-    ? systemRules.map(rule => ({ key: `${rule.scope}:${rule.operation}`, description: policyDescription(rule, capabilities), id: capabilities.find(capability => capability.operation === rule.operation && capability.scope_hint === rule.scope)?.id ?? rule.event_id, scope: rule.scope, operation: rule.operation, decision: rule.decision, group: 'System' }))
-    : filteredToolCapabilities.map(tool => ({ key: tool.id, description: tool.description, id: tool.id, scope: tool.scope_hint ?? '', operation: tool.operation, decision: tool.policy_decision, group: servers.find(server => server.server_id === tool.metadata?.server_id)?.display_name ?? 'Disconnected tools' }))
-  const selected = rows.find(row => row.key === selectedKey) ?? rows[0] ?? null
+  const runtimeRules = rules.filter(rule => !rule.scope.startsWith('mcp/') && rule.operation === '*')
+  const runtimeDomains: AuthorityDomain[] = runtimeRules.map(rule => {
+    const copy = DOMAIN_LABELS[rule.scope]
+    return {
+      key: `runtime:${rule.scope}`,
+      label: copy?.label ?? rule.scope,
+      detail: copy?.detail ?? 'Principal authority domain.',
+      scope: rule.scope,
+      operation: '*',
+      decision: rule.decision,
+      explicit: true,
+      capabilityCount: capabilities.filter(capability => scopeCovers(rule.scope, capability.scope_hint)).length,
+      kind: 'runtime',
+    }
+  })
+  const serviceDomains: AuthorityDomain[] = servers.map(server => {
+    const domainScope = `mcp/${server.server_id}`
+    const rule = rules.find(candidate => candidate.scope === domainScope && candidate.operation === '*')
+    return {
+      key: `service:${server.server_id}`,
+      label: server.display_name,
+      detail: `${server.kind.toUpperCase()} service · ${server.discovered_tool_count} discovered tools. Discovery does not grant authority.`,
+      scope: domainScope,
+      operation: '*',
+      decision: rule?.decision ?? 'NO',
+      explicit: Boolean(rule),
+      capabilityCount: capabilities.filter(capability => capability.metadata?.server_id === server.server_id).length,
+      kind: 'service',
+    }
+  })
+  const domains = [...runtimeDomains, ...serviceDomains]
+  const selected = domains.find(row => row.key === selectedKey) ?? domains[0] ?? null
+  const exceptions = rules.filter(rule => rule.operation !== '*' || (rule.scope.startsWith('mcp/') && !servers.some(server => rule.scope === `mcp/${server.server_id}`)))
 
   return <div className="atlas-control-grid atlas-policy-control">
-    <section className="ops-rail-panel"><div className="atlas-panel-heading"><span className="eyebrow">Policy lenses</span><span className="mono meta">rev {revision}</span></div><div className="ops-filter-stack policy-tabs" role="tablist" aria-label="Policy lenses">{tabs.map(tab => <button key={tab.id} type="button" role="tab" aria-selected={lens === tab.id} className={lens === tab.id ? 'active' : ''} onClick={() => { setLens(tab.id); setSelectedKey('') }}><span>{tab.label}</span><strong>{tab.count}</strong></button>)}</div>{lens !== 'system' ? <div className="policy-provider-summary">{toolGroups.map(({ server, tools }) => <div key={server.server_id}><span><strong>{server.display_name}</strong><small>{server.kind}</small></span><span className="chip">{tools.length} tools</span></div>)}{disconnectedTools.length ? <div><span><strong>Disconnected tools</strong><small>Stored inventory</small></span><span className="chip">{disconnectedTools.length} tools</span></div> : null}</div> : <p className="ops-authority-note"><StatusLamp tone="amber" />Missing rules resolve to literal NO. Changes apply immediately to the running Atlas.</p>}</section>
-    <section className="ops-surface atlas-policy-list"><header className="ops-surface-head"><div><span className="eyebrow">Authority rules</span><strong>{rows.length} controls in this lens</strong></div>{lens !== 'system' ? <input value={toolFilter} onChange={e => setToolFilter(e.target.value)} placeholder="Filter provider tools" aria-label="Filter provider tools" /> : null}</header><div className="atlas-table-head policy-table-columns"><span>Decision</span><span>Capability / tool</span><span>Operation</span><span>Scope</span></div><div className="atlas-table-body">{rows.map(row => <button type="button" className={`atlas-table-row policy-table-columns ${selected?.key === row.key ? 'active' : ''}`} key={row.key} onClick={() => setSelectedKey(row.key)}><span className={`authority-value decision-${row.decision.toLowerCase()}`}>{row.decision}</span><span className="atlas-table-copy"><strong>{row.description}</strong><small className="mono">{row.id}</small><small className="policy-syntax">{row.scope || '—'} · {row.operation}</small></span><span className="mono">{row.operation}</span><span className="mono">{row.scope || '—'}</span></button>)}{!rows.length ? <div className="empty-state"><strong>No {lens === 'system' ? 'system rules' : lens === 'n8n' ? 'n8n tools' : 'MCP tools'} in the current runtime snapshot.</strong></div> : null}</div></section>
-    <InspectorPanel title={selected?.id ?? 'Select an authority rule'} eyebrow="Selected authority rule" status={selected ? <span className={`authority-value decision-${selected.decision.toLowerCase()}`}>{selected.decision}</span> : undefined}>
-      {selected ? <><InspectorSection title="Exact control"><FactList items={[
-        { label: 'Capability / rule', value: selected.id, mono: true },
+    <section className="ops-rail-panel">
+      <div className="atlas-panel-heading"><span className="eyebrow">Principal authority</span><span className="mono meta">rev {revision}</span></div>
+      <p className="ops-authority-note"><StatusLamp tone="amber" />Policy stays coarse. Missing domains resolve to literal NO. The Capability Registry carries exact schemas, resource resolution, effect semantics, and hard execution boundaries.</p>
+      <div className="policy-provider-summary">
+        <div><span><strong>Runtime domains</strong><small>Human-readable authority</small></span><span className="chip">{runtimeDomains.length}</span></div>
+        <div><span><strong>Connected services</strong><small>One authority switch per service</small></span><span className="chip">{serviceDomains.length}</span></div>
+        <div><span><strong>Explicit exceptions</strong><small>Rare narrow overrides</small></span><span className="chip">{exceptions.length}</span></div>
+      </div>
+    </section>
+    <section className="ops-surface atlas-policy-list">
+      <header className="ops-surface-head"><div><span className="eyebrow">Authority domains</span><strong>{domains.length} principal controls</strong></div><span className="meta">Tool inventory belongs in Capabilities, not Policy.</span></header>
+      <div className="atlas-table-head policy-table-columns"><span>Decision</span><span>Domain</span><span>Capabilities</span><span>Scope</span></div>
+      <div className="atlas-table-body">{domains.map(row => <button type="button" className={`atlas-table-row policy-table-columns ${selected?.key === row.key ? 'active' : ''}`} key={row.key} onClick={() => setSelectedKey(row.key)}><span className={`authority-value decision-${row.decision.toLowerCase()}`}>{row.decision}</span><span className="atlas-table-copy"><strong>{row.label}</strong><small>{row.detail}</small><small className="policy-syntax">{row.explicit ? 'explicit principal rule' : 'default NO · no rule stored'}</small></span><span className="mono">{row.capabilityCount}</span><span className="mono">{row.scope}</span></button>)}{!domains.length ? <div className="empty-state"><strong>No authority domains are present in the current runtime snapshot.</strong></div> : null}</div>
+    </section>
+    <InspectorPanel title={selected?.label ?? 'Select an authority domain'} eyebrow="Principal authority" status={selected ? <span className={`authority-value decision-${selected.decision.toLowerCase()}`}>{selected.decision}</span> : undefined}>
+      {selected ? <><InspectorSection title="Domain"><FactList items={[
+        { label: 'Scope', value: selected.scope, mono: true },
         { label: 'Operation', value: selected.operation, mono: true },
-        { label: 'Exact scope', value: selected.scope || '—', mono: true },
+        { label: 'Capabilities covered', value: selected.capabilityCount },
+        { label: 'Rule', value: selected.explicit ? 'Explicit' : 'Default NO' },
         { label: 'Revision', value: revision, mono: true },
-      ]} /></InspectorSection><InspectorSection title="Current decision"><div className="authority-selector" role="group" aria-label={`${selected.scope} ${selected.operation} decision`}>{(['NO', 'YES', 'CONFIRM'] as Decision[]).map(value => <button type="button" className={`${selected.decision === value ? 'active' : ''} decision-${value.toLowerCase()}`} disabled={save.isPending} onClick={() => save.mutate({ scope: selected.scope, operation: selected.operation, decision: value })} key={value}>{value}</button>)}</div><p className="ops-authority-note"><StatusLamp tone={selected.decision === 'CONFIRM' ? 'red' : selected.decision === 'YES' ? 'amber' : 'dim'} />{selected.decision === 'CONFIRM' ? 'Confirmation is required before this action can execute.' : selected.decision === 'YES' ? 'The runtime may execute the resolved action without owner confirmation.' : 'The runtime blocks this operation at the exact matching scope.'}</p></InspectorSection></> : <div className="empty-state compact"><strong>No rule selected</strong></div>}
+      ]} /></InspectorSection><InspectorSection title="Decision"><div className="authority-selector" role="group" aria-label={`${selected.scope} principal decision`}>{(['NO', 'YES'] as Decision[]).map(value => <button type="button" className={`${selected.decision === value ? 'active' : ''} decision-${value.toLowerCase()}`} disabled={save.isPending} onClick={() => save.mutate({ scope: selected.scope, operation: '*', decision: value })} key={value}>{value}</button>)}</div><p className="ops-authority-note"><StatusLamp tone={selected.decision === 'YES' ? 'green' : 'dim'} />{selected.decision === 'YES' ? 'This principal may invoke capabilities in this domain. Registry contracts still constrain every exact act.' : 'This principal cannot invoke capabilities in this domain.'}</p></InspectorSection></> : <div className="empty-state compact"><strong>No domain selected</strong></div>}
       {save.isError ? <p className="offline-banner">{save.error.message}</p> : null}
-      <InspectorSection title="Advanced"><details className="inspect policy-advanced"><summary>Set explicit override</summary><form className="policy-add" onSubmit={submit}><input value={scope} onChange={e => setScope(e.target.value)} placeholder="resource scope" aria-label="Resource scope" /><input value={operation} onChange={e => setOperation(e.target.value)} placeholder="operation" aria-label="Operation" /><select value={decision} onChange={e => setDecision(e.target.value as Decision)} aria-label="Override decision"><option>NO</option><option>YES</option><option>CONFIRM</option></select><button className="primary" type="submit">Set override</button></form></details></InspectorSection>
+      <InspectorSection title="Advanced"><details className="inspect policy-advanced"><summary>Set a narrow exception</summary><p className="meta">Use this only when a domain-wide rule is too broad. Most authority should remain on the domain controls above.</p><form className="policy-add" onSubmit={submit}><input value={scope} onChange={e => setScope(e.target.value)} placeholder="exact or nested resource scope" aria-label="Resource scope" /><input value={operation} onChange={e => setOperation(e.target.value)} placeholder="operation or *" aria-label="Operation" /><select value={decision} onChange={e => setDecision(e.target.value as Decision)} aria-label="Override decision"><option>NO</option><option>YES</option></select><button className="primary" type="submit" disabled={!scope.trim() || !operation.trim()}>Set exception</button></form>{exceptions.length ? <div className="ops-compact-list">{exceptions.slice(0, 20).map(rule => <div className="ops-linked-row" key={rule.event_id}><span><strong>{rule.scope}</strong><small className="mono">{rule.operation}</small></span><span className={`authority-value decision-${rule.decision.toLowerCase()}`}>{rule.decision}</span></div>)}</div> : <p className="meta">No narrow exceptions are stored.</p>}</details></InspectorSection>
     </InspectorPanel>
   </div>
 }
@@ -487,7 +516,7 @@ function Mcp({ servers, capabilities, connections, bindings, onDone }: { servers
         { label: 'Last discovery', value: when(selected.last_discovered_at), mono: true },
       ]} />{selected.last_error ? <p className="offline-banner">{selected.last_error}</p> : null}<section className="atlas-discovered-tools"><div className="atlas-panel-heading"><span className="eyebrow">Discovered tools</span><span className="mono meta">{tools.length} inventory items</span></div><div className="atlas-capability-rows">{tools.slice(0, 12).map(item => <OperationalRow key={item.id} lamp={item.available ? 'green' : 'dim'} label={String(item.metadata?.tool_name ?? item.id)} secondary={item.description} status={<span className="meta">{item.available ? 'available' : 'unavailable'}</span>} />)}{!tools.length ? <div className="empty-state compact"><strong>No tools in the current capability snapshot.</strong></div> : null}</div></section></div> : <div className="empty-state"><strong>Select a configured service</strong></div>}</> : <><header className="ops-surface-head"><div><span className="eyebrow">{externalTitle}</span><strong>{externalRows.length} runtime records</strong></div></header><div className="atlas-external-records">{externalRows.map((item, index) => <article className="atlas-external-record" key={String(item.connection_id ?? item.binding_id ?? index)}><strong>{String(item.display_name ?? item.canonical_address ?? item.service ?? item.connection_id ?? item.binding_id ?? `Record ${index + 1}`)}</strong><FactList items={externalFacts(item)} /></article>)}{!externalRows.length ? <div className="empty-state"><strong>No {mode} are present in the runtime snapshot.</strong></div> : null}</div></>}</section>
       <InspectorPanel title={mode === 'services' ? selected?.display_name ?? 'Service actions' : externalTitle} eyebrow={mode === 'services' ? 'Service actions' : 'Technical custody'} status={mode === 'services' && selected ? <StatusLamp tone={selected.last_error ? 'red' : selected.enabled ? 'green' : 'dim'} label={selected.last_error ? 'Error' : selected.enabled ? 'Enabled' : 'Disabled'} /> : undefined} actions={mode === 'services' && selected ? <><button type="button" disabled={refresh.isPending} onClick={() => refresh.mutate(selected.server_id)}>{refresh.isPending ? 'Refreshing…' : 'Refresh discovery'}</button><Link className="button-link" to="/atlas/policies" state={{ atlasBack: { path: location.pathname, parent: parentBack ?? { path: '/atlas' } } }}>Open policy rules</Link><button type="button" className="danger" onClick={() => remove.mutate(selected.server_id)}>Remove service</button></> : undefined}>
-        {mode === 'services' && selected ? <><InspectorSection title="Discovery"><FactList items={[{ label: 'Tools discovered', value: selected.discovered_tool_count }, { label: 'Last discovery', value: when(selected.last_discovered_at), mono: true }, { label: 'Last error', value: selected.last_error ?? 'None reported' }]} /></InspectorSection><InspectorSection title="Authority"><p className="ops-authority-note"><StatusLamp tone="amber" />Discovery populates capability inventory only. NO / YES / CONFIRM remains under owner policy.</p></InspectorSection>{refresh.isError ? <p className="offline-banner">{refresh.error.message}</p> : null}</> : <InspectorSection title="Boundary"><p className="ops-authority-note"><StatusLamp tone="dim" />Connections and bindings describe technical custody. They do not grant action authority.</p></InspectorSection>}
+        {mode === 'services' && selected ? <><InspectorSection title="Discovery"><FactList items={[{ label: 'Tools discovered', value: selected.discovered_tool_count }, { label: 'Last discovery', value: when(selected.last_discovered_at), mono: true }, { label: 'Last error', value: selected.last_error ?? 'None reported' }]} /></InspectorSection><InspectorSection title="Authority"><p className="ops-authority-note"><StatusLamp tone="amber" />Discovery populates capability inventory only. NO / YES remains under principal policy. Discovery never grants authority.</p></InspectorSection>{refresh.isError ? <p className="offline-banner">{refresh.error.message}</p> : null}</> : <InspectorSection title="Boundary"><p className="ops-authority-note"><StatusLamp tone="dim" />Connections and bindings describe technical custody. They do not grant action authority.</p></InspectorSection>}
       </InspectorPanel>
     </div>
     {addOpen ? <Sheet title="Add service" onClose={() => setAddOpen(false)}><form className="atlas-sheet-form" onSubmit={submit}><input value={serverId} onChange={e => setServerId(e.target.value)} placeholder="server id" aria-label="Server ID" /><input value={name} onChange={e => setName(e.target.value)} placeholder="display name" aria-label="Display name" /><select value={kind} onChange={e => setKind(e.target.value as 'mcp' | 'n8n')} aria-label="Connection kind"><option value="mcp">MCP</option><option value="n8n">n8n</option></select><select value={transport} onChange={e => setTransport(e.target.value as 'streamable-http' | 'stdio')} aria-label="Transport"><option value="streamable-http">Streamable HTTP</option><option value="stdio">stdio</option></select>{transport === 'streamable-http' ? <><input value={url} onChange={e => setUrl(e.target.value)} placeholder="Streamable HTTP URL" aria-label="Streamable HTTP URL" /><input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="Bearer token (optional)" aria-label="Bearer token" /></> : <><input value={command} onChange={e => setCommand(e.target.value)} placeholder="command / executable" aria-label="Command" /><textarea value={argsText} onChange={e => setArgsText(e.target.value)} placeholder="one argument per line" aria-label="Arguments" /><input value={cwd} onChange={e => setCwd(e.target.value)} placeholder="working directory (optional)" aria-label="Working directory" /></>}<button className="primary" type="submit" disabled={!serverId || save.isPending}>{save.isPending ? 'Saving…' : 'Save service'}</button>{save.isError ? <p className="offline-banner">{save.error.message}</p> : null}</form></Sheet> : null}
@@ -516,9 +545,9 @@ function Roots({ roots, capabilities, onDone }: { roots: SourceRoot[]; capabilit
         { label: 'Quarantine relative path', value: selected.quarantine_relative_path ?? 'Not configured', mono: true },
         { label: 'Enabled', value: selected.enabled ? 'Yes' : 'No' },
         { label: 'Updated', value: when(selected.updated_at), mono: true },
-      ]} /><p className="atlas-boundary-notice"><StatusLamp tone="amber" /><span><strong>Capability is not authority.</strong> Enrollment exposes a technical boundary. Owner policy still resolves every consequential operation.</span></p><section className="atlas-discovered-tools"><div className="atlas-panel-heading"><span className="eyebrow">Runtime filesystem capabilities</span><span className="mono meta">{filesystemCapabilities.length} inventory items</span></div><div className="atlas-capability-rows">{filesystemCapabilities.map(item => <OperationalRow key={item.id} lamp={item.available ? 'green' : 'dim'} label={item.id} secondary={item.description} status={<span className="meta">{item.available ? 'available' : 'unavailable'}</span>} />)}{!filesystemCapabilities.length ? <div className="empty-state compact"><strong>No filesystem capabilities in the current runtime snapshot.</strong></div> : null}</div></section></div> : <div className="empty-state"><strong>Select an enrolled root</strong></div>}</section>
+      ]} /><p className="atlas-boundary-notice"><StatusLamp tone="amber" /><span><strong>Capability is not authority.</strong> Enrollment exposes a technical boundary. Principal policy still resolves every consequential operation.</span></p><section className="atlas-discovered-tools"><div className="atlas-panel-heading"><span className="eyebrow">Runtime filesystem capabilities</span><span className="mono meta">{filesystemCapabilities.length} inventory items</span></div><div className="atlas-capability-rows">{filesystemCapabilities.map(item => <OperationalRow key={item.id} lamp={item.available ? 'green' : 'dim'} label={item.id} secondary={item.description} status={<span className="meta">{item.available ? 'available' : 'unavailable'}</span>} />)}{!filesystemCapabilities.length ? <div className="empty-state compact"><strong>No filesystem capabilities in the current runtime snapshot.</strong></div> : null}</div></section></div> : <div className="empty-state"><strong>Select an enrolled root</strong></div>}</section>
       <InspectorPanel title={selected?.display_name ?? 'Root actions'} eyebrow="Root actions" status={selected ? <StatusLamp tone={selected.enabled ? 'green' : 'dim'} label={selected.enabled ? 'Enabled' : 'Disabled'} /> : undefined} actions={selected ? <><Link className="button-link" to="/atlas/policies">Open policy rules</Link><Link className="button-link" to="/sources">Browse source</Link>{selected.provider_namespace !== 'atlas-library' ? <button type="button" className="danger" onClick={() => remove.mutate(selected.root_id)}>Remove root</button> : null}</> : undefined}>
-        {selected ? <><InspectorSection title="Selected root"><FactList items={[{ label: 'Root', value: selected.root_id, mono: true }, { label: 'Namespace', value: selected.provider_namespace, mono: true }, { label: 'Path', value: selected.host_path, mono: true }]} /></InspectorSection><InspectorSection title="Authority boundary"><p className="ops-authority-note"><StatusLamp tone="amber" />Enrollment does not mean readable, writable, trusted, or authorized. Policy resolves the normalized resource when an operation runs.</p></InspectorSection>{remove.isError ? <p className="offline-banner">Remove failed: {remove.error.message}</p> : null}</> : <div className="empty-state compact"><strong>No root selected</strong></div>}
+        {selected ? <><InspectorSection title="Selected root"><FactList items={[{ label: 'Root', value: selected.root_id, mono: true }, { label: 'Namespace', value: selected.provider_namespace, mono: true }, { label: 'Path', value: selected.host_path, mono: true }]} /></InspectorSection><InspectorSection title="Authority boundary"><p className="ops-authority-note"><StatusLamp tone="amber" />Enrollment does not mean readable, writable, trusted, or authorized. Policy resolves the principal authority domain when an operation runs; the registered capability contract enforces the exact resource boundary.</p></InspectorSection>{remove.isError ? <p className="offline-banner">Remove failed: {remove.error.message}</p> : null}</> : <div className="empty-state compact"><strong>No root selected</strong></div>}
       </InspectorPanel>
     </div>
     {addOpen ? <Sheet title="Enroll root" onClose={() => setAddOpen(false)}><form className="atlas-sheet-form" onSubmit={event => { event.preventDefault(); save.mutate() }}><input value={id} onChange={e => setId(e.target.value)} placeholder="root id" aria-label="Root ID" /><input value={name} onChange={e => setName(e.target.value)} placeholder="display name" aria-label="Display name" /><input value={path} onChange={e => setPath(e.target.value)} placeholder="absolute host path" aria-label="Absolute host path" /><p className="ops-authority-note"><StatusLamp tone="amber" />This enrolls a technical filesystem boundary only. It does not grant read or mutation authority.</p><button className="primary" type="submit" disabled={!id || !path || save.isPending}>{save.isPending ? 'Enrolling…' : 'Enroll root'}</button>{save.isError ? <p className="offline-banner">Enrollment failed: {save.error.message}</p> : null}</form></Sheet> : null}

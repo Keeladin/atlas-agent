@@ -90,11 +90,6 @@ def test_pdf_routes_end_to_end_and_retrieval_grounds_back_to_source(tmp_path):
     artifact_id = h.scan()["new"][0]["artifact_id"]
     routed = h.invoke("artifacts.classify_intake", {"artifact_id": artifact_id, "source_event_kind": "new"}).result
     assert routed["intake"]["status"] == "routed"
-    work = h.work.run(routed["work"]["work_id"])
-    assert work["status"] == "waiting_confirmation"
-    pending = work["steps"][3]["occurrence_id"]
-    confirmed = h.actions.confirm(pending, principal_id=h.owner.principal_id)
-    assert confirmed.status == "succeeded"
     completed = h.work.run(routed["work"]["work_id"])
     assert completed["status"] == "completed"
     retrieved = h.invoke("knowledge.retrieve", {"need": "137 operating hours"})

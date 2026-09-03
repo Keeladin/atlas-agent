@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from atlas_core.provenance import InvocationProvenance
 
-ActionStatus = Literal["blocked", "pending_confirmation", "executing", "succeeded", "failed", "uncertain", "expired", "cancelled"]
+ActionStatus = Literal["blocked", "executing", "succeeded", "failed", "uncertain"]
 
 
 def canonical_payload(payload: dict[str, Any]) -> str:
@@ -62,7 +62,6 @@ class ActionOccurrence:
     error_code: str | None
     error: str | None
     created_at: str
-    confirmed_at: str | None
     executed_at: str | None
     completed_at: str | None
 
@@ -74,6 +73,6 @@ class ActionOccurrence:
             "status": self.status, "work_id": self.work_id, "step_id": self.step_id,
             "summary": self.summary, "result": self.result, "receipt": self.receipt,
             "error_code": self.error_code, "error": self.error, "created_at": self.created_at,
-            "confirmed_at": self.confirmed_at, "executed_at": self.executed_at,
+            "executed_at": self.executed_at,
             "completed_at": self.completed_at,
         }

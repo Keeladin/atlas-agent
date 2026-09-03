@@ -170,19 +170,17 @@ def test_search_and_same_origin_crawl_return_structured_provenance(tmp_path):
     assert all(url.startswith("https://docs.example/") for url in provider.fetches)
 
 
-def test_download_is_exact_confirmation_and_never_overwrites(tmp_path):
-    policy, _evidence, _registry, capabilities, actions, _provider, _web = _runtime(tmp_path)
-    _allow(policy, "download", "CONFIRM")
+def test_download_yes_executes_and_never_overwrites(tmp_path):
+    policy, _evidence, _registry, capabilities, _actions, _provider, _web = _runtime(tmp_path)
+    _allow(policy, "download", "YES")
     first = _invoke(capabilities, "web.download", {"url": "https://docs.example/manual", "filename": "manual.html"})
-    assert first.status == "pending_confirmation"
-    assert not (tmp_path / "downloads" / "manual.html").exists()
-    completed = actions.confirm(first.occurrence_id, principal_id="owner")
-    assert completed.status == "succeeded"
+    assert first.status == "succeeded"
     assert (tmp_path / "downloads" / "manual.html").is_file()
 
     second = _invoke(capabilities, "web.download", {"url": "https://docs.example/manual", "filename": "manual.html"})
-    completed_second = actions.confirm(second.occurrence_id, principal_id="owner")
-    assert completed_second.result["filename"] == "manual-2.html"
+    assert second.status == "succeeded"
+    assert second.result["filename"] == "manual-2.html"
+    assert (tmp_path / "downloads" / "manual-2.html").is_file()
 
 
 def test_browser_render_is_separately_policy_governed_and_returns_normalized_evidence(tmp_path):

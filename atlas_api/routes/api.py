@@ -43,7 +43,7 @@ def _error(exc: Exception, status: int = 400) -> JSONResponse:
 
 
 async def health(request: Request) -> JSONResponse:
-    return JSONResponse({"ok": True, "service": "atlas-api", "version": "3.0.0"})
+    return JSONResponse({"ok": True, "service": "atlas-api", "version": "3.5.0"})
 
 
 async def auth_session(request: Request) -> JSONResponse:
@@ -165,40 +165,6 @@ async def policy_set(request: Request) -> JSONResponse:
         return _error(exc)
 
 
-async def actions_pending(request: Request) -> JSONResponse:
-    gate = require_session(request)
-    if isinstance(gate, JSONResponse): return gate
-    owner = _owner(request, gate); rt = _runtime(request)
-    return JSONResponse({"actions": [x.public() for x in rt.actions_store.pending(principal_id=owner.principal_id)]})
-
-
-async def action_confirm(request: Request) -> JSONResponse:
-    gate = require_mutation_auth(request)
-    if isinstance(gate, JSONResponse): return gate
-    try:
-        rt = _runtime(request); owner = _owner(request, gate)
-        occurrence = await run_in_threadpool(rt.actions.confirm, request.path_params["occurrence_id"], principal_id=owner.principal_id)
-        payload: dict[str, Any] = {"action": occurrence.public()}
-        if occurrence.work_id and occurrence.status == "succeeded": payload["work"] = await run_in_threadpool(rt.work.run, occurrence.work_id)
-        if occurrence.surface == "chat":
-            continuation = await run_in_threadpool(rt.chat.resume_confirmed_action, occurrence, principal_id=owner.principal_id)
-            if continuation is not None:
-                payload["chat"] = continuation
-        return JSONResponse(payload)
-    except PermissionError as exc: return forbidden(str(exc))
-    except Exception as exc: return _error(exc)
-
-
-async def action_cancel(request: Request) -> JSONResponse:
-    gate = require_mutation_auth(request)
-    if isinstance(gate, JSONResponse): return gate
-    try:
-        rt = _runtime(request); owner = _owner(request, gate); occurrence = rt.actions.cancel(request.path_params["occurrence_id"], principal_id=owner.principal_id)
-        return JSONResponse({"action": occurrence.public()})
-    except PermissionError as exc: return forbidden(str(exc))
-    except Exception as exc: return _error(exc)
-
-
 async def conversations_list(request: Request) -> JSONResponse:
     gate = require_session(request)
     if isinstance(gate, JSONResponse): return gate
@@ -259,7 +225,7 @@ async def work_create(request: Request) -> JSONResponse:
         from atlas_core.provenance import InvocationProvenance
         payload={"objective":str(body.get("objective") or ""),"steps":body.get("steps") or [],"run":bool(body.get("run",True))}
         occurrence=await run_in_threadpool(rt.capabilities.invoke,"work.create",payload,provenance=InvocationProvenance(owner.principal_id,"human","control"))
-        status=201 if occurrence.status=="succeeded" else 202 if occurrence.status in {"pending_confirmation","uncertain"} else 409
+        status=201 if occurrence.status=="succeeded" else 202 if occurrence.status == "uncertain" else 409
         return JSONResponse({"action":occurrence.public(),"work":occurrence.result if occurrence.status=="succeeded" else None},status_code=status)
     except Exception as exc: return _error(exc)
 
@@ -299,7 +265,7 @@ async def cadence_create(request: Request) -> JSONResponse:
         from atlas_core.provenance import InvocationProvenance
         payload={"name":str(body.get("name") or ""),"objective":str(body.get("objective") or ""),"schedule":body.get("schedule") or {},"steps":body.get("steps") or []}
         occurrence=await run_in_threadpool(rt.capabilities.invoke,"cadence.create",payload,provenance=InvocationProvenance(owner.principal_id,"human","control"))
-        status=201 if occurrence.status=="succeeded" else 202 if occurrence.status in {"pending_confirmation","uncertain"} else 409
+        status=201 if occurrence.status=="succeeded" else 202 if occurrence.status == "uncertain" else 409
         return JSONResponse({"action":occurrence.public(),"cadence":occurrence.result if occurrence.status=="succeeded" else None},status_code=status)
     except Exception as exc:return _error(exc)
 
@@ -435,7 +401,7 @@ async def knowledge_delete(request: Request) -> JSONResponse:
         rt=_runtime(request);owner=_owner(request,gate)
         from atlas_core.provenance import InvocationProvenance
         occurrence=rt.capabilities.invoke("knowledge.delete",{"item_id":request.path_params["item_id"]},provenance=InvocationProvenance(owner.principal_id,"human","control"))
-        status=200 if occurrence.status=="succeeded" else 202 if occurrence.status in {"pending_confirmation","uncertain"} else 409
+        status=200 if occurrence.status=="succeeded" else 202 if occurrence.status == "uncertain" else 409
         return JSONResponse({"action":occurrence.public()},status_code=status)
     except Exception as exc:return _error(exc)
 
@@ -451,7 +417,7 @@ async def knowledge_promote(request: Request) -> JSONResponse:
             "kind":body.get("kind"),"metadata":body.get("metadata") if isinstance(body.get("metadata"),dict) else None,
         }.items() if v is not None}
         occurrence=rt.capabilities.invoke("knowledge.promote",payload,provenance=InvocationProvenance(owner.principal_id,"human","control"))
-        status=201 if occurrence.status=="succeeded" else 202 if occurrence.status in {"pending_confirmation","uncertain"} else 409
+        status=201 if occurrence.status=="succeeded" else 202 if occurrence.status == "uncertain" else 409
         return JSONResponse({"action":occurrence.public(),"item":occurrence.result if occurrence.status=="succeeded" else None},status_code=status)
     except Exception as exc:return _error(exc)
 
@@ -507,7 +473,7 @@ async def memory_action(request: Request) -> JSONResponse:
         if action not in {"purge","restore","retract"}:return _error(ValueError("unsupported memory action"),404)
         from atlas_core.provenance import InvocationProvenance
         occurrence=rt.capabilities.invoke(f"memory.{action}",{"item_id":request.path_params["item_id"]},provenance=InvocationProvenance(owner.principal_id,"human","control"))
-        status=200 if occurrence.status=="succeeded" else 202 if occurrence.status in {"pending_confirmation","uncertain"} else 409
+        status=200 if occurrence.status=="succeeded" else 202 if occurrence.status == "uncertain" else 409
         return JSONResponse({"action":occurrence.public()},status_code=status)
     except Exception as exc:return _error(exc)
 

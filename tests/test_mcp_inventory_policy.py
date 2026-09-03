@@ -31,16 +31,11 @@ class FakeMCP:
         return {"isError": False, "structuredContent": {"tool": name, "ok": True}}
 
 
-def test_mcp_discovers_every_tool_but_policy_still_controls_execution(tmp_path, monkeypatch):
+def test_mcp_discovery_never_grants_authority_and_parent_domain_can_be_granted_once(tmp_path, monkeypatch):
     rt = build_runtime(tmp_path / "instance")
     fake = FakeMCP()
     monkeypatch.setattr(rt.mcp, "_client", lambda server: fake)
-    rt.mcp_store.put(
-        server_id="demo",
-        display_name="Demo MCP",
-        kind="n8n",
-        url="http://127.0.0.1:5678/mcp",
-    )
+    rt.mcp_store.put(server_id="demo", display_name="Demo MCP", kind="n8n", url="http://127.0.0.1:5678/mcp")
     tools = rt.mcp.refresh("demo")
     assert {tool.name for tool in tools} == {"read_data", "delete_data"}
     assert rt.capabilities_registry.get("mcp.demo.read_data").definition.source == "n8n"
@@ -48,24 +43,24 @@ def test_mcp_discovers_every_tool_but_policy_still_controls_execution(tmp_path, 
 
     owner = rt.identities.current_owner().principal_id
     rt.seed_policy()
-    rt.policy_store.set(
-        principal_id=owner,
-        scope="mcp/demo/tool/read_data",
-        operation="invoke",
-        decision="YES",
-    )
     provenance = InvocationProvenance(owner, "human", "chat")
 
-    read = rt.capabilities.invoke("mcp.demo.read_data", {}, provenance=provenance)
-    assert read.status == "succeeded"
-    assert fake.calls == [("read_data", {})]
+    # Discovery populated the registry, but no MCP policy row was created.
+    assert rt.policy.resolve(principal_id=owner, scope="mcp/demo/tool/read_data", operation="invoke").decision == "NO"
+    assert rt.capabilities.invoke("mcp.demo.read_data", {}, provenance=provenance).status == "blocked"
+    assert rt.capabilities.invoke("mcp.demo.delete_data", {}, provenance=provenance).status == "blocked"
+    assert fake.calls == []
 
-    destructive = rt.capabilities.invoke("mcp.demo.delete_data", {}, provenance=provenance)
-    assert destructive.status == "pending_confirmation"
-    assert fake.calls == [("read_data", {})]
-    confirmed = rt.actions.confirm(destructive.occurrence_id, principal_id=owner)
-    assert confirmed.status == "succeeded"
-    assert fake.calls[-1] == ("delete_data", {})
+    # One human-readable service grant covers the registered tool set.
+    rt.policy_store.set(principal_id=owner, scope="mcp/demo", operation="*", decision="YES")
+    assert rt.capabilities.invoke("mcp.demo.read_data", {}, provenance=provenance).status == "succeeded"
+    assert rt.capabilities.invoke("mcp.demo.delete_data", {}, provenance=provenance).status == "succeeded"
+    assert fake.calls == [("read_data", {}), ("delete_data", {})]
+
+    # Rare narrow exceptions remain possible without turning Policy into a tool registry.
+    rt.policy_store.set(principal_id=owner, scope="mcp/demo/tool/delete_data", operation="invoke", decision="NO")
+    assert rt.capabilities.invoke("mcp.demo.delete_data", {}, provenance=provenance).status == "blocked"
+    assert fake.calls == [("read_data", {}), ("delete_data", {})]
 
 
 def test_mcp_server_id_must_be_policy_safe(tmp_path):

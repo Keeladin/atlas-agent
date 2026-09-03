@@ -12,7 +12,7 @@ Atlas is one living operational surface: dense with runtime truth, visually cont
 - One owner surface is primary; Work, Cadence, attention, conversation, evidence and current execution remain co-visible when relevant.
 - Deep configuration is plumbing. Policy, providers, connections, capabilities, filesystem details and raw receipts remain available through Control or inline expansion without becoming the primary navigation model.
 - Group by relationship before container. Use position, alignment, typography, hairlines, tone and depth before drawing a box.
-- Containers are reserved for real runtime boundaries: confirmation, destructive decisions, faults, isolated media viewports, and similar interventions.
+- Containers are reserved for real runtime boundaries: destructive decisions, faults, isolated media viewports, and similar interventions.
 - Motion communicates execution, arrival, provenance and state change. It is never decorative justification for an otherwise empty screen.
 
 ## Design dimensions
@@ -37,14 +37,14 @@ Conversation is not a separate product from Operations. Work, Cadence, evidence 
 
 ### Implemented owner surface
 
-The current `/chat` implementation is the reference expression of this doctrine: a compact Atlas header; a live awareness strip for Active Work, Cadence, Needs you and Control; a searchable conversation flow; a continuous transcript/composer; and an operational margin that keeps pending decisions, active Work, scheduled duties and plumbing links visible beside the objective. Work, Cadence, Sources, Memory, Operations and Control remain routed views, but the shell no longer presents them as equal permanent product tabs.
+The current `/chat` implementation is the reference expression of this doctrine: a compact Atlas header; a live awareness strip for Active Work, Cadence, Needs you and Control; a searchable conversation flow; a continuous transcript/composer; and an operational margin that keeps active Work, scheduled duties and plumbing links visible beside the objective. Work, Cadence, Sources, Memory, Operations and Control remain routed views, but the shell no longer presents them as equal permanent product tabs.
 
-Trace/evidence is expanded inline per turn. Pending exact confirmations are reconciled against the live pending-action set before controls are shown, so a historical turn cannot manufacture a second approval affordance after the runtime has moved on.
+Trace/evidence is expanded inline per turn, grounded directly from the durable action occurrence rather than reconstructed from chat-turn history.
 
 
 ### 4. State design
 
-Every primary surface must deliberately cover: initial, loading, empty/idle, active execution, partial/uncertain, failure and offline. Confirmation is an owner-attention state attached to the exact action it governs.
+Every primary surface must deliberately cover: initial, loading, empty/idle, active execution, partial/uncertain, failure and offline. Blocked is an owner-attention state tied to the exact policy scope that produced it, not a generic error message.
 
 ### 5. Content experience
 

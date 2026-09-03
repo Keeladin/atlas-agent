@@ -1,4 +1,4 @@
-export type Decision = 'NO' | 'YES' | 'CONFIRM'
+export type Decision = 'NO' | 'YES'
 
 export type ActionOccurrence = {
   occurrence_id: string
@@ -8,7 +8,7 @@ export type ActionOccurrence = {
   payload_sha256: string
   policy_decision: Decision
   policy_revision: number
-  status: 'blocked' | 'pending_confirmation' | 'executing' | 'succeeded' | 'failed' | 'uncertain' | 'expired' | 'cancelled'
+  status: 'blocked' | 'executing' | 'succeeded' | 'failed' | 'uncertain'
   work_id?: string | null
   step_id?: string | null
   summary?: string | null
@@ -17,7 +17,6 @@ export type ActionOccurrence = {
   error_code?: string | null
   error?: string | null
   created_at: string
-  confirmed_at?: string | null
   executed_at?: string | null
   completed_at?: string | null
 }

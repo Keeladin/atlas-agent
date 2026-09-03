@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '../api/client'
-import type { ActionOccurrence, Capability, Decision, MCPServer } from '../api/types'
-import { ConfirmationCard } from '../ui/ConfirmationCard'
+import type { ActionOccurrence, Capability, MCPServer } from '../api/types'
 import { Panel } from '../ui/Panel'
 import { SchemaForm } from '../ui/SchemaForm'
 import { initialPayload, requiredErrors } from '../ui/schemaFormModel'
@@ -44,8 +43,7 @@ function categoryForItem(item: Capability, servers: MCPServer[]) {
   return servers.some(server => server.server_id === serverId) ? capabilityCategory(item) : titleCase(item.source || item.id.split(/[._]/)[0] || 'General')
 }
 
-function CapabilityResult({ action, onDone, onResolved }: { action: ActionOccurrence; onDone: () => Promise<unknown>; onResolved: (action: ActionOccurrence) => void }) {
-  if (action.status === 'pending_confirmation') return <ConfirmationCard item={action} onDone={onDone} onResolved={onResolved} />
+function CapabilityResult({ action }: { action: ActionOccurrence }) {
   return <Panel title="Latest action" className="capability-result"><div className="capability-result-head"><span className={`chip ${action.status === 'succeeded' ? 'done' : action.status === 'failed' || action.status === 'blocked' ? 'failed' : ''}`}>{action.status}</span><span className="mono">{action.occurrence_id}</span></div>{action.summary ? <p>{action.summary}</p> : null}{action.error ? <p className="offline-banner">{action.error}</p> : null}{action.result !== undefined ? <details className="inspect"><summary>Result</summary><pre>{JSON.stringify(action.result, null, 2)}</pre></details> : null}{action.receipt ? <details className="inspect"><summary>Receipt</summary><pre>{JSON.stringify(action.receipt, null, 2)}</pre></details> : null}</Panel>
 }
 
@@ -60,22 +58,17 @@ function CapabilityDetail({ item, onDone }: { item: Capability; onDone: () => Pr
     mutationFn: () => api<{ action: ActionOccurrence }>(`/api/capabilities/${encodeURIComponent(item.id)}/invoke`, { method: 'POST', body: JSON.stringify({ input: payload }) }),
     onSuccess: async result => { setAction(result.action); await onDone() },
   })
-  const policy = useMutation({
-    mutationFn: (decision: Decision) => api('/api/policy', { method: 'POST', body: JSON.stringify({ scope: item.scope_hint, operation: item.operation, decision }) }),
-    onSuccess: onDone,
-  })
   const runDisabled = !item.available || (exactPolicyScope && item.policy_decision === 'NO') || missing.length > 0 || invoke.isPending
   return <div className="capability-detail-stack">
     <Panel className="capability-detail">
       <div className="capability-detail-heading"><div><span className="eyebrow">{item.source}</span><h2>{item.description}</h2><div className="policy-syntax">{item.id}</div></div><div className="capability-statuses"><span className={`chip ${item.available ? 'done' : 'failed'}`}>{item.available ? 'available' : 'unavailable'}</span><span className="chip">{item.effect_class}</span></div></div>
       {!item.available ? <p className="offline-banner">{item.availability_reason}</p> : null}
-      <div className="capability-control-strip"><div><span className="meta">Authority</span>{exactPolicyScope && item.scope_hint ? <select aria-label={`Authority for ${item.id}`} value={item.policy_decision} disabled={policy.isPending} onChange={event => policy.mutate(event.target.value as Decision)}><option>NO</option><option>YES</option><option>CONFIRM</option></select> : <strong>{item.policy_decision}</strong>}</div><div><span className="meta">Operation</span><strong>{item.operation}</strong></div><div><span className="meta">{exactPolicyScope ? 'Policy scope' : 'Scope hint'}</span><strong className="mono">{item.scope_hint ?? 'resolved at invocation'}</strong></div></div>
+      <div className="capability-control-strip"><div><span className="meta">Principal authority</span><strong>{item.policy_decision}</strong></div><div><span className="meta">Operation</span><strong>{item.operation}</strong></div><div><span className="meta">Resolved scope hint</span><strong className="mono">{item.scope_hint ?? 'resolved at invocation'}</strong></div></div>
       <div className="capability-input"><div className="capability-section-head"><h3>Input</h3>{missing.length ? <span className="schema-error">Required: {missing.join(', ')}</span> : null}</div><SchemaForm schema={item.input_schema ?? {}} value={payload} onChange={setPayload} /></div>
-      {policy.isError ? <p className="offline-banner">{policy.error.message}</p> : null}
       {invoke.isError ? <p className="offline-banner">{invoke.error.message}</p> : null}
-      <div className="capability-run-row"><div className="meta">{exactPolicyScope && item.policy_decision === 'NO' ? 'Exact runtime policy blocks this capability.' : !exactPolicyScope && item.policy_decision === 'NO' ? 'Policy at this scope hint is NO; Atlas resolves the normalized resource at invocation.' : item.policy_decision === 'CONFIRM' ? 'Run creates an exact durable confirmation when the resolved action requires it.' : 'Runtime policy currently allows direct execution at this scope.'}</div><button className="primary" type="button" disabled={runDisabled} onClick={() => invoke.mutate()}>{invoke.isPending ? 'Submitting…' : 'Run'}</button></div>
+      <div className="capability-run-row"><div className="meta">{exactPolicyScope && item.policy_decision === 'NO' ? 'Principal policy blocks this capability domain.' : !exactPolicyScope && item.policy_decision === 'NO' ? 'Policy at this scope hint is NO; the exact resource is resolved at invocation.' : 'Principal policy allows invocation; the registry contract still constrains the exact action.'}</div><button className="primary" type="button" disabled={runDisabled} onClick={() => invoke.mutate()}>{invoke.isPending ? 'Submitting…' : 'Run'}</button></div>
     </Panel>
-    {action ? <CapabilityResult action={action} onDone={onDone} onResolved={setAction} /> : null}
+    {action ? <CapabilityResult action={action} /> : null}
   </div>
 }
 

@@ -58,7 +58,7 @@ class Harness:
         self.indexing=IndexingRuntime(passages,generations,self.artifacts,self.sources);self.knowledge=KnowledgeRuntime(ks,self.registry,self.indexing)
         ws=WorkStore(work_db);ws.initialize();self.work=WorkRuntime(ws,self.capabilities,self.action_store);self.work_store=ws
         self.model=IntakeProvider();ins=ArtifactIntakeStore(work_db);ins.initialize();self.intake=ArtifactIntakeRuntime(ins,self.artifacts,self.model,self.work,self.registry,self.capabilities,representations=self.representations)
-        for scope,op,decision in [("files/local/manuals","diff","YES"),("files/local/manuals","inspect","YES"),("files/local/manuals","derive","YES"),("files/local/manuals","extract_text","YES"),("atlas/artifacts/intake","classify","YES"),("atlas/knowledge/index","index","YES"),("atlas/knowledge/index","verify","YES"),("atlas/knowledge/index","activate","CONFIRM")]:
+        for scope,op,decision in [("files/local/manuals","diff","YES"),("files/local/manuals","inspect","YES"),("files/local/manuals","derive","YES"),("files/local/manuals","extract_text","YES"),("atlas/artifacts/intake","classify","YES"),("atlas/knowledge/index","index","YES"),("atlas/knowledge/index","verify","YES"),("atlas/knowledge/index","activate","YES")]:
             self.policy_store.set(principal_id=self.owner.principal_id,scope=scope,operation=op,decision=decision)
     def invoke(self,cid,payload):return self.capabilities.invoke(cid,payload,provenance=InvocationProvenance(self.owner.principal_id,"human","control"))
     def artifact(self):
@@ -91,9 +91,6 @@ def test_knowledge_workflow_maps_semantic_text_need_to_runtime_extraction(tmp_pa
     work=routed.result["work"];assert work and work["display_ref"]=="AA-001"
     assert json.loads(routed.result["intake"]["representation_needs_json"])==["text"]
     steps=h.work_store.steps(work["work_id"]);assert steps[0].capability_id=="files.extract_text"
-    result=h.work.run(work["work_id"]);assert result["status"]=="waiting_confirmation"
-    occurrence_id=result["steps"][3]["occurrence_id"]
-    confirmed=h.actions.confirm(occurrence_id,principal_id=h.owner.principal_id);assert confirmed.status=="succeeded"
     completed=h.work.run(work["work_id"]);assert completed["status"]=="completed"
     rows=h.knowledge.retrieve("900 operating hours",limit=5,filters={"artifact_id":artifact_id})
     assert rows and "900 operating hours" in rows[0]["content"]

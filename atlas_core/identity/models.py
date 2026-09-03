@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-ATLAS_PRINCIPAL_ID="principal_atlas"
-
 @dataclass(frozen=True)
 class Principal:
     principal_id:str; principal_kind:str; display_name:str; status:str; created_at:str

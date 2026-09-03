@@ -26,7 +26,7 @@ def test_owner_control_routes_are_authenticated_and_policy_is_live(tmp_path, mon
         headers = {"X-CSRF-Token": csrf}
         state = client.get("/api/system")
         assert state.status_code == 200
-        assert state.json()["version"] == "3.0.0"
+        assert state.json()["version"] == "3.5.0"
 
         update = client.post(
             "/api/policy",
@@ -125,7 +125,7 @@ def test_conversation_delete_requires_csrf_and_removes_conversation(tmp_path, mo
         assert client.get(f"/api/chat/conversations/{cid}").status_code == 404
 
 
-def test_memory_routes_use_governed_capabilities_and_confirmation(tmp_path, monkeypatch):
+def test_memory_routes_use_governed_capabilities_without_confirmation_policy(tmp_path, monkeypatch):
     with _client(tmp_path, monkeypatch) as client:
         csrf = _login(client)
         headers = {"X-CSRF-Token": csrf}
@@ -145,19 +145,14 @@ def test_memory_routes_use_governed_capabilities_and_confirmation(tmp_path, monk
         assert client.get(f"/api/memory/{item_id}").json()["item"]["content"] == "I prefer metric units."
 
         assert client.post(f"/api/memory/{item_id}/purge").status_code == 403
-        pending = client.post(f"/api/memory/{item_id}/purge", headers=headers)
-        assert pending.status_code == 202
-        pending_action = pending.json()["action"]
-        assert pending_action["capability_id"] == "memory.purge"
-        assert pending_action["status"] == "pending_confirmation"
-
-        confirmed = client.post(
-            f"/api/actions/{pending_action['occurrence_id']}/confirm",
-            headers=headers,
-        )
-        assert confirmed.status_code == 200
-        assert confirmed.json()["action"]["status"] == "succeeded"
+        purged = client.post(f"/api/memory/{item_id}/purge", headers=headers)
+        assert purged.status_code == 200
+        purge_action = purged.json()["action"]
+        assert purge_action["capability_id"] == "memory.purge"
+        assert purge_action["status"] == "succeeded"
         assert client.get("/api/memory").json()["items"] == []
+        assert client.get("/api/actions/pending").status_code == 404
+        assert client.post(f"/api/actions/{purge_action['occurrence_id']}/confirm", headers=headers).status_code == 404
 
 
 def test_source_file_view_streams_governed_binary_content(tmp_path, monkeypatch):

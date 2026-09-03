@@ -1,6 +1,6 @@
 # P2 — Monitored Artifact Intake and Responsibility Routing
 
-> **Current status (2026-09-03):** Implemented historical slice. Its Artifact → inspect → classify → runtime-owned workflow boundary remains current, but later P3/P4/P4.5/P5 work expanded extraction, managed custody and multi-representation ingest. Use `Atlas Architecture — Runtime and Topology.md` for present-tense runtime truth.
+> **Current status (2026-09-03):** Implemented historical slice. Its Artifact → inspect → classify → runtime-owned workflow boundary remains current, but later P3/P4/P4.5/P5 work expanded extraction, managed custody and multi-representation ingest. Use `Atlas Architecture — Runtime and Topology.md` for present-tense runtime truth. Policy is now `NO`/`YES` only; generation activation is governed directly by principal authority and executes immediately when allowed.
 
 ## Approved responsibility model
 
@@ -53,7 +53,7 @@ The model selects only semantic class and workflow intent. Runtime validates tha
 
 At this P2 slice, `knowledge.ingest` is the only executable workflow template. An unavailable workflow is recorded as `workflow_unavailable`; Atlas does not invent steps to make it executable.
 
-`knowledge.ingest` currently projects to governed extraction → indexing → deterministic generation verification → CONFIRM-gated activation only when the inspection shows a representation the present pipeline can cover. A compound or unsupported artifact may still be correctly classified as `knowledge.ingest`, but intake records `workflow_unavailable_for_artifact` and creates no doomed Work. The workflow may later gain PDF, Office, vision, table or other representation handlers without changing intake classification.
+`knowledge.ingest` currently projects to governed extraction → indexing → deterministic generation verification → governed activation only when the inspection shows a representation the present pipeline can cover. A compound or unsupported artifact may still be correctly classified as `knowledge.ingest`, but intake records `workflow_unavailable_for_artifact` and creates no doomed Work. The workflow may later gain PDF, Office, vision, table or other representation handlers without changing intake classification.
 
 Source diffing remains deterministic. New paths are established as Artifacts before classification; changed and missing facets are marked stale/missing. Classification and routing occur only after Artifact identity exists.
 ## Bounded compound-artifact inspection

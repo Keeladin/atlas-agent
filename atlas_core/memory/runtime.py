@@ -225,6 +225,14 @@ def _redact_occurrences(db: sqlite3.Connection, actions_store: ActionStore, *, p
             hash_match = hash_match or memory_content_hash(summary) in content_hashes
         if not (item_match or hash_match):
             continue
+        if row["status"] == "executing":
+            # The current purge occurrence necessarily matches its own item id,
+            # but its exact schema cannot retain memory content. Any other
+            # matching in-flight action may later become terminal with content
+            # that this transaction could not safely redact.
+            if row["capability_id"] == "memory.purge":
+                continue
+            raise RuntimeError("matching memory occurrence is still executing")
         fields: list[str] = []
         encoded: dict[str, str | None] = {}
         for column, value in decoded.items():

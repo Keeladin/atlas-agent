@@ -7,21 +7,24 @@ from starlette.testclient import TestClient
 
 from atlas_api.app import create_app
 from atlas_api.compose import build_runtime
+from atlas_core.provenance import InvocationProvenance
 
 
-def test_sensitive_host_policy_is_visible_and_owner_can_override(tmp_path):
+def test_sensitive_host_paths_are_registry_boundaries_not_policy_rows(tmp_path):
     rt = build_runtime(tmp_path / "instance")
     owner = rt.identities.current_owner().principal_id
-    secret_scope = "host/filesystem" + str((rt.instance_root / "secrets").resolve())
+    secret = rt.instance_root / "secrets" / "master.key"
+    secret.parent.mkdir(parents=True, exist_ok=True); secret.write_text("secret")
 
-    generic = rt.policy.resolve(principal_id=owner, scope="host/filesystem/tmp/example", operation="read")
-    sensitive = rt.policy.resolve(principal_id=owner, scope=secret_scope + "/master.key", operation="read")
-    assert generic.decision == "YES"
-    assert sensitive.decision == "NO"
-
-    rt.policy_store.set(principal_id=owner, scope=secret_scope, operation="read", decision="YES")
-    overridden = rt.policy.resolve(principal_id=owner, scope=secret_scope + "/master.key", operation="read")
-    assert overridden.decision == "YES"
+    assert rt.policy.resolve(principal_id=owner, scope=f"host/filesystem{secret}", operation="read").decision == "YES"
+    # Even an explicit YES cannot widen a capability's hard path boundary.
+    rt.policy_store.set(principal_id=owner, scope=f"host/filesystem{secret.parent}", operation="read", decision="YES")
+    try:
+        rt.capabilities.invoke("host.filesystem.read", {"path": str(secret)}, provenance=InvocationProvenance(owner, "human", "control"))
+    except ValueError as exc:
+        assert "capability boundary" in str(exc)
+    else:
+        raise AssertionError("protected path escaped the host filesystem capability contract")
 
 
 def test_credential_store_is_group_private(tmp_path):

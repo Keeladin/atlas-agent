@@ -18,7 +18,7 @@ Atlas persists the state that matters across sessions:
 - provider and MCP configuration;
 - source enrollment;
 - owner policy;
-- action occurrences, confirmations and evidence.
+- action occurrences and evidence.
 
 The state is explicit and queryable rather than reconstructed from prompt history.
 
@@ -32,7 +32,7 @@ Persistent Memory is structurally separate from Knowledge. Current Memory V2 kee
 
 Atlas can create durable Work consisting of explicit semantic capability steps. Work is not granted a frozen scalar authority level.
 
-Each step is resolved against current runtime policy when it actually executes. If policy requires confirmation, the Work waits on the same durable action occurrence used by Chat and direct control surfaces.
+Each step is resolved against current runtime policy when it actually executes. If the resulting outcome is unverified, the Work waits on the same durable `uncertain` action occurrence used by Chat and direct control surfaces until it is reconciled.
 
 ### Done means
 
@@ -42,7 +42,7 @@ A policy change made after Work was created still governs the eventual side effe
 
 Atlas maintains one capability inventory containing native operations plus every tool discovered from enabled MCP/n8n servers.
 
-Availability, capability and authority are separate facts. A connected tool may be visible and technically available while runtime policy is `NO` or `CONFIRM`.
+Availability, capability and authority are separate facts. A connected tool may be visible and technically available while runtime policy is `NO`.
 
 ### Done means
 
@@ -50,9 +50,9 @@ Connecting or refreshing an MCP server updates both the live capability inventor
 
 ## Responsibility 4 — Act under literal owner policy
 
-Owner policy resolves an exact semantic operation on an exact normalized resource to one of `NO`, `YES` or `CONFIRM`.
+Owner policy resolves an exact semantic operation on an exact normalized resource to `NO` or `YES`.
 
-No policy row resolves to `NO`. `CONFIRM` is durable, exact-payload bound and rechecked immediately before execution.
+No matching policy row resolves to `NO`. Resolution and execution happen within the same request — there is no separate pending state to reopen or replay.
 
 ### Done means
 
@@ -88,12 +88,12 @@ The greenfield runtime currently owns:
 - Work and Cadence;
 - Knowledge references/notes and first-class owner Memory with supersession, retraction, recall and governed purge;
 - native file and host capabilities, including exact Debian package inspection and broker-mediated package mutation;
-- provider-neutral public-web search, read, fetch, extraction, confirmed download, bounded same-origin crawl, and read-only JavaScript rendering, with deterministic translation of provider-native streams into versioned `data_only` evidence plus provenance before reasoning;
+- provider-neutral public-web search, read, fetch, extraction, governed download, bounded same-origin crawl, and read-only JavaScript rendering, with deterministic translation of provider-native streams into versioned `data_only` evidence plus provenance before reasoning;
 - model and web-provider configuration, encrypted credential custody, model execution, and local embedding retrieval for Memory/capability discovery;
 - generic MCP/n8n discovery and invocation;
 - generic Streamable HTTP and stdio MCP capability providers, including a narrow Termux/SSH Android-phone provider for location, telephony inspection and SMS;
 - Discovery-driven Google Workspace capabilities for Gmail, Drive and Calendar;
-- runtime owner policy and exact confirmation;
+- runtime owner policy;
 - evidence and verification state;
 - Companion runtime control.
 

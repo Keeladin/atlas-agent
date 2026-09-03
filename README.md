@@ -11,7 +11,7 @@ intent
   -> capability
   -> deterministic scope resolution
   -> owner runtime policy
-  -> NO | YES | CONFIRM
+  -> NO | YES
   -> execution invariants
   -> provider / OS
   -> evidence + verification
@@ -29,8 +29,7 @@ Atlas currently includes:
 
 - authenticated conversational Chat;
 - durable Work and recurring Cadence, with governed compound-Artifact inspection and semantic intake/classification occurring before Work is created;
-- an append-only owner policy with literal `NO`, `YES` and `CONFIRM` decisions;
-- durable exact-action confirmations bound to the normalized payload hash;
+- an append-only owner policy with literal `NO` and `YES` decisions;
 - full discovered MCP and n8n capability inventory;
 - generic MCP over Streamable HTTP and local stdio transports;
 - a Discovery-driven Google Workspace provider surface for Gmail, Drive and Calendar;
@@ -58,12 +57,11 @@ The semantics are exact:
 
 - `NO`: do not execute;
 - `YES`: execute;
-- `CONFIRM`: create a durable exact-action occurrence and wait for the authenticated owner;
 - no matching policy row: `NO`.
 
-Policy is resolved after the resource scope and payload are normalized. `CONFIRM` is re-resolved immediately before execution, so a later `NO` stops the action. Work steps cross the same gate when they actually run.
+Policy is resolved after the resource scope and payload are normalized, and execution follows in the same request — there is no separate confirmation step to re-resolve later. Work steps cross the same gate when they actually run.
 
-Policy history is append-only. More-specific resource scopes override broader scopes. Explicit sensitive-child rules are visible policy rows, not a hidden deny layer.
+Policy history is append-only. More-specific resource scopes override broader scopes. Default seeding is coarse — whole top-level domains (`atlas/*`, `files/*`, `web/*`, each `host/*` domain) are seeded `YES` in one row — and an owner narrows a specific operation or resource with a more specific row rather than a separate mechanism. The one exception is host access to a fixed set of sensitive filesystem paths, which is a hard code boundary ahead of policy, not a policy row.
 
 Authentication, provider attestation, schema validation, filesystem containment and other technical constraints remain execution invariants rather than competing permission systems.
 
@@ -79,7 +77,7 @@ Production n8n is connected through n8n's built-in instance MCP endpoint as `n8n
 
 Google Workspace is integrated as a provider rather than a mail subsystem: Google Discovery defines the Gmail, Drive and Calendar method surface, the provider exposes those methods through MCP, and Atlas policy governs each discovered tool. Provider adapters may normalize excessively verbose external response formats into compact structured results before they cross the generic MCP boundary; Chat does not contain Gmail-specific parsing or truncation logic. Atlas does not maintain a parallel `mail.read` / `mail.send` semantic API. The provider keeps its `gws` OAuth/config state under the external production-state tree rather than inside the Git checkout.
 
-The conversational model selects capabilities and arguments. It does not decide whether the operation is allowed and cannot manufacture confirmation. Chat's schema-rich shortlist is retrieved from the live registry with a hybrid ranker: exact/tool-name matches and deterministic sparse metadata/schema matching are fused with local dense embeddings by reciprocal-rank fusion. The current production embedding implementation is FastEmbed `BAAI/bge-small-en-v1.5`; its model snapshot/package/dimension/normalization identity is explicit and it remains derived retrieval machinery, not durable capability truth. Tool-result bounding preserves capability/status/trust envelopes and drops older results before corrupting the newest result into an unusable raw JSON tail. An unmatched capability query falls back only to the small core signpost set, never to an alphabetical slice of the registry.
+The conversational model selects capabilities and arguments. It does not decide whether the operation is allowed. Chat's schema-rich shortlist is retrieved from the live registry with a hybrid ranker: exact/tool-name matches and deterministic sparse metadata/schema matching are fused with local dense embeddings by reciprocal-rank fusion. The current production embedding implementation is FastEmbed `BAAI/bge-small-en-v1.5`; its model snapshot/package/dimension/normalization identity is explicit and it remains derived retrieval machinery, not durable capability truth. Tool-result bounding preserves capability/status/trust envelopes and drops older results before corrupting the newest result into an unusable raw JSON tail. An unmatched capability query falls back only to the small core signpost set, never to an alphabetical slice of the registry.
 
 ## Persistence
 
@@ -114,7 +112,7 @@ google-workspace/config/                        owner-only legacy interactive OA
 google-workspace/workspace/                     bounded provider upload/download workspace
 ```
 
-The registered `google-workspace` MCP server launches `atlas_providers.google_workspace_mcp`, which derives Gmail, Drive and Calendar tools from Google Discovery and dispatches them through the current `gws` binary. Production uses gws's documented headless credentials-file flow: the exported authorized-user JSON remains outside Git and is readable only by the owner and the `atlas` service account, while gws writes refresh/cache state into an Atlas-owned `runtime-config/` directory. The older interactive config remains owner-only and is not used by the running service. This OAuth/config state is technical provider custody; Atlas `NO` / `YES` / `CONFIRM` policy remains the sole discretionary authority.
+The registered `google-workspace` MCP server launches `atlas_providers.google_workspace_mcp`, which derives Gmail, Drive and Calendar tools from Google Discovery and dispatches them through the current `gws` binary. Production uses gws's documented headless credentials-file flow: the exported authorized-user JSON remains outside Git and is readable only by the owner and the `atlas` service account, while gws writes refresh/cache state into an Atlas-owned `runtime-config/` directory. The older interactive config remains owner-only and is not used by the running service. This OAuth/config state is technical provider custody; Atlas `NO` / `YES` policy remains the sole discretionary authority.
 
 The stdio MCP boundary keeps one provider session alive across calls and reconnects only after transport failure; it does not replay a failed invocation. Discovery documents are cached on disk with stale-cache fallback, and inventory refresh is discover-then-swap so a transient refresh failure retains the last known-good capability set while surfacing stale status. Provider errors preserve their concrete message for bounded Chat recovery, advertised schemas are size/depth bounded, and normalized capability-id collisions are rejected rather than shadowed. Google Workspace response normalization is exact-binding-specific: Gmail message/thread reads are compacted and MIME text is decoded before model context, while Drive metadata reads remain metadata operations unless media download is explicitly requested.
 
@@ -124,15 +122,15 @@ Memory is a first-class runtime responsibility, not a `knowledge_items` subtype.
 
 The previous `memory_items` table is not queried by Memory V2 and is not migrated automatically. `atlas_core.memory.legacy.LegacyMemoryStore` exists as an explicit legacy adapter; production data in the old table remains preserved until an intentional migration is performed. Knowledge passage retrieval is still FTS-based today; the new dense index is not a claim that OEM/Knowledge retrieval has already been converted to vectors.
 
-Owner-turn auto-capture runs only after the conversational reply is already produced. It reconciles an exact owner-grounded excerpt into the existing governed `memory.remember`, `memory.update` or `memory.retract` capabilities. There is no `memory.capture` authority shortcut: each real operation resolves its own live `NO` / `YES` / `CONFIRM` policy.
+Owner-turn auto-capture runs only after the conversational reply is already produced. It reconciles an exact owner-grounded excerpt into the existing governed `memory.remember`, `memory.update` or `memory.retract` capabilities. There is no `memory.capture` authority shortcut: each real operation resolves its own live `NO` / `YES` policy.
 
 `memory.purge` is application-level suppression plus content redaction. It deletes the whole supersession chain and its FTS rows and scrubs matching terminal `atlas/memory` action/evidence content in one `atlas-work.db` transaction. It deliberately retains action identity, state, policy history and the original `payload_sha256` attestation. The originating conversation is stored separately in `atlas-chat.db` and must be deleted separately if the owner wants those source turns removed. Atlas does not claim forensic storage erasure.
 
 ## Companion
 
-Companion now opens on one owner surface rather than a permanent four-item product nav. The `/chat` surface combines the current conversation with an operational-awareness strip for Active Work, Cadence, Needs you and Control, plus a live right margin for pending owner decisions, active Work, scheduled duties and deeper plumbing links. Work, Cadence, Sources, Memory and Control remain real routes and deep operational views, but they are subordinate to the owner surface rather than competing top-level products.
+Companion now opens on one owner surface rather than a permanent four-item product nav. The `/chat` surface combines the current conversation with an operational-awareness strip for Active Work, Cadence, Needs you and Control, plus a live right margin for active Work, scheduled duties and deeper plumbing links. Work, Cadence, Sources, Memory and Control remain real routes and deep operational views, but they are subordinate to the owner surface rather than competing top-level products.
 
-`/atlas` is the technical Control surface. It shows and edits the live runtime configuration: policy, providers, MCP/n8n servers, external account bindings, source roots, host state, pending confirmations and capability inventory. The Capabilities view is runtime-driven: newly discovered tools appear without a frontend code change, and their advertised schemas drive the generic input form and execution controls.
+`/atlas` is the technical Control surface. It shows and edits the live runtime configuration: policy, providers, MCP/n8n servers, external account bindings, source roots, host state and capability inventory. The Capabilities view is runtime-driven: newly discovered tools appear without a frontend code change, and their advertised schemas drive the generic input form and execution controls.
 
 There is no `Now` page and no Morning UI. The PWA manifest, favicon and installed-app icons use the current blue/cyan/violet Atlas identity; legacy gold startup artwork is not part of the checked-in interface.
 
@@ -154,7 +152,7 @@ Atlas binds only to loopback. Caddy provides the external HTTPS boundary:
 Internet -> Caddy -> 127.0.0.1:8080 -> atlas-api.service
 ```
 
-Host service capabilities use `systemctl --user`. Runtime policy, not systemd, decides whether status, logs, start, stop or restart are `NO`, `YES` or `CONFIRM`. Read-only system-service inspection uses the system manager separately. Debian package mutations never run through arbitrary shell or sudo from Atlas: when installed, the root-owned `atlas-package-broker` accepts only the Atlas service UID over `/run/atlas-package-broker/control.sock` and dispatches fixed `apt-get` vectors after the ordinary runtime gate.
+Host service capabilities use `systemctl --user`. Runtime policy, not systemd, decides whether status, logs, start, stop or restart are `NO` or `YES`. Read-only system-service inspection uses the system manager separately. Debian package mutations never run through arbitrary shell or sudo from Atlas: when installed, the root-owned `atlas-package-broker` accepts only the Atlas service UID over `/run/atlas-package-broker/control.sock` and dispatches fixed `apt-get` vectors after the ordinary runtime gate.
 
 The optional `android-phone` stdio MCP provider is also an external boundary. Production currently reaches the owner's Termux device through a pinned SSH identity/known-hosts bridge and exposes only the provider-advertised location, telephony-inspection and SMS tools; each discovered tool remains governed as an ordinary MCP capability.
 
@@ -186,9 +184,9 @@ uv run python -m atlas_api \
 
 ```text
 atlas_core/
-  actions/        canonical action/confirmation gate
+  actions/        canonical action execution gate
   capabilities/   inventory, schemas and scope resolution
-  policy/         append-only NO/YES/CONFIRM policy
+  policy/         append-only NO/YES policy
   identity/       principals, account connections and technical bindings
   providers/      model contracts, HTTP adapters and runtime settings
   mcp/            generic MCP/n8n discovery and dispatch

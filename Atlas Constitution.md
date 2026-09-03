@@ -51,20 +51,17 @@ Owner discretion is expressed only through runtime policy on the resolved semant
 The policy vocabulary is literal:
 
 ```text
-NO       Atlas does not execute it.
-YES      Atlas executes it.
-CONFIRM  Atlas waits for exact owner confirmation, then executes it.
+NO   Atlas does not execute it.
+YES  Atlas executes it.
 ```
 
 No matching policy row means `NO`.
 
-## 8. Confirmation is an execution state, not another permission system
+## 8. Execution is atomic, not staged
 
-`CONFIRM` binds the normalized operation, resource, payload digest and principal to a durable action occurrence.
+An action either resolves to `NO` and never executes, or resolves to `YES` and executes immediately as part of the same request. There is no intermediate pending state for the model or a client to hold open, replay, or resubmit with a different payload.
 
-Confirmation must be owner-authenticated. The model cannot self-confirm and a client cannot smuggle a generic `confirmed=true` flag into execution.
-
-Policy is resolved again immediately before the side effect. A current `NO` stops a previously pending confirmation.
+The one governed exception is `memory.purge`, which may redact content already recorded in a terminal action's history. It strips content, never rewrites what happened, and can never touch an action that is still executing.
 
 ## 9. Hard invariants remain hard
 
@@ -100,7 +97,7 @@ Provider choice may consider competence, latency, privacy, cost, context and ava
 
 Atlas serves the owner's objectives and has no mandate to create independent objectives or expand its own authority.
 
-Policy mutation is an authenticated owner-control responsibility. Atlas must not self-elevate, bypass `CONFIRM`, broaden OS privilege, rewrite identity requirements or silently convert `NO` to another decision.
+Policy mutation is an authenticated owner-control responsibility. Atlas must not self-elevate, broaden OS privilege, rewrite identity requirements or silently convert `NO` to `YES`.
 
 ## 14. Simplicity must be defended
 

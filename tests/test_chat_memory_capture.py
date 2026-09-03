@@ -39,10 +39,10 @@ def test_post_reply_auto_capture_uses_real_governed_remember(tmp_path):
     assert actions[0].scope == "atlas/memory"
 
 
-def test_post_reply_capture_does_not_hijack_reply_when_policy_confirms(tmp_path):
+def test_post_reply_capture_yes_executes_without_hijacking_reply(tmp_path):
     rt = build_runtime(tmp_path / "instance")
     owner = rt.identities.current_owner()
-    rt.policy_store.set(principal_id=owner.principal_id, scope="atlas/memory", operation="remember", decision="CONFIRM")
+    rt.policy_store.set(principal_id=owner.principal_id, scope="atlas/memory", operation="remember", decision="YES")
     cid = rt.chat_store.create_conversation("Memory")["conversation_id"]
     provider = ScriptedProvider([
         '{"kind":"reply","reply":"That makes sense."}',
@@ -54,9 +54,9 @@ def test_post_reply_capture_does_not_hijack_reply_when_policy_confirms(tmp_path)
 
     assert result == {"turn": result["turn"]}
     assert result["turn"]["content"] == "That makes sense."
-    pending = [x for x in rt.actions_store.pending(principal_id=owner.principal_id) if x.capability_id == "memory.remember"]
-    assert len(pending) == 1
-    assert rt.memory_store.recent(owner.principal_id) == ()
+    actions = [x for x in rt.actions_store.recent() if x.capability_id == "memory.remember"]
+    assert len(actions) == 1 and actions[0].status == "succeeded"
+    assert rt.memory_store.recent(owner.principal_id)[0]["content"] == "I prefer quiet mornings"
 
 
 def test_post_reply_capture_submits_even_when_policy_is_no(tmp_path):

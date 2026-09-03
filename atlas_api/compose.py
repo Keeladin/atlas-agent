@@ -87,7 +87,7 @@ class AtlasRuntime:
     def public_state(self) -> dict[str, Any]:
         owner = self.identities.current_owner()
         return {
-            "version": "3.0.0",
+            "version": "3.5.0",
             "owner": owner.as_dict(),
             "policy_revision": self.policy_store.revision(),
             "providers": list(self.providers.public_state()),
@@ -96,83 +96,33 @@ class AtlasRuntime:
             "source_roots": [row for row in self.sources.public_state() if row.get("provider_namespace") != MANAGED_PROVIDER_NAMESPACE],
             "connections": [item.as_dict() for item in self.identities.connections(owner_principal_id=owner.principal_id)],
             "service_bindings": [item.as_dict() for item in self.identities.service_bindings()],
-            "pending_confirmations": [item.public() for item in self.actions_store.pending(principal_id=owner.principal_id)],
             "capabilities": [item.as_dict() for item in self.capabilities.snapshot(principal_id=owner.principal_id)],
         }
 
     def seed_policy(self) -> None:
+        """Seed coarse principal authority domains only.
+
+        Capability registration and provider discovery never grant authority. Fine-grained
+        execution constraints remain in capability contracts and deterministic resolvers.
+        """
         owner = self.identities.current_owner().principal_id
         seeds = [
-            ("atlas/knowledge", "search", "YES"),
-            ("atlas/knowledge", "retrieve", "YES"),
-            ("atlas/knowledge", "promote", "YES"),
-            ("atlas/knowledge", "delete", "CONFIRM"),
-            ("atlas/knowledge/index", "index", "YES"),
-            ("atlas/knowledge/index", "verify", "YES"),
-            ("atlas/knowledge/index", "activate", "CONFIRM"),
-            ("atlas/library", "scan", "YES"),
-            ("atlas/library", "materialize", "YES"),
-            ("atlas/library", "review", "YES"),
-            ("atlas/artifacts", "search", "YES"),
-            ("atlas/artifacts", "inspect", "YES"),
-            ("atlas/artifacts/intake", "classify", "YES"),
-            ("atlas/model", "infer", "YES"),
-            ("atlas/memory", "search", "YES"),
-            ("atlas/memory", "remember", "YES"),
-            ("atlas/memory", "update", "YES"),
-            ("atlas/memory", "retract", "YES"),
-            ("atlas/memory", "restore", "CONFIRM"),
-            ("atlas/memory", "purge", "CONFIRM"),
-            ("atlas/work", "create", "YES"),
-            ("atlas/cadence", "create", "YES"),
-            ("web", "search", "YES"),
-            ("web", "read", "YES"),
-            ("web", "fetch", "YES"),
-            ("web", "extract", "YES"),
-            ("web", "crawl", "YES"),
-            ("web", "download", "CONFIRM"),
-            ("web", "render", "YES"),
-            ("host/status", "inspect", "YES"),
-            ("host/resources", "inspect", "YES"),
-            ("host/storage", "inspect", "YES"),
-            ("host/filesystem", "list", "YES"),
-            ("host/filesystem", "stat", "YES"),
-            ("host/filesystem", "read", "YES"),
-            ("host/service", "status", "YES"),
-            ("host/service", "logs", "YES"),
-            ("host/service", "start", "CONFIRM"),
-            ("host/service", "stop", "CONFIRM"),
-            ("host/service", "restart", "CONFIRM"),
-            ("host/service/system", "status", "YES"),
-            ("host/service/system", "logs", "YES"),
-            ("host/package", "inspect", "YES"),
-            ("host/package", "install", "CONFIRM"),
-            ("host/package", "remove", "CONFIRM"),
-            ("host/package/index", "refresh", "CONFIRM"),
+            ("atlas", "*", "YES"),
+            ("files", "*", "YES"),
+            ("web", "*", "YES"),
+            ("host/status", "*", "YES"),
+            ("host/resources", "*", "YES"),
+            ("host/storage", "*", "YES"),
+            ("host/filesystem", "*", "YES"),
+            ("host/service", "*", "YES"),
+            ("host/package", "*", "YES"),
         ]
-        sensitive_host = [Path("/etc/shadow"), Path("/etc/gshadow"), Path("/root"), self.instance_root / "secrets", self.instance_root / "companion-auth.env"]
-        parts = self.instance_root.resolve().parts
-        if len(parts) > 2 and parts[1] == "home":
-            owner_home = Path("/home") / parts[2]
-            sensitive_host.extend((owner_home / ".ssh", owner_home / ".gnupg"))
-        for path in sensitive_host:
-            seeds.append(("host/filesystem" + str(path.resolve()), "*", "NO"))
-        for root in self.source_roots.all():
-            scope = f"files/{root.provider_namespace}/{root.root_id}"
-            seeds.extend((scope, op, decision) for op, decision in [
-                ("list", "YES"), ("stat", "YES"), ("hash", "YES"), ("read", "YES"), ("inspect", "YES"), ("extract_text", "YES"), ("derive", "YES"), ("interpret", "YES"), ("diff", "YES"), ("verify_format", "YES"), ("acquire", "YES"), ("intake", "YES"),
-                ("copy", "CONFIRM"), ("move", "CONFIRM"), ("rename", "CONFIRM"),
-                ("delete", "CONFIRM"), ("restore", "CONFIRM"),
-            ])
-            for child in (".ssh", ".gnupg", "secrets"):
-                seeds.append((f"{scope}/{child}", "*", "NO"))
-        for server in self.mcp_store.all():
-            seeds.append((f"mcp/{server.server_id}", "invoke", "CONFIRM"))
         for scope, operation, decision in seeds:
             self.policy_store.seed_if_absent(
                 principal_id=owner, scope=scope, operation=operation, decision=decision,
-                reason="visible initial runtime policy",
+                reason="v3.5 coarse principal authority",
             )
+
 
 
 def build_runtime(instance_root: str | Path) -> AtlasRuntime:
@@ -211,8 +161,7 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
 
     embedding_provider = build_embedding_provider(cache_dir=root / "models" / "embeddings")
 
-    # ActionRuntime resolves the executor at execution time so pending CONFIRM
-    # occurrences survive capability refreshes and process restarts.
+    # Executors are resolved at execution time so the registry remains runtime truth.
     actions = ActionRuntime(policy=policy, store=actions_store, evidence=evidence, executor_resolver=registry.executor)
     capabilities = CapabilityRuntime(registry, actions, policy)
 
@@ -224,7 +173,12 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     web = WebRuntime(registry, web_providers, managed_root / "web", browser=web_browser)
     artifacts = ArtifactRuntime(artifact_store, registry, sources)
     managed_intake = ManagedIntakeRuntime(artifact_store, sources, registry)
-    host = HostRuntime(registry, actions_store)
+    sensitive_host = [Path("/etc/shadow"), Path("/etc/gshadow"), Path("/root"), root / "secrets", root / "companion-auth.env"]
+    parts = root.resolve().parts
+    if len(parts) > 2 and parts[1] == "home":
+        owner_home = Path("/home") / parts[2]
+        sensitive_host.extend((owner_home / ".ssh", owner_home / ".gnupg"))
+    host = HostRuntime(registry, actions_store, protected_paths=tuple(sensitive_host))
     knowledge_store = KnowledgeStore(work_database); knowledge_store.initialize()
     passages = PassageStore(work_database); passages.initialize()
     generations = GenerationStore(work_database); generations.initialize()

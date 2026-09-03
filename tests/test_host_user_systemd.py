@@ -11,7 +11,7 @@ def _completed(args, stdout="", stderr="", code=0):
     return subprocess.CompletedProcess(args, code, stdout=stdout, stderr=stderr)
 
 
-def test_host_service_uses_user_manager_and_runtime_confirm(tmp_path, monkeypatch):
+def test_host_service_uses_user_manager_and_principal_policy(tmp_path, monkeypatch):
     rt = build_runtime(tmp_path / "instance")
     owner = rt.identities.current_owner().principal_id
     calls: list[list[str]] = []
@@ -34,12 +34,14 @@ def test_host_service_uses_user_manager_and_runtime_confirm(tmp_path, monkeypatc
     restart = rt.capabilities.invoke(
         "host.service.restart", {"unit": "demo.service"}, provenance=provenance,
     )
-    assert restart.status == "pending_confirmation"
-    assert not any("restart" in call for call in calls)
-
-    confirmed = rt.actions.confirm(restart.occurrence_id, principal_id=owner)
-    assert confirmed.status == "succeeded"
+    assert restart.status == "succeeded"
     assert calls[-1] == ["systemctl", "--user", "restart", "demo.service", "--no-block"]
+
+    rt.policy_store.set(principal_id=owner, scope="host/service/demo.service", operation="restart", decision="NO")
+    before = len(calls)
+    blocked = rt.capabilities.invoke("host.service.restart", {"unit": "demo.service"}, provenance=provenance)
+    assert blocked.status == "blocked"
+    assert len(calls) == before
 
     logs = rt.capabilities.invoke(
         "host.service.logs", {"unit": "demo.service", "lines": 20}, provenance=provenance,

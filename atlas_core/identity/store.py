@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
-from .models import ATLAS_PRINCIPAL_ID, AccountConnection, Principal, ServiceBinding
+from .models import AccountConnection, Principal, ServiceBinding
 
 class IdentityError(ValueError): pass
 
@@ -24,16 +24,25 @@ class IdentityStore:
         with self._db() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
-            CREATE TABLE IF NOT EXISTS principals(principal_id TEXT PRIMARY KEY,principal_kind TEXT NOT NULL CHECK(principal_kind IN ('atlas','human','service')),display_name TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('active','suspended','retired')),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-            CREATE UNIQUE INDEX IF NOT EXISTS one_atlas_principal ON principals(principal_kind) WHERE principal_kind='atlas';
+            CREATE TABLE IF NOT EXISTS principals(principal_id TEXT PRIMARY KEY,principal_kind TEXT NOT NULL CHECK(principal_kind IN ('human','service')),display_name TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('active','suspended','retired')),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE UNIQUE INDEX IF NOT EXISTS one_human_principal ON principals(principal_kind) WHERE principal_kind='human';
             CREATE TABLE IF NOT EXISTS identity_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS account_connections(connection_id TEXT PRIMARY KEY,provider_id TEXT NOT NULL,provider_subject_id TEXT NOT NULL,canonical_address TEXT NOT NULL,tenant_id TEXT,display_name TEXT NOT NULL,owner_principal_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('active','inactive','disconnected','revoked')),identity_profile_version TEXT NOT NULL,provider_metadata_json TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(owner_principal_id) REFERENCES principals(principal_id),UNIQUE(provider_id,owner_principal_id,provider_subject_id));
             CREATE TABLE IF NOT EXISTS service_bindings(binding_id TEXT PRIMARY KEY,connection_id TEXT NOT NULL,service TEXT NOT NULL,channel TEXT NOT NULL,dispatch_ref TEXT NOT NULL,attested_operations_json TEXT NOT NULL,service_profile_version TEXT NOT NULL,health TEXT NOT NULL CHECK(health IN ('unknown','ready','degraded','down')),lifecycle TEXT NOT NULL CHECK(lifecycle IN ('pending_attest','connected','disabled')),attested_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(connection_id) REFERENCES account_connections(connection_id),UNIQUE(connection_id,service,channel));
             """)
-            db.execute("INSERT OR IGNORE INTO principals(principal_id,principal_kind,display_name,status) VALUES (?,?,?,'active')",(ATLAS_PRINCIPAL_ID,"atlas","Atlas"))
-            owner=db.execute("SELECT value FROM identity_settings WHERE key='current_human_principal_id'").fetchone()
+            owner=db.execute("SELECT value FROM identity_settings WHERE key='current_principal_id'").fetchone()
             if owner is None:
-                oid=f"principal_{uuid4().hex}";db.execute("INSERT INTO principals(principal_id,principal_kind,display_name,status) VALUES (?,?,?,'active')",(oid,"human",owner_display_name));db.execute("INSERT INTO identity_settings(key,value) VALUES ('current_human_principal_id',?)",(oid,))
+                legacy=db.execute("SELECT value FROM identity_settings WHERE key='current_human_principal_id'").fetchone()
+                if legacy is not None:
+                    oid=str(legacy["value"])
+                    row=db.execute("SELECT principal_kind FROM principals WHERE principal_id=?",(oid,)).fetchone()
+                    if row is None or row["principal_kind"]!="human":raise IdentityError("legacy_owner_invalid")
+                else:
+                    existing=db.execute("SELECT principal_id FROM principals WHERE principal_kind='human' ORDER BY created_at,principal_id LIMIT 1").fetchone()
+                    oid=str(existing["principal_id"]) if existing is not None else f"principal_{uuid4().hex}"
+                    if existing is None:db.execute("INSERT INTO principals(principal_id,principal_kind,display_name,status) VALUES (?,?,?,'active')",(oid,"human",owner_display_name))
+                db.execute("INSERT INTO identity_settings(key,value) VALUES ('current_principal_id',?)",(oid,))
+                db.execute("DELETE FROM identity_settings WHERE key='current_human_principal_id'")
     def principal(self,principal_id:str,*,require_active:bool=True)->Principal:
         with self._db() as db:row=db.execute("SELECT * FROM principals WHERE principal_id=?",(principal_id,)).fetchone()
         if row is None:raise IdentityError("principal_unknown")
@@ -41,7 +50,7 @@ class IdentityStore:
         if require_active and item.status!="active":raise IdentityError("principal_inactive")
         return item
     def current_owner(self)->Principal:
-        with self._db() as db:row=db.execute("SELECT value FROM identity_settings WHERE key='current_human_principal_id'").fetchone()
+        with self._db() as db:row=db.execute("SELECT value FROM identity_settings WHERE key='current_principal_id'").fetchone()
         if row is None:raise IdentityError("owner_not_configured")
         return self.principal(row["value"])
     def set_principal_display_name(self,principal_id:str,display_name:str)->Principal:

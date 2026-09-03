@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from atlas_core.actions import ActionRuntime, ActionStore
+from atlas_core.actions import ActionRequest, ActionRuntime, ActionStore
 from atlas_core.capabilities import CapabilityRegistry, CapabilityRuntime
 from atlas_core.evidence import EvidenceStore
 from atlas_core.memory import MemoryRuntime, MemoryStore
@@ -83,28 +83,27 @@ def test_hash_matching_reaches_blocked_occurrence_without_item_id(tmp_path):
     assert redacted.payload_sha256 == blocked.payload_sha256
 
 
-def test_pending_confirmation_window_is_untouchable_and_hashes_stay_attested(tmp_path):
+def test_executing_occurrence_is_untouchable_and_terminal_hashes_stay_attested(tmp_path):
     policy_store, action_store, _, capabilities, _, _ = _runtime(tmp_path)
-    text = "confirmation-window-secret"
+    text = "execution-window-secret"
     _set(policy_store, "remember", "YES")
     remembered = capabilities.invoke("memory.remember", {"content": text}, provenance=_prov())
     item_id = remembered.result["item_id"]
 
-    _set(policy_store, "remember", "CONFIRM")
-    pending = capabilities.invoke("memory.remember", {"content": text}, provenance=_prov())
-    pending_hash = pending.payload_sha256
-    assert pending.status == "pending_confirmation"
-
+    executing = action_store.create(
+        ActionRequest("memory.remember", "remember", "atlas/memory", {"content": text}, _prov()),
+        decision="YES", revision=1, event_id=None, status="executing",
+    )
+    executing_hash = executing.payload_sha256
     _set(policy_store, "purge", "YES")
-    capabilities.invoke("memory.purge", {"item_id": item_id}, provenance=_prov())
-
-    still_pending = action_store.get(pending.occurrence_id)
-    assert still_pending.status == "pending_confirmation"
-    assert still_pending.payload["content"] == text
-    assert still_pending.payload_sha256 == pending_hash
-    redacted = action_store.get(remembered.occurrence_id)
-    assert redacted.payload_sha256 == remembered.payload_sha256
-    assert text not in json.dumps(redacted.payload)
+    purged = capabilities.invoke("memory.purge", {"item_id": item_id}, provenance=_prov())
+    assert purged.status == "failed"
+    still_executing = action_store.get(executing.occurrence_id)
+    assert still_executing.status == "executing"
+    assert still_executing.payload["content"] == text
+    assert still_executing.payload_sha256 == executing_hash
+    terminal = action_store.get(remembered.occurrence_id)
+    assert terminal.payload_sha256 == remembered.payload_sha256
 
 
 def test_three_deep_cycle_safe_chain_purges_all_rows_and_fts(tmp_path):

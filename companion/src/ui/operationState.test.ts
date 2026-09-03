@@ -5,7 +5,7 @@ describe('operation state lamps', () => {
   it('maps only known runtime states to semantic tones', () => {
     expect(workStateToLamp('completed')).toBe('green')
     expect(workStateToLamp('active')).toBe('amber')
-    expect(workStateToLamp('pending_confirmation')).toBe('red')
+    expect(workStateToLamp('failed')).toBe('red')
     expect(workStateToLamp('made-up-risk')).toBe('dim')
     expect(runtimeStateToLamp('succeeded')).toBe('green')
     expect(runtimeStateToLamp('unknown')).toBe('dim')

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 import pytest
 
 from atlas_core.actions import ActionRequest, ActionResult, ActionRuntime, ActionStore
@@ -67,18 +65,17 @@ def test_policy_defaults_no_and_more_specific_scope_wins(tmp_path):
     assert policy.resolve(principal_id=owner, scope="files/local/root/a.txt", operation="read").decision == "NO"
     policy_store.set(principal_id=owner, scope="files/local/root", operation="*", decision="YES")
     policy_store.set(principal_id=owner, scope="files/local/root/secrets", operation="*", decision="NO")
-    policy_store.set(principal_id=owner, scope="files/local/root", operation="read", decision="CONFIRM")
 
     ordinary = policy.resolve(principal_id=owner, scope="files/local/root/manual.pdf", operation="read")
     secret = policy.resolve(principal_id=owner, scope="files/local/root/secrets/key", operation="read")
-    assert ordinary.decision == "CONFIRM"
-    assert ordinary.matched_operation == "read"
+    assert ordinary.decision == "YES"
+    assert ordinary.matched_operation == "*"
     assert secret.decision == "NO"
     assert secret.matched_scope == "files/local/root/secrets"
 
 
-def test_yes_executes_no_blocks_and_confirm_is_exact(tmp_path):
-    policy_store, action_store, registry, capabilities, actions = _runtime(tmp_path)
+def test_yes_executes_no_blocks_and_confirm_is_not_a_policy_value(tmp_path):
+    policy_store, action_store, registry, capabilities, _actions = _runtime(tmp_path)
     calls: list[dict] = []
     _register_echo(registry, calls)
     owner = "principal_owner"
@@ -86,42 +83,30 @@ def test_yes_executes_no_blocks_and_confirm_is_exact(tmp_path):
 
     blocked = capabilities.invoke("test.echo", {"value": "no"}, provenance=provenance)
     assert blocked.status == "blocked"
+    assert blocked.policy_decision == "NO"
     assert calls == []
 
     policy_store.set(principal_id=owner, scope="thing/item", operation="run", decision="YES")
     allowed = capabilities.invoke("test.echo", {"value": "yes"}, provenance=provenance)
     assert allowed.status == "succeeded"
     assert calls == [{"value": "yes"}]
+    assert len(allowed.payload_sha256) == 64
+    assert action_store.get(allowed.occurrence_id).payload_sha256 == allowed.payload_sha256
 
-    policy_store.set(principal_id=owner, scope="thing/item", operation="run", decision="CONFIRM")
-    pending = capabilities.invoke("test.echo", {"value": "confirm"}, provenance=provenance)
-    assert pending.status == "pending_confirmation"
-    assert pending.payload == {"value": "confirm"}
-    assert len(pending.payload_sha256) == 64
-    assert calls == [{"value": "yes"}]
-
-    with pytest.raises(PermissionError):
-        actions.confirm(pending.occurrence_id, principal_id="principal_other")
-
-    confirmed = actions.confirm(pending.occurrence_id, principal_id=owner)
-    assert confirmed.status == "succeeded"
-    assert calls[-1] == {"value": "confirm"}
-    assert action_store.get(pending.occurrence_id).payload_sha256 == pending.payload_sha256
+    with pytest.raises(ValueError, match="unsupported policy decision"):
+        policy_store.set(principal_id=owner, scope="thing/item", operation="run", decision="CONFIRM")  # type: ignore[arg-type]
 
 
-def test_confirmation_rechecks_current_policy_before_execution(tmp_path):
-    policy_store, _, registry, capabilities, actions = _runtime(tmp_path)
+def test_current_no_blocks_a_new_invocation_after_prior_yes(tmp_path):
+    policy_store, _, registry, capabilities, _actions = _runtime(tmp_path)
     calls: list[dict] = []
     _register_echo(registry, calls)
     owner = "principal_owner"
     provenance = InvocationProvenance(owner, "human", "chat")
 
-    policy_store.set(principal_id=owner, scope="thing/item", operation="run", decision="CONFIRM")
-    pending = capabilities.invoke("test.echo", {"value": "later"}, provenance=provenance)
-    assert pending.status == "pending_confirmation"
-
+    policy_store.set(principal_id=owner, scope="thing/item", operation="run", decision="YES")
+    assert capabilities.invoke("test.echo", {"value": "first"}, provenance=provenance).status == "succeeded"
     policy_store.set(principal_id=owner, scope="thing/item", operation="run", decision="NO")
-    result = actions.confirm(pending.occurrence_id, principal_id=owner)
-    assert result.status == "blocked"
-    assert result.error_code == "policy_revoked_before_execution"
-    assert calls == []
+    blocked = capabilities.invoke("test.echo", {"value": "later"}, provenance=provenance)
+    assert blocked.status == "blocked"
+    assert calls == [{"value": "first"}]

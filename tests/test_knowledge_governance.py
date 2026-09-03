@@ -59,38 +59,29 @@ def test_promote_is_the_only_curated_write_path_and_requires_provenance(tmp_path
     assert "knowledge.add" not in {item.definition.id for item in registry.all()}
 
 
-def test_curated_delete_is_confirmed_and_revocable(tmp_path):
-    owner, policy_store, action_store, actions, capabilities, store, _knowledge, _registry = _runtime(tmp_path)
+def test_curated_delete_uses_live_no_yes_policy(tmp_path):
+    owner, policy_store, action_store, _actions, capabilities, store, _knowledge, _registry = _runtime(tmp_path)
     _seed(policy_store, owner, "promote", "YES")
-    _seed(policy_store, owner, "delete", "CONFIRM")
+    _seed(policy_store, owner, "delete", "YES")
     item_id = _invoke(capabilities, owner, "knowledge.promote", {
         "title": "Torque spec", "content": "Bolt torque is 42 Nm.", "source_ref": "artifact:artifact_abc",
     }).result["item_id"]
 
-    pending = _invoke(capabilities, owner, "knowledge.delete", {"item_id": item_id})
-    assert pending.status == "pending_confirmation"
-    # The durable summary identifies the item without carrying its content.
-    assert "42 Nm" not in (pending.summary or "")
-    assert "Bolt torque" not in (pending.summary or "")
-
-    confirmed = actions.confirm(pending.occurrence_id, principal_id=owner.principal_id)
-    assert confirmed.status == "succeeded"
+    deleted = _invoke(capabilities, owner, "knowledge.delete", {"item_id": item_id})
+    assert deleted.status == "succeeded"
+    assert "42 Nm" not in (deleted.summary or "")
     try:
         store.get(item_id)
         raise AssertionError("curated item should be gone")
     except KeyError:
         pass
 
-    # A policy flip between CONFIRM and execution still governs the side effect.
     second = _invoke(capabilities, owner, "knowledge.promote", {
         "title": "Second", "content": "Another fact.", "source_ref": "artifact:artifact_def",
     }).result["item_id"]
-    blocked = _invoke(capabilities, owner, "knowledge.delete", {"item_id": second})
-    assert blocked.status == "pending_confirmation"
     _seed(policy_store, owner, "delete", "NO")
-    revoked = actions.confirm(blocked.occurrence_id, principal_id=owner.principal_id)
-    assert revoked.status == "blocked"
-    assert revoked.error_code == "policy_revoked_before_execution"
+    blocked = _invoke(capabilities, owner, "knowledge.delete", {"item_id": second})
+    assert blocked.status == "blocked"
     assert store.get(second)["item_id"] == second
     assert action_store.get(blocked.occurrence_id).status == "blocked"
 
@@ -141,15 +132,9 @@ def test_http_knowledge_mutations_cross_the_capability_gate(tmp_path, monkeypatc
         listed = client.get("/api/knowledge")
         assert item_id in {row["item_id"] for row in listed.json()["items"]}
 
-        # Seeded CONFIRM means the HTTP delete returns an action envelope, not {"ok": true}.
         removed = client.delete(f"/api/knowledge/{item_id}", headers=headers)
-        assert removed.status_code == 202
+        assert removed.status_code == 200
         body = removed.json()
-        assert "ok" not in body
-        assert body["action"]["status"] == "pending_confirmation"
+        assert body["action"]["status"] == "succeeded"
         assert body["action"]["operation"] == "delete"
-
-        confirmed = client.post(f"/api/actions/{body['action']['occurrence_id']}/confirm", headers=headers, json={})
-        assert confirmed.status_code == 200
-        assert confirmed.json()["action"]["status"] == "succeeded"
         assert client.get("/api/knowledge").json()["items"] == []

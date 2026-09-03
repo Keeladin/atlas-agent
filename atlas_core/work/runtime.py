@@ -9,7 +9,6 @@ class WorkRuntime:
     """Durable responsibility. Current owner policy is resolved at every actual step execution."""
 
     RETRYABLE_ERROR_CODES = {
-        "confirmation_expired", "policy_revoked_before_execution",
         "representation_provider_unavailable", "representation_interpretation_failed",
         "representation_derivation_failed", "model_infer_failed",
         "mcp_unavailable", "mcp_tool_error", "files_error", "files_extract_text_failed",
@@ -52,7 +51,7 @@ class WorkRuntime:
 
     def _retryable(self, occurrence) -> bool:
         return (
-            occurrence.status in {"blocked", "expired", "cancelled"}
+            occurrence.status == "blocked"
             or occurrence.error_code in self.RETRYABLE_ERROR_CODES
             or bool((occurrence.receipt or {}).get("retryable"))
         )
@@ -84,12 +83,11 @@ class WorkRuntime:
                 if occurrence.status == "succeeded":
                     self.store.set_step(step.step_id, status="completed", output=occurrence.result)
                     continue
-                if occurrence.status in {"pending_confirmation", "uncertain"}:
-                    waiting = "waiting_confirmation" if occurrence.status == "pending_confirmation" else "waiting"
-                    self.store.set_step(step.step_id, status=waiting)
-                    self.store.set_work_status(work_id, "waiting_confirmation" if occurrence.status == "pending_confirmation" else "waiting")
+                if occurrence.status == "uncertain":
+                    self.store.set_step(step.step_id, status="waiting")
+                    self.store.set_work_status(work_id, "waiting")
                     return self.detail(work_id)
-                if occurrence.status in {"blocked", "failed", "expired", "cancelled"}:
+                if occurrence.status in {"blocked", "failed"}:
                     return self._record_execution_failure(work_id, step, occurrence)
             if not self.store.claim_step(step.step_id):
                 current = self.store.step(step.step_id)
@@ -114,10 +112,6 @@ class WorkRuntime:
             if occurrence.status == "succeeded":
                 self.store.set_step(step.step_id, status="completed", occurrence_id=occurrence.occurrence_id, output=occurrence.result)
                 continue
-            if occurrence.status == "pending_confirmation":
-                self.store.set_step(step.step_id, status="waiting_confirmation", occurrence_id=occurrence.occurrence_id)
-                self.store.set_work_status(work_id, "waiting_confirmation")
-                return self.detail(work_id)
             if occurrence.status == "uncertain":
                 self.store.set_step(step.step_id, status="waiting", occurrence_id=occurrence.occurrence_id)
                 self.store.set_work_status(work_id, "waiting")

@@ -3400,7 +3400,7 @@ button.primary:hover:not(:disabled) {
 .execution-step:last-child .execution-marker::after { display: none; }
 .execution-marker > span:first-child { width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--gold-bright); font-family: var(--mono); font-size: 0.62rem; }
 .execution-step-body { min-width: 0; margin-bottom: 0.55rem; padding: 0.65rem 0.7rem; border: 1px solid var(--line); border-radius: var(--radius-sm); background: rgba(4, 4, 4, 0.22); }
-.execution-step.waiting_confirmation .execution-step-body, .execution-step.failed .execution-step-body { border-color: var(--red); background: var(--red-wash); }
+.execution-step.failed .execution-step-body { border-color: var(--red); background: var(--red-wash); }
 .execution-step-head { display: flex; justify-content: space-between; gap: 0.6rem; align-items: flex-start; }
 .execution-step-head > div { min-width: 0; display: grid; gap: 0.12rem; }
 .execution-step-head strong { font-size: 0.76rem; font-weight: 500; }

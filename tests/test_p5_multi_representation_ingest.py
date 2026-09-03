@@ -51,7 +51,7 @@ def test_text_and_visual_share_one_generation(tmp_path):
     ]
 
     running = h.work.run(work["work_id"])
-    assert running["status"] == "waiting_confirmation"
+    assert running["status"] == "completed"
     finished_steps = h.work_store.steps(work["work_id"])
     first_generation = finished_steps[1].output["generation_id"]
     second_generation = finished_steps[3].output["generation_id"]
@@ -65,10 +65,8 @@ def test_text_and_visual_share_one_generation(tmp_path):
     assert visual_artifact["provenance"]["representation_needs"] == ["visual"]
     assert visual_artifact["provenance"]["reproducible"] is False
 
-    confirmation_id = finished_steps[5].occurrence_id
-    confirmed = h.actions.confirm(confirmation_id, principal_id=h.owner.principal_id)
-    assert confirmed.status == "succeeded"
-    completed = h.work.run(work["work_id"])
+    assert finished_steps[5].status == "completed"
+    completed = h.work.detail(work["work_id"])
     assert completed["status"] == "completed"
 
     hits = h.knowledge.retrieve("hydraulic manifold directional valve", limit=5, filters={"artifact_id": artifact_id})
@@ -118,7 +116,7 @@ def test_oversized_pdf_is_interpreted_in_bounded_original_page_batches(tmp_path,
     assert semantic_plan["batch_count"] == 3
 
     running = h.work.run(routed.result["work"]["work_id"])
-    assert running["status"] == "waiting_confirmation"
+    assert running["status"] == "completed"
     semantic_requests = [request for request in model.requests if request.capability_id == "representations.interpret"]
     assert len(semantic_requests) == 3
     assert [(r.metadata["page_start"], r.metadata["page_end"]) for r in semantic_requests] == [(1, 2), (3, 4), (5, 6)]
@@ -203,16 +201,10 @@ def test_inflight_knowledge_ingest_owns_generation_until_activation(tmp_path):
     assert "another knowledge ingest owns" in (second_paused["steps"][1]["error"] or "")
     assert h.indexing.generations.get(first_generation)["state"] == "building"
 
-    first_waiting_confirmation = h.work.resume(first_work_id)
-    assert first_waiting_confirmation["status"] == "waiting_confirmation"
-    activation = first_waiting_confirmation["steps"][-1]["occurrence_id"]
-    assert h.actions.confirm(activation, principal_id=h.owner.principal_id).status == "succeeded"
-    assert h.work.run(first_work_id)["status"] == "completed"
+    first_completed = h.work.resume(first_work_id)
+    assert first_completed["status"] == "completed"
 
-    second_waiting_confirmation = h.work.resume(second_work_id)
-    assert second_waiting_confirmation["status"] == "waiting_confirmation"
-    second_generation = second_waiting_confirmation["steps"][1]["output"]["generation_id"]
+    second_completed = h.work.resume(second_work_id)
+    assert second_completed["status"] == "completed"
+    second_generation = second_completed["steps"][1]["output"]["generation_id"]
     assert second_generation != first_generation
-    activation = second_waiting_confirmation["steps"][-1]["occurrence_id"]
-    assert h.actions.confirm(activation, principal_id=h.owner.principal_id).status == "succeeded"
-    assert h.work.run(second_work_id)["status"] == "completed"

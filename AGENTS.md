@@ -6,7 +6,7 @@ This repository is **Atlas v3**, a single persistent operational agent (Python 3
 - **Production runtime state (external to the checkout):** `/home/jaco/Projects/atlas-agent-state/production` — never assume a code deploy replaces it.
 - **Architecture is governed by:** `Atlas Constitution.md`, `Atlas Product Definition.md`, `Atlas Architecture — Runtime and Topology.md`, and `Atlas Interface Design.md`. **`CLAUDE.md` holds the fuller engineering invariants — read it before changing runtime behavior.**
 
-Core rule you must not break: **capability ≠ authority.** Discretionary permission comes only from the runtime owner policy — literal `NO` / `YES` / `CONFIRM`, where a missing rule means `NO`. Every consequential action must route through a capability and the canonical `ActionRuntime` gate. Do not create a second authority, policy, confirmation or agent engine, and do not let the model self-authorize.
+Core rule you must not break: **capability ≠ authority.** Discretionary permission comes only from the runtime owner policy — literal `NO` / `YES`, where a missing rule means `NO`. Every consequential action must route through a capability and the canonical `ActionRuntime` gate. Do not create a second authority, policy or agent engine, and do not let the model self-authorize.
 
 - **Morning is outside this product and repository.** Do not embed it, depend on its internals, or add hidden coupling; any future link is an explicit external API/MCP boundary.
 - **Implementation, tests and runtime truth beat stale prose.** If a document disagrees with the code, fix the document.

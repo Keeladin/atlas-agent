@@ -69,7 +69,7 @@ describe('CapabilityBrowser', () => {
     render(<QueryClientProvider client={client}><CapabilityBrowser items={[tool({ policy_decision: 'NO' })]} servers={[server]} onDone={async () => undefined} /></QueryClientProvider>)
     fireEvent.change(screen.getByRole('textbox', { name: 'Query' }), { target: { value: 'daily' } })
     expect(screen.getByRole('button', { name: 'Run' })).toBeDisabled()
-    expect(screen.getByText('Exact runtime policy blocks this capability.')).toBeInTheDocument()
+    expect(screen.getByText('Principal policy blocks this capability domain.')).toBeInTheDocument()
   })
 
   it('does not treat a native scope hint as the final authorization decision', () => {
@@ -82,7 +82,7 @@ describe('CapabilityBrowser', () => {
     render(<QueryClientProvider client={client}><CapabilityBrowser items={[native]} servers={[]} onDone={async () => undefined} /></QueryClientProvider>)
     fireEvent.change(screen.getByRole('textbox', { name: 'Path' }), { target: { value: '/tmp/example' } })
     expect(screen.getByRole('button', { name: 'Run' })).toBeEnabled()
-    expect(screen.getByText('Policy at this scope hint is NO; Atlas resolves the normalized resource at invocation.')).toBeInTheDocument()
+    expect(screen.getByText('Policy at this scope hint is NO; the exact resource is resolved at invocation.')).toBeInTheDocument()
     expect(screen.queryByRole('combobox', { name: /Authority for host\.filesystem\.read/ })).not.toBeInTheDocument()
   })
 

@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-PolicyDecision = Literal["NO", "YES", "CONFIRM"]
-VALID_DECISIONS = frozenset({"NO", "YES", "CONFIRM"})
+PolicyDecision = Literal["NO", "YES"]
+VALID_DECISIONS = frozenset({"NO", "YES"})
 
 
 def normalize_scope(value: str) -> str:

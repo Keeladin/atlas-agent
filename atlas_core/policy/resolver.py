@@ -13,7 +13,7 @@ def _specificity(rule: PolicyRule, operation: str) -> tuple[int, int, int]:
 
 
 class OwnerPolicy:
-    """Sole discretionary authority resolver: NO / YES / CONFIRM."""
+    """Sole discretionary authority resolver: NO / YES."""
 
     def __init__(self, store: PolicyStore) -> None:
         self.store = store

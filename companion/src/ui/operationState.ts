@@ -2,7 +2,7 @@ export type LampTone = 'green' | 'amber' | 'red' | 'blue' | 'dim'
 
 const GREEN_STATES = new Set(['approved', 'completed', 'enabled', 'established', 'healthy', 'managed', 'succeeded', 'verified'])
 const AMBER_STATES = new Set(['active', 'executing', 'in_progress', 'paused', 'review_required', 'reviewed', 'running', 'waiting'])
-const RED_STATES = new Set(['blocked', 'cancelled', 'failed', 'pending_confirmation', 'rejected', 'uncertain'])
+const RED_STATES = new Set(['blocked', 'failed', 'rejected', 'uncertain'])
 
 function normalized(value?: string | null) {
   return String(value ?? '').trim().toLowerCase().replaceAll(' ', '_')
@@ -28,7 +28,7 @@ export function workStateToLamp(value?: string | null): LampTone {
   const state = normalized(value)
   if (state === 'completed') return 'green'
   if (['active', 'running', 'waiting', 'paused'].includes(state)) return 'amber'
-  if (['failed', 'blocked', 'pending_confirmation', 'cancelled', 'uncertain'].includes(state)) return 'red'
+  if (['failed', 'blocked', 'uncertain'].includes(state)) return 'red'
   return 'dim'
 }
 

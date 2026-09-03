@@ -3,7 +3,6 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEven
 import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import type { ActionOccurrence, Cadence, ChatTurn, Conversation, WorkItem } from '../api/types'
-import { ConfirmationCard } from '../ui/ConfirmationCard'
 import { FactList, InspectorSection, StatusLamp } from '../ui/OperationsPrimitives'
 import type { LampTone } from '../ui/operationState'
 import { cadenceStateToLamp, workStateToLamp } from '../ui/operationState'
@@ -35,8 +34,8 @@ function toolsForTurn(turn?: ChatTurn | null) {
 
 function actionTone(status?: string | null): LampTone {
   if (status === 'succeeded') return 'green'
-  if (status === 'pending_confirmation' || status === 'executing' || status === 'uncertain') return 'amber'
-  if (status === 'failed' || status === 'blocked' || status === 'expired' || status === 'cancelled') return 'red'
+  if (status === 'executing' || status === 'uncertain') return 'amber'
+  if (status === 'failed' || status === 'blocked') return 'red'
   return 'dim'
 }
 
@@ -49,7 +48,6 @@ function nextCadence(rows: Cadence[]) {
 export function Chat() {
   const qc = useQueryClient()
   const conversations = useQuery({ queryKey: ['conversations'], queryFn: () => api<ConversationList>('/api/chat/conversations') })
-  const pending = useQuery({ queryKey: ['pending-actions'], queryFn: () => api<{ actions: ActionOccurrence[] }>('/api/actions/pending'), refetchInterval: 5000 })
   const work = useQuery({ queryKey: ['work'], queryFn: () => api<{ work: WorkItem[] }>('/api/work'), refetchInterval: 7000 })
   const cadence = useQuery({ queryKey: ['cadence'], queryFn: () => api<{ cadences: Cadence[] }>('/api/cadence'), refetchInterval: 15000 })
   const health = useQuery({ queryKey: ['health'], queryFn: () => api<Health>('/api/health'), refetchInterval: 15000 })
@@ -99,7 +97,6 @@ export function Chat() {
       setMessage('')
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['conversation', variables.conversationId] }),
-        qc.invalidateQueries({ queryKey: ['pending-actions'] }),
         qc.invalidateQueries({ queryKey: ['conversations'] }),
         qc.invalidateQueries({ queryKey: ['work'] }),
       ])
@@ -107,15 +104,9 @@ export function Chat() {
   })
 
   const turns = useMemo(() => detail.data?.turns ?? [], [detail.data?.turns])
-  const pendingRows = useMemo(() => pending.data?.actions ?? [], [pending.data?.actions])
-  const pendingById = useMemo(() => new Map(pendingRows.map(action => [action.occurrence_id, action])), [pendingRows])
-  const conversationPending = useMemo(() => turns.flatMap(turn => {
-    const recorded = actionForTurn(turn)
-    const live = recorded ? pendingById.get(recorded.occurrence_id) : null
-    return live ? [{ turnId: turn.turn_id, action: live }] : []
-  }), [turns, pendingById])
   const workRows = work.data?.work ?? []
-  const activeWork = workRows.filter(item => ['active', 'running', 'waiting', 'waiting_confirmation', 'paused'].includes(item.status)).slice(0, 5)
+  const activeWork = workRows.filter(item => ['active', 'running', 'waiting', 'paused'].includes(item.status)).slice(0, 5)
+  const attentionWork = workRows.filter(item => ['failed', 'paused'].includes(item.status))
   const failedWork = workRows.filter(item => item.status === 'failed')
   const cadenceRows = cadence.data?.cadences ?? []
   const enabledCadence = cadenceRows.filter(item => item.enabled)
@@ -128,7 +119,7 @@ export function Chat() {
   useEffect(() => {
     const node = threadEndRef.current
     if (node && typeof node.scrollIntoView === 'function') node.scrollIntoView({ block: 'end' })
-  }, [turns.length, conversationPending.length, send.isPending])
+  }, [turns.length, send.isPending])
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -153,26 +144,25 @@ export function Chat() {
     <nav className="surface-awareness" aria-label="Atlas operational awareness">
       <Link to="/work"><span>Active Work</span><strong>{activeWork.length}</strong><small>{failedWork.length ? `${failedWork.length} failed` : 'No failed Work'}</small></Link>
       <Link to="/cadence"><span>Cadence</span><strong>{enabledCadence.length}</strong><small>{upcomingCadence ? `Next ${when(upcomingCadence.next_run_at)}` : 'No scheduled run'}</small></Link>
-      <a href="#needs-you"><span>Needs you</span><strong className={pendingRows.length ? 'attention-value' : ''}>{pendingRows.length}</strong><small>{pendingRows.length ? 'Owner decision pending' : 'Nothing blocked on you'}</small></a>
+      <a href="#needs-you"><span>Needs you</span><strong className={attentionWork.length ? 'attention-value' : ''}>{attentionWork.length}</strong><small>{attentionWork.length ? 'Work needs attention' : 'Nothing needs attention'}</small></a>
       <Link to="/atlas"><span>Control</span><strong>{health.data?.version ?? '—'}</strong><small>Policy · providers · connections</small></Link>
     </nav>
 
     <section className="chat-conversation-switcher" aria-label="Conversations">
       <input aria-label="Search conversations" value={conversationFilter} onChange={event => setConversationFilter(event.target.value)} placeholder="Find a conversation" />
       <div className="chat-conversation-flow">{visibleConversations.map(item => <div className="chat-conversation-tab" key={item.conversation_id}><button type="button" aria-label={`${item.title} ${item.updated_at}`} className={selected === item.conversation_id ? 'active' : ''} onClick={() => { setSelected(item.conversation_id); setSelectedTurnId(null) }}><strong>{item.title}</strong><time>{when(item.updated_at)}</time></button>{selected === item.conversation_id ? <button type="button" className="chat-conversation-delete" title="Delete conversation" aria-label={`Delete ${item.title}`} onClick={() => removeConversation(item)}>×</button> : null}</div>)}{!visibleConversations.length ? <span className="chat-conversation-empty">No matching conversations</span> : null}</div>
-      <span className="chat-flow-status"><b>{turns.length}</b> turns <i>·</i> <b>{conversationPending.length}</b> awaiting confirmation</span>
+      <span className="chat-flow-status"><b>{turns.length}</b> turns</span>
     </section>
 
     <div className="surface-live-grid">
       <section className="chat-conversation-surface" aria-label="Conversation and execution">
         <div className="chat-thread-body">{turns.map(turn => {
           const recorded = actionForTurn(turn)
-          const liveAction = recorded ? pendingById.get(recorded.occurrence_id) ?? null : null
           const tools = toolsForTurn(turn)
           const selectedHere = selectedTurn?.turn_id === turn.turn_id
-          const status = liveAction?.status ?? recorded?.status
+          const status = recorded?.status
           const turnError = typeof turn.metadata?.error === 'string' ? turn.metadata.error : null
-          return <article key={turn.turn_id} className={`chat-turn ${turn.role} ${selectedHere ? 'selected' : ''}`}><div className="chat-turn-meta"><span className="chat-turn-role">{turn.role === 'user' ? 'You' : turn.role === 'assistant' ? 'Atlas' : turn.role}</span><time>{when(turn.created_at)}</time></div><div className="chat-turn-main"><div className="chat-turn-content">{turn.content}</div>{tools.length ? <div className="chat-turn-tools">{tools.map(tool => <span className="chat-tool-trace" key={tool}><StatusLamp tone={recorded?.capability_id === tool ? actionTone(status) : 'blue'} /><span>{tool}</span></span>)}</div> : null}{liveAction ? <div className="chat-turn-confirmation"><ConfirmationCard item={liveAction} title="Needs your approval" confirmLabel="Approve exact action" cancelLabel="Reject" onDone={async () => { await Promise.all([qc.invalidateQueries({ queryKey: ['conversation', selected] }), qc.invalidateQueries({ queryKey: ['pending-actions'] }), qc.invalidateQueries({ queryKey: ['work'] })]) }} /></div> : null}{turnError ? <p className="offline-banner">{turnError}</p> : null}<button type="button" className="chat-trace-toggle" aria-expanded={selectedHere} onClick={() => setSelectedTurnId(selectedHere ? null : turn.turn_id)}>{selectedHere ? 'Close trace' : 'Trace'}</button>{selectedHere ? <div className="chat-inline-context"><InspectorSection title="Runtime trace"><FactList items={[
+          return <article key={turn.turn_id} className={`chat-turn ${turn.role} ${selectedHere ? 'selected' : ''}`}><div className="chat-turn-meta"><span className="chat-turn-role">{turn.role === 'user' ? 'You' : turn.role === 'assistant' ? 'Atlas' : turn.role}</span><time>{when(turn.created_at)}</time></div><div className="chat-turn-main"><div className="chat-turn-content">{turn.content}</div>{tools.length ? <div className="chat-turn-tools">{tools.map(tool => <span className="chat-tool-trace" key={tool}><StatusLamp tone={recorded?.capability_id === tool ? actionTone(status) : 'blue'} /><span>{tool}</span></span>)}</div> : null}{turnError ? <p className="offline-banner">{turnError}</p> : null}<button type="button" className="chat-trace-toggle" aria-expanded={selectedHere} onClick={() => setSelectedTurnId(selectedHere ? null : turn.turn_id)}>{selectedHere ? 'Close trace' : 'Trace'}</button>{selectedHere ? <div className="chat-inline-context"><InspectorSection title="Runtime trace"><FactList items={[
             { label: 'Turn', value: turn.turn_id, mono: true },
             { label: 'Created', value: when(turn.created_at), mono: true },
             ...(recorded ? [
@@ -187,7 +177,7 @@ export function Chat() {
       </section>
 
       <aside className="surface-margin" aria-label="Operational awareness">
-        <section id="needs-you" className="surface-margin-section"><div className="surface-margin-heading"><span>Needs you</span><strong className={pendingRows.length ? 'attention-value' : ''}>{pendingRows.length}</strong></div>{pendingRows.length ? pendingRows.slice(0, 4).map(item => <Link className="surface-margin-row" key={item.occurrence_id} to={item.work_id ? `/work/${item.work_id}` : '/chat'}><StatusLamp tone="red" /><span><strong>{item.summary || item.capability_id}</strong><small>{item.operation} · {item.scope}</small></span></Link>) : <p className="surface-margin-empty">No owner decision is blocking Atlas.</p>}</section>
+        <section id="needs-you" className="surface-margin-section"><div className="surface-margin-heading"><span>Needs you</span><strong className={attentionWork.length ? 'attention-value' : ''}>{attentionWork.length}</strong></div>{attentionWork.length ? attentionWork.slice(0, 4).map(item => <Link className="surface-margin-row" key={item.work_id} to={`/work/${item.work_id}`}><StatusLamp tone="red" /><span><strong>{item.display_ref ?? item.objective}</strong><small>{item.objective}</small></span></Link>) : <p className="surface-margin-empty">No Work currently needs owner attention.</p>}</section>
         <section className="surface-margin-section"><div className="surface-margin-heading"><span>Active Work</span><Link to="/work">Open Work ↗</Link></div>{activeWork.length ? activeWork.map(item => <Link className="surface-margin-row" key={item.work_id} to={`/work/${item.work_id}`}><StatusLamp tone={workStateToLamp(item.status)} /><span><strong>{item.display_ref ?? item.objective}</strong><small>{item.objective}</small><em>{item.status.replaceAll('_', ' ')}</em></span></Link>) : <p className="surface-margin-empty">No Work is active or waiting.</p>}</section>
         <section className="surface-margin-section"><div className="surface-margin-heading"><span>Cadence</span><Link to="/cadence">Open cadence ↗</Link></div>{enabledCadence.length ? enabledCadence.slice(0, 4).map(item => <Link className="surface-margin-row" key={item.cadence_id} to="/cadence"><StatusLamp tone={cadenceStateToLamp(item.enabled, item.next_run_at)} /><span><strong>{item.name}</strong><small>{item.objective}</small><em>{when(item.next_run_at)}</em></span></Link>) : <p className="surface-margin-empty">No standing duties are enabled.</p>}</section>
         <section className="surface-margin-section surface-plumbing"><div className="surface-margin-heading"><span>Plumbing</span><Link to="/atlas">Control ↗</Link></div><div className="surface-plumbing-links"><Link to="/sources">Sources</Link><Link to="/memory">Memory</Link><Link to="/atlas/policies">Policy</Link><Link to="/atlas/capabilities">Capabilities</Link><Link to="/atlas/connections">Connections</Link></div></section>

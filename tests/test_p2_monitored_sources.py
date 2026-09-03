@@ -57,7 +57,7 @@ class Harness:
         for scope,operation,answer in [
             ("files/local/manuals","diff","YES"),("files/local/manuals","inspect","YES"),("files/local/manuals","extract_text","YES"),
             ("atlas/artifacts/intake","classify","YES"),("atlas/knowledge/index","index","YES"),
-            ("atlas/knowledge/index","verify","YES"),("atlas/knowledge/index","activate","CONFIRM")]:
+            ("atlas/knowledge/index","verify","YES"),("atlas/knowledge/index","activate","YES")]:
             self.policy_store.set(principal_id=self.owner.principal_id,scope=scope,operation=operation,decision=answer)
     def invoke(self,cid,payload):
         return self.capabilities.invoke(cid,payload,provenance=InvocationProvenance(self.owner.principal_id,"human","control"))
@@ -112,13 +112,13 @@ def test_work_reference_numbers_are_per_route(tmp_path):
     assert len({a.work_id,b.work_id,c.work_id})==3
 
 
-def test_routed_knowledge_work_runs_to_confirm_gated_activation(tmp_path):
+def test_routed_knowledge_work_runs_through_yes_gated_activation(tmp_path):
     h=Harness(tmp_path); (h.root/"manual.md").write_text("# Manual\nService interval is 500 hours.\n")
     artifact_id=h.scan()["new"][0]["artifact_id"]
     routed=h.invoke("artifacts.classify_intake",{"artifact_id":artifact_id,"source_event_kind":"new"}).result["work"]
-    result=h.work.run(routed["work_id"]); assert result["status"]=="waiting_confirmation"
-    assert [s["status"] for s in result["steps"]]==["completed","completed","completed","waiting_confirmation"]
-    pending=h.action_store.get(result["steps"][3]["occurrence_id"]); assert pending.policy_decision=="CONFIRM"
+    result=h.work.run(routed["work_id"]); assert result["status"]=="completed"
+    assert [s["status"] for s in result["steps"]]==["completed","completed","completed","completed"]
+    activation=h.action_store.get(result["steps"][3]["occurrence_id"]); assert activation.policy_decision=="YES" and activation.status=="succeeded"
 
 
 def test_diff_capability_obeys_root_policy(tmp_path):

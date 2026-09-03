@@ -29,11 +29,11 @@ class ActionStore:
             CREATE TABLE IF NOT EXISTS action_occurrences (
                 occurrence_id TEXT PRIMARY KEY, capability_id TEXT NOT NULL, operation TEXT NOT NULL, scope TEXT NOT NULL,
                 payload_json TEXT NOT NULL, payload_sha256 TEXT NOT NULL, principal_id TEXT NOT NULL, principal_kind TEXT NOT NULL,
-                surface TEXT NOT NULL, policy_decision TEXT NOT NULL CHECK(policy_decision IN ('NO','YES','CONFIRM')),
+                surface TEXT NOT NULL, policy_decision TEXT NOT NULL CHECK(policy_decision IN ('NO','YES')),
                 policy_revision INTEGER NOT NULL, policy_event_id TEXT,
-                status TEXT NOT NULL CHECK(status IN ('blocked','pending_confirmation','executing','succeeded','failed','uncertain','expired','cancelled')),
+                status TEXT NOT NULL CHECK(status IN ('blocked','executing','succeeded','failed','uncertain')),
                 work_id TEXT, step_id TEXT, summary TEXT, result_json TEXT, receipt_json TEXT NOT NULL DEFAULT '{}',
-                error_code TEXT, error TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, confirmed_at TEXT, executed_at TEXT, completed_at TEXT
+                error_code TEXT, error TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, executed_at TEXT, completed_at TEXT
             );
             CREATE INDEX IF NOT EXISTS occurrence_status ON action_occurrences(status,created_at);
             CREATE INDEX IF NOT EXISTS occurrence_work ON action_occurrences(work_id,step_id,created_at);
@@ -54,14 +54,6 @@ class ActionStore:
         if row is None: raise KeyError(f"unknown action occurrence: {occurrence_id}")
         return _occurrence(row)
 
-    def pending(self, *, principal_id: str | None = None) -> tuple[ActionOccurrence, ...]:
-        sql = "SELECT * FROM action_occurrences WHERE status='pending_confirmation'"; args: list[Any] = []
-        if principal_id:
-            sql += " AND principal_id=?"; args.append(principal_id)
-        sql += " ORDER BY created_at"
-        with self._db() as db: rows = db.execute(sql, args).fetchall()
-        return tuple(_occurrence(row) for row in rows)
-
     def recent(self, *, limit: int = 100, work_id: str | None = None) -> tuple[ActionOccurrence, ...]:
         if work_id:
             sql = "SELECT * FROM action_occurrences WHERE work_id=? ORDER BY created_at DESC LIMIT ?"; args=(work_id, limit)
@@ -71,7 +63,7 @@ class ActionStore:
         return tuple(_occurrence(row) for row in rows)
 
     def transition(self, occurrence_id: str, *, from_status: tuple[str, ...], to_status: str, **fields: Any) -> ActionOccurrence:
-        allowed = {"policy_decision","policy_revision","policy_event_id","result_json","receipt_json","error_code","error","confirmed_at","executed_at","completed_at"}
+        allowed = {"policy_decision","policy_revision","policy_event_id","result_json","receipt_json","error_code","error","executed_at","completed_at"}
         bad=set(fields)-allowed
         if bad: raise ValueError(f"unsupported occurrence fields: {sorted(bad)}")
         assignments=["status=?"]; values: list[Any]=[to_status]
@@ -85,10 +77,9 @@ class ActionStore:
 
     def memory_occurrence_rows(self, db: sqlite3.Connection, *, principal_id: str) -> tuple[dict[str, Any], ...]:
         rows = db.execute(
-            """SELECT occurrence_id,payload_json,result_json,receipt_json,summary,status
+            """SELECT occurrence_id,capability_id,payload_json,result_json,receipt_json,summary,status
             FROM action_occurrences
             WHERE principal_id=? AND (scope='atlas/memory' OR scope LIKE 'atlas/memory/%')
-              AND status NOT IN ('pending_confirmation','executing')
             ORDER BY created_at,occurrence_id""",
             (principal_id,),
         ).fetchall()
@@ -100,7 +91,7 @@ class ActionStore:
         changed = db.execute(
             """UPDATE action_occurrences
             SET payload_json=?,result_json=?,receipt_json=?,summary=?
-            WHERE occurrence_id=? AND status NOT IN ('pending_confirmation','executing')""",
+            WHERE occurrence_id=? AND status!='executing'""",
             (payload_json, result_json, receipt_json, summary, occurrence_id),
         ).rowcount
         if changed != 1:
@@ -115,5 +106,5 @@ def _occurrence(row: sqlite3.Row) -> ActionOccurrence:
         occurrence_id=row["occurrence_id"], capability_id=row["capability_id"], operation=row["operation"], scope=row["scope"],
         payload=_load(row["payload_json"], {}), payload_sha256=row["payload_sha256"], principal_id=row["principal_id"], principal_kind=row["principal_kind"], surface=row["surface"],
         policy_decision=row["policy_decision"], policy_revision=int(row["policy_revision"]), policy_event_id=row["policy_event_id"], status=row["status"], work_id=row["work_id"], step_id=row["step_id"], summary=row["summary"],
-        result=_load(row["result_json"], None), receipt=_load(row["receipt_json"], {}), error_code=row["error_code"], error=row["error"], created_at=row["created_at"], confirmed_at=row["confirmed_at"], executed_at=row["executed_at"], completed_at=row["completed_at"],
+        result=_load(row["result_json"], None), receipt=_load(row["receipt_json"], {}), error_code=row["error_code"], error=row["error"], created_at=row["created_at"], executed_at=row["executed_at"], completed_at=row["completed_at"],
     )

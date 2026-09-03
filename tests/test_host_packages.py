@@ -45,7 +45,7 @@ def test_package_inspect_is_read_only_and_reports_versions(tmp_path, monkeypatch
     ]
 
 
-def test_package_install_requires_confirmation_then_uses_narrow_helper(tmp_path, monkeypatch):
+def test_package_install_uses_principal_yes_then_narrow_helper(tmp_path, monkeypatch):
     monkeypatch.setattr(host_module, "_trusted_package_broker", lambda: (True, "available"))
     calls: list[tuple[str, str | None]] = []
 
@@ -56,15 +56,16 @@ def test_package_install_requires_confirmation_then_uses_narrow_helper(tmp_path,
     monkeypatch.setattr(host_module.HostRuntime, "_package_broker_call", staticmethod(fake_broker_call))
     rt = build_runtime(tmp_path / "instance")
     owner = rt.identities.current_owner().principal_id
-    pending = rt.capabilities.invoke(
+    completed = rt.capabilities.invoke(
         "host.package.install", {"package": "tailscale"},
         provenance=InvocationProvenance(owner, "human", "chat"),
     )
-    assert pending.status == "pending_confirmation"
-    assert calls == []
-
-    completed = rt.actions.confirm(pending.occurrence_id, principal_id=owner)
     assert completed.status == "succeeded"
+    assert calls == [("install", "tailscale")]
+
+    rt.policy_store.set(principal_id=owner, scope="host/package/tailscale", operation="install", decision="NO")
+    blocked = rt.capabilities.invoke("host.package.install", {"package": "tailscale"}, provenance=InvocationProvenance(owner, "human", "chat"))
+    assert blocked.status == "blocked"
     assert calls == [("install", "tailscale")]
 
 
@@ -94,7 +95,7 @@ def test_package_broker_constructs_only_fixed_apt_commands():
         broker._parse_request(b'{"operation":"install","package":"tailscale;id"}')
 
 
-def test_package_policy_defaults_are_visible_and_conservative(tmp_path, monkeypatch):
+def test_package_policy_is_one_coarse_principal_domain(tmp_path, monkeypatch):
     monkeypatch.setattr(host_module, "_trusted_package_broker", lambda: (True, "available"))
     rt = build_runtime(tmp_path / "instance")
     owner = rt.identities.current_owner().principal_id
@@ -103,11 +104,11 @@ def test_package_policy_defaults_are_visible_and_conservative(tmp_path, monkeypa
     ).decision == "YES"
     assert rt.policy.resolve(
         principal_id=owner, scope="host/package/tailscale", operation="install",
-    ).decision == "CONFIRM"
+    ).decision == "YES"
     assert rt.policy.resolve(
         principal_id=owner, scope="host/package/tailscale", operation="remove",
-    ).decision == "CONFIRM"
+    ).decision == "YES"
     assert rt.policy.resolve(
         principal_id=owner, scope="host/package/index", operation="refresh",
-    ).decision == "CONFIRM"
+    ).decision == "YES"
     assert rt.chat.search_capabilities("install tailscale", limit=5)[0]["id"] == "host.package.install"

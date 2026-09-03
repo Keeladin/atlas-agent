@@ -104,34 +104,6 @@ class ChatStore:
             and excerpt in row["content"]
         )
 
-    def action_context(self, occurrence_id: str) -> dict[str, Any] | None:
-        marker = f'%{occurrence_id}%'
-        with self._db() as db:
-            rows = db.execute(
-                "SELECT rowid AS turn_order,* FROM chat_turns WHERE role='assistant' AND metadata_json LIKE ? ORDER BY rowid DESC LIMIT 50",
-                (marker,),
-            ).fetchall()
-            for row in rows:
-                metadata = json.loads(row["metadata_json"] or "{}")
-                action = metadata.get("action") if isinstance(metadata, dict) else None
-                if not isinstance(action, dict) or action.get("occurrence_id") != occurrence_id:
-                    continue
-                owner = db.execute(
-                    "SELECT rowid AS turn_order,* FROM chat_turns WHERE conversation_id=? AND role='user' AND rowid<? ORDER BY rowid DESC LIMIT 1",
-                    (row["conversation_id"], row["turn_order"]),
-                ).fetchone()
-                if owner is None:
-                    return None
-                return {
-                    "conversation_id": row["conversation_id"],
-                    "owner_turn": {
-                        "turn_id": owner["turn_id"], "conversation_id": owner["conversation_id"],
-                        "role": owner["role"], "content": owner["content"],
-                        "metadata": json.loads(owner["metadata_json"] or "{}"), "created_at": owner["created_at"],
-                    },
-                }
-        return None
-
     def turns(self, cid: str, limit: int = 100) -> tuple[dict[str, Any], ...]:
         with self._db() as db:
             rows = db.execute(

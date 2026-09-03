@@ -57,7 +57,7 @@ class Harness:
         for scope, operation in [("files/local/docs", "read"), ("files/local/docs", "extract_text"),
                                  ("atlas/knowledge/index", "index"), ("atlas/knowledge", "retrieve")]:
             self.allow(scope, operation, "YES")
-        self.allow("atlas/knowledge/index", "activate", "CONFIRM")
+        self.allow("atlas/knowledge/index", "activate", "YES")
 
     def allow(self, scope, operation, decision):
         self.policy_store.set(principal_id=self.owner.principal_id, scope=scope, operation=operation, decision=decision)
@@ -87,10 +87,8 @@ class Harness:
         receipt = self.indexing.verify(generation["generation_id"])
         assert receipt["ok"], receipt
         occurrence = self.invoke("knowledge.activate_generation", {"generation_id": generation["generation_id"]})
-        assert occurrence.status == "pending_confirmation"
-        confirmed = self.actions.confirm(occurrence.occurrence_id, principal_id=self.owner.principal_id)
-        assert confirmed.status == "succeeded", confirmed.error
-        return confirmed
+        assert occurrence.status == "succeeded", occurrence.error
+        return occurrence
 
 
 def test_extraction_registers_a_derived_artifact_inside_the_managed_area(tmp_path):

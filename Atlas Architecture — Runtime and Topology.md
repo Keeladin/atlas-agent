@@ -22,7 +22,6 @@ Deterministic scope + payload normalization
 OwnerPolicy.resolve(principal, scope, operation)
         |
         +---- NO ------> durable blocked occurrence
-        +---- CONFIRM -> durable exact confirmation
         +---- YES -----> execution
                          |
                          v
@@ -78,13 +77,13 @@ Invocation provenance records the principal kind and trusted surface that initia
 
 `OwnerPolicy` resolves the latest rule for each `(principal, scope, operation)` and then chooses the most specific matching scope. An exact operation outranks a wildcard at equal scope specificity. No candidate resolves to `NO`.
 
-Policy has only three values: `NO`, `YES`, `CONFIRM`.
+Policy has two values: `NO`, `YES`.
 
-Sensitive-child restrictions are ordinary visible policy rows. There is no invisible discretionary deny floor beneath owner policy.
+Default seeded policy is coarse: whole top-level scope domains (`atlas/*`, `files/*`, `web/*`, each `host/*` domain) are seeded `YES` in one row rather than per fine-grained operation. An owner who wants a narrower boundary layers a more specific row on top, which wins by specificity. Host filesystem access to a fixed set of sensitive paths is the one exception: it is rejected by a hard code boundary (`HostRuntime.protected_paths`) before scope resolution runs at all, not by a policy row, so it never appears in the policy table.
 
 Policy mutation is available only through authenticated mutation-control routes. Capabilities cannot call a policy-write capability because none exists.
 
-## 5. Actions and confirmation
+## 5. Actions and execution
 
 `ActionOccurrence` is the durable unit of governed execution. It records:
 
@@ -96,19 +95,11 @@ Policy mutation is available only through authenticated mutation-control routes.
 - action state;
 - Work/step linkage where applicable;
 - result, receipt and error fields;
-- created, confirmed, executed and completed timestamps.
+- created, executed and completed timestamps.
 
-`CONFIRM` creates a `pending_confirmation` occurrence. Confirmation is accepted only from the same authenticated principal and expires after the configured confirmation window.
+Action state is `blocked | executing | succeeded | failed | uncertain`. There is no pending/confirmation state: `submit()` resolves policy exactly once against the normalized scope and payload — `NO` creates a terminal `blocked` occurrence, `YES` transitions straight to `executing` and runs the executor synchronously in the same call. There is no separate confirm/cancel step, no confirmation-window expiry, and no client-supplied payload beyond the original invocation, so there is nothing for the model or a client to bypass by supplying a confirmation flag.
 
-Immediately before execution, policy is resolved again:
-
-- current `NO` -> blocked with `policy_revoked_before_execution`;
-- current `CONFIRM` -> the exact confirmation satisfies this occurrence;
-- current `YES` -> execution proceeds.
-
-The model and clients cannot bypass this by supplying a confirmation flag.
-
-The confirm→execute payload is immutable. The one deliberately separate terminal-history mutation is governed `memory.purge` redaction: it can only strip content from non-executing memory occurrences, never introduces executable values, never recomputes `payload_sha256`, and its SQL guard excludes `pending_confirmation` and `executing`. `ActionStore.transition()` remains closed to payload updates.
+The occurrence payload is immutable once created. The one deliberately separate terminal-history mutation is governed `memory.purge` redaction: it can only strip content from terminal memory occurrences and never introduces executable values or recomputes `payload_sha256`. If a *different* matching occurrence is still `executing`, purge fails closed and rolls back rather than leaving it unredacted — the purge occurrence's own `executing` row is exempt, since its payload can only ever hold the target `item_id`. `ActionStore.transition()` remains closed to payload updates.
 
 ## 6. Capability registry
 
@@ -155,7 +146,7 @@ The governing path remains:
 Google Discovery / provider tool
         -> MCP capability
         -> exact mcp/<server>/tool/<tool> scope
-        -> NO | YES | CONFIRM
+        -> NO | YES
         -> provider execution
 ```
 
@@ -174,16 +165,16 @@ Current public-web access is expressed as stable Atlas capabilities rather than 
 Atlas reasoning / Work
         -> web.search | web.read | web.fetch | web.extract | web.download | web.crawl | web.browser.render
         -> exact web/search or web/<public-host> scope
-        -> NO | YES | CONFIRM
+        -> NO | YES
         -> replaceable search / HTTP provider
         -> structured evidence + provenance
 ```
 
 The baseline read/fetch provider uses bounded direct HTTP. `web.search` becomes technically available only when an enabled, credentialed search provider is configured; current adapters support Brave Search, Jina Search, Tavily and Serper in priority/fallback order. Search credentials live in `CredentialStore`, never in the browser or process environment. Provider-native response streams terminate at a deterministic evidence-translation boundary before they enter Atlas reasoning: search adapters emit one stable search-result contract, while HTTP responses are parsed by media type into normalized page, structured-data, text-document or metadata-only evidence with an explicit translator version, `data_only` trust marker and provenance/content identity. Raw transport bytes and executable/presentation markup are not model context. Legitimate source wording is preserved as evidence rather than regex-sanitized simply because it resembles an instruction.
 
-This evidence boundary is not an authority mechanism. Runtime policy remains the sole authority gate for actions: external data cannot grant `YES`, remove `CONFIRM`, widen a scope or mutate policy merely because the source text requests it. Translation constrains the shape and provenance of external evidence; `CapabilityRuntime` / `ActionRuntime` enforce what Atlas may actually do.
+This evidence boundary is not an authority mechanism. Runtime policy remains the sole authority gate for actions: external data cannot grant `YES`, widen a scope or mutate policy merely because the source text requests it. Translation constrains the shape and provenance of external evidence; `CapabilityRuntime` / `ActionRuntime` enforce what Atlas may actually do.
 
-Direct fetches accept only HTTP(S) on the normal web ports, reject credentials in URLs, resolve exclusively to public addresses, pin the connection to the validated address, and cap time and bytes. Every redirect target is canonicalized and independently resolved through the same public-address boundary. Cross-origin redirects are allowed for ordinary OEM/CDN flows, but an HTTPS request cannot downgrade to HTTP and credentials, cookies, API-key/token headers, origin and referrer are irreversibly stripped when the origin changes. Caller request headers and response headers remain separate so response metadata can never be replayed on a later hop; same-origin provider authorization survives a redirect. Crawl itself remains robots-aware, bounded to ten pages and same-origin so discovered links cannot silently widen one crawl action into a different policy scope. Downloads materialize without overwrite inside Atlas managed intake and use exact-action `CONFIRM` by default.
+Direct fetches accept only HTTP(S) on the normal web ports, reject credentials in URLs, resolve exclusively to public addresses, pin the connection to the validated address, and cap time and bytes. Every redirect target is canonicalized and independently resolved through the same public-address boundary. Cross-origin redirects are allowed for ordinary OEM/CDN flows, but an HTTPS request cannot downgrade to HTTP and credentials, cookies, API-key/token headers, origin and referrer are irreversibly stripped when the origin changes. Caller request headers and response headers remain separate so response metadata can never be replayed on a later hop; same-origin provider authorization survives a redirect. Crawl itself remains robots-aware, bounded to ten pages and same-origin so discovered links cannot silently widen one crawl action into a different policy scope. Downloads materialize without overwrite inside Atlas managed intake, gated by the same `web/*` policy scope as other web capabilities.
 
 `web.browser.render` is an implemented read-only rendered-page capability backed by Playwright/Chromium. Static `web.read` remains the first path; deterministic structural quality signals can escalate an inadequate static page to `web.browser.render` without another model decision. The render action still crosses runtime policy independently. Browser network requests are forced through Atlas controlled HTTP transport, service workers/downloads are disabled, non-GET/HEAD requests are rejected, top-level navigation cannot silently widen to an unrelated host, and executable DOM state never crosses the evidence boundary: only normalized visible-text evidence, links and provenance reach reasoning. CAPTCHA/access-control detection is reported rather than bypassed. Form submission and general interaction are not exposed; adding them requires explicit mutation contracts and runtime-policy decisions rather than treating browser possession as authority.
 
@@ -199,7 +190,7 @@ Policy scopes are rooted at:
 files/<provider-namespace>/<root-id>[/<canonical-relative-path>]
 ```
 
-The destination of copy/move/rename/restore is normalized into the governed payload before hashing and confirmation.
+The destination of copy/move/rename/restore is normalized into the governed payload before hashing and policy resolution.
 
 ## 10. Host runtime
 
@@ -211,14 +202,16 @@ The production topology uses a lingering systemd user manager for UID `atlas`. T
 
 Self-restart is verification-sensitive. A successful dispatch enters `uncertain`; the successor process reconciles the occurrence using `INVOCATION_ID` rather than having the predecessor pretend it observed its own replacement.
 
-Debian package management is split by privilege. `host.package.inspect` uses fixed read-only `dpkg-query`/`apt-cache` calls in the Atlas process. `host.package.install`, `host.package.remove` and `host.package.refresh` are available only when the root-owned Unix-socket package broker is present and trusted. The broker verifies the peer UID, accepts only exact Debian package names and fixed operations, and executes fixed `apt-get` vectors. Runtime `NO`/`YES`/`CONFIRM` is resolved before the broker is reached; the broker is a technical privilege boundary, not a second authority system.
+Debian package management is split by privilege. `host.package.inspect` uses fixed read-only `dpkg-query`/`apt-cache` calls in the Atlas process. `host.package.install`, `host.package.remove` and `host.package.refresh` are available only when the root-owned Unix-socket package broker is present and trusted. The broker verifies the peer UID, accepts only exact Debian package names and fixed operations, and executes fixed `apt-get` vectors. Runtime `NO`/`YES` is resolved before the broker is reached; the broker is a technical privilege boundary, not a second authority system.
+
+Host filesystem access to a fixed set of sensitive paths — `/etc/shadow`, `/etc/gshadow`, `/root`, the instance `secrets/` directory, `companion-auth.env`, and (when the instance root lives under `/home/<user>`) that user's `.ssh`/`.gnupg` — is rejected by `HostRuntime.protected_paths` before scope resolution runs, independent of policy content.
 
 
 ## 11. Work and Cadence
 
 Work persists an objective and ordered semantic capability steps. It does not persist a scalar authority allowance.
 
-When a step runs it invokes `CapabilityRuntime`, so current policy governs the actual action. A pending confirmation pauses Work; success resumes the sequence; blocked/failed/expired actions fail the relevant step.
+When a step runs it invokes `CapabilityRuntime`, so current policy governs the actual action. An `uncertain` (unverified) outcome pauses Work in `waiting` until reconciled; success resumes the sequence; a `blocked` or `failed` action fails the relevant step.
 
 Cadence stores recurring duties. `work_template` cadences materialize normal Work; `intake_sweep` cadences schedule bounded monitored-Source intake outside Work, where each Artifact is independently classified and may create one ordinary Work item. Neither kind has a privileged execution path around capability policy.
 
@@ -264,9 +257,9 @@ Knowledge passage retrieval remains FTS5-based today. Dense/vector retrieval in 
 
 Chat persists conversations and turns in `atlas-chat.db`. For each model decision it independently retrieves relevant active Memory and Knowledge, then combines those with bounded recent conversation and the hybrid live capability shortlist. The whole conversation history is not treated as runtime state.
 
-After a conversational reply is already stored, Chat may run owner-turn memory reconciliation. That process produces a proposal only; it is not a capability and has no authority of its own. A proposed remember/update must be grounded in an exact substring of the authenticated owner turn, and update/retract targets must resolve to an existing owner memory candidate. Reconciliation then invokes the ordinary `memory.remember`, `memory.update` or `memory.retract` capability through `CapabilityRuntime`. `NO` therefore produces a blocked occurrence, `CONFIRM` produces an ordinary pending exact confirmation, and `YES` executes. There is no `memory.capture` operation and no policy pre-check in Chat. A capture outcome never rewrites or hijacks the reply already produced.
+After a conversational reply is already stored, Chat may run owner-turn memory reconciliation. That process produces a proposal only; it is not a capability and has no authority of its own. A proposed remember/update must be grounded in an exact substring of the authenticated owner turn, and update/retract targets must resolve to an existing owner memory candidate. Reconciliation then invokes the ordinary `memory.remember`, `memory.update` or `memory.retract` capability through `CapabilityRuntime`. `NO` produces a blocked occurrence and `YES` executes. There is no `memory.capture` operation and no policy pre-check in Chat. A capture outcome never rewrites or hijacks the reply already produced.
 
-Memory policy is operation-specific. The visible initial policy is search `YES`, remember `YES`, update `YES`, retract `YES`, restore `CONFIRM`, purge `CONFIRM`. One operation never grants another.
+Memory policy is resolved per operation, the same as any other capability: `search`, `remember`, `update`, `retract`, `restore` and `purge` are independently addressable scopes, and one operation never grants another. The seeded default does not distinguish between them — all of `atlas/memory/*` inherits the coarse `atlas/*` → `YES` domain seed — so an owner who wants `restore`/`purge` to require a narrower authorization adds an explicit, more-specific policy row for that operation.
 
 ### Governed memory purge
 
@@ -274,11 +267,11 @@ Memory policy is operation-specific. The visible initial policy is search `YES`,
 
 The target supersession chain is resolved with a cycle-safe iterative breadth-first walk following `supersedes` in both directions. Rows are deleted explicitly rather than relying on foreign-key cascade behavior. FTS delete triggers execute inside the same transaction.
 
-Purge matching is deliberately wider than item id alone but narrow to this principal's `atlas/memory` action history. For every memory in the chain Atlas builds hashes as `sha256(NFC -> collapse whitespace -> strip -> casefold)` over `content` and `grounding_excerpt`. A non-executing memory occurrence matches when it carries a chain item id anywhere in its stored JSON/summary or when a content-bearing `content`, `title`, `grounding_excerpt`, `text` or summary string has one of those normalized hashes. This reaches blocked/failed writes that never received an item id. Matching payload/result/receipt content and summary are replaced with `[purged]` and marked redacted; matching evidence content is scrubbed too. Action identity, state, timestamps, policy decision/revision and the original `payload_sha256` remain. A content-free `memory_purge_redaction` evidence row records occurrence id, match basis and redacted field names.
+Purge matching scans every occurrence in this principal's `atlas/memory` action history regardless of status, and is deliberately wider than item id alone. For every memory in the chain Atlas builds hashes as `sha256(NFC -> collapse whitespace -> strip -> casefold)` over `content` and `grounding_excerpt`. A memory occurrence matches when it carries a chain item id anywhere in its stored JSON/summary or when a content-bearing `content`, `title`, `grounding_excerpt`, `text` or summary string has one of those normalized hashes. This reaches blocked/failed writes that never received an item id. A matching occurrence in a terminal status has its payload/result/receipt content and summary replaced with `[purged]` and marked redacted; matching evidence content is scrubbed too. Action identity, state, timestamps, policy decision/revision and the original `payload_sha256` remain. A content-free `memory_purge_redaction` evidence row records occurrence id, match basis and redacted field names.
 
-The purge occurrence itself persists only the target `item_id`; principal context comes from trusted invocation provenance at execution time and is not added to the attested payload. Because the purge occurrence is `executing` while the transaction runs, the terminal-status guard also prevents it from redacting itself.
+A matching occurrence that is still `executing` — other than the purge occurrence itself — aborts the whole purge instead of being skipped: its content isn't visible to redact yet, and it could land moments later still carrying the text purge was meant to remove, so the transaction rolls back rather than complete around it. The purge occurrence's own `executing` row is the one exemption (matched by capability id, not status), because its payload can only ever hold the target `item_id`, never memory content.
 
-Guaranteed. After `memory.purge` succeeds, within `atlas-work.db`, in one transaction or not at all: every `memory_v2_items` row in the target supersession chain is deleted together with its FTS entries, vector rows and generation-representation links; every `action_occurrences` row for this principal under `atlas/memory` in a terminal status that carries a chain item id or matching normalized content has its content-bearing fields and summary replaced; evidence rows for those occurrences are scrubbed the same way. Atlas will not surface that content again through live Memory V2 recall, chat context assembly, capability results or the control plane.
+Guaranteed. After `memory.purge` succeeds, within `atlas-work.db`, in one transaction or not at all: every `memory_v2_items` row in the target supersession chain is deleted together with its FTS entries, vector rows and generation-representation links; every `action_occurrences` row for this principal under `atlas/memory` in a terminal status that carries a chain item id or matching normalized content has its content-bearing fields and summary replaced; evidence rows for those occurrences are scrubbed the same way. Purge also cannot succeed while a different matching write is still in flight, so the guarantee holds even against that race rather than being invalidated by it. Atlas will not surface that content again through live Memory V2 recall, chat context assembly, capability results or the control plane.
 
 Not guaranteed. The originating chat turns in atlas-chat.db (delete the conversation separately); text already sent to a model provider, subject to that provider's retention; payload_sha256, kept deliberately as attestation — a hash, not a copy; SQLite WAL frames, freelist pages and page slack (no VACUUM); any backup taken before the purge; any copy made outside Atlas.
 
@@ -315,13 +308,13 @@ The v3 migration imports selected configuration and custody state only. Legacy a
 
 ## 15. API and Companion
 
-`atlas_api` provides authenticated read routes and CSRF-protected mutation routes. Session authentication establishes the owner principal; it is not an authority decision by itself. Long-running synchronous runtime work — model turns, generic capability execution, Work execution, confirmation continuation, MCP refresh and provider verification — is dispatched through Starlette's worker threadpool rather than executed on the asyncio event loop, so health, polling and confirmation/cancellation remain responsive during a slow turn.
+`atlas_api` provides authenticated read routes and CSRF-protected mutation routes. Session authentication establishes the owner principal; it is not an authority decision by itself. Long-running synchronous runtime work — model turns, generic capability execution, Work execution, MCP refresh and provider verification — is dispatched through Starlette's worker threadpool rather than executed on the asyncio event loop, so health and polling remain responsive during a slow turn.
 
-Companion opens on `/chat` as one owner surface rather than a permanent four-item top navigation. The surface interweaves the conversation with Active Work, Cadence, `Needs you`, runtime readiness and Control awareness; a right-hand operational margin exposes pending decisions, active Work, scheduled duties and deeper plumbing links. Work, Cadence, Sources, Memory, Operations and Atlas Control remain routed deep views. Pending `CONFIRM` occurrences are surfaced both inline with the originating turn when applicable and through global owner-attention affordances.
+Companion opens on `/chat` as one owner surface rather than a permanent four-item top navigation. The surface interweaves the conversation with Active Work, Cadence, `Needs you`, runtime readiness and Control awareness; a right-hand operational margin exposes active Work, scheduled duties and deeper plumbing links. Work, Cadence, Sources, Memory, Operations and Atlas Control remain routed deep views. There is no pending-confirmation state to surface; owner attention is driven by discovery errors, missing provider credentials and unavailable capabilities instead.
 
-The Memory screen is a secondary durable-context surface reached from Sources; it exposes owner memory, grounding, retract/restore/purge controls and the exact purge guarantee. The Atlas screen exposes live policy, providers, MCP/n8n connections, external-account bindings, source roots, host state and capability inventory from the same runtime used for execution. A capability snapshot reads the owner's latest policy rules and revision once, then resolves the inventory against that in-memory snapshot instead of reopening SQLite and rescanning policy for every capability. Chat confirmation cards are reconciled against the live pending-action set rather than treating a historical chat-turn copy as current action state; after dispatch, a card cannot offer a second confirmation while runtime verification is pending.
+The Memory screen is a secondary durable-context surface reached from Sources; it exposes owner memory, grounding, retract/restore/purge controls and the exact purge guarantee. The Atlas screen exposes live policy, providers, MCP/n8n connections, external-account bindings, source roots, host state and capability inventory from the same runtime used for execution. A capability snapshot reads the owner's latest policy rules and revision once, then resolves the inventory against that in-memory snapshot instead of reopening SQLite and rescanning policy for every capability.
 
-The Capabilities surface is generated from that live inventory rather than from provider-specific frontend modules. Server metadata creates provider groups, discovered tool names/metadata create presentation categories, and `input_schema` renders common string, number, boolean, enum, array and object inputs. Complex schemas retain a raw JSON fallback. Invocation still crosses `/api/capabilities/<id>/invoke`, so normalization, exact scope resolution, `NO` / `YES` / `CONFIRM`, evidence and verification remain runtime responsibilities. The UI treats non-exact native `scope_hint` values as hints rather than final authorization decisions; exact MCP tool scopes can expose direct policy controls.
+The Capabilities surface is generated from that live inventory rather than from provider-specific frontend modules. Server metadata creates provider groups, discovered tool names/metadata create presentation categories, and `input_schema` renders common string, number, boolean, enum, array and object inputs. Complex schemas retain a raw JSON fallback. Invocation still crosses `/api/capabilities/<id>/invoke`, so normalization, exact scope resolution, `NO` / `YES`, evidence and verification remain runtime responsibilities. The UI treats non-exact native `scope_hint` values as hints rather than final authorization decisions; exact MCP tool scopes can expose direct policy controls.
 
 The UI contains no parallel permission state.
 
@@ -337,7 +330,7 @@ The `atlas` account has a real home, membership in `systemd-journal`, and linger
 
 The unit binds Atlas to `127.0.0.1:8080`; Caddy provides HTTPS and external reachability. `PrivateTmp` is deliberately absent because the target Ubuntu host restricts unprivileged user namespaces and the user-unit topology does not require that mount namespace.
 
-The unit supplies startup mechanics only. It does not encode `NO`, `YES` or `CONFIRM` decisions. Companion authentication requires a stable configured session secret; Atlas does not silently generate a process-local replacement on boot. Caddy is the intended loopback proxy, and login-throttle handling trusts `X-Forwarded-For` only when the direct peer is loopback.
+The unit supplies startup mechanics only. It does not encode `NO` or `YES` decisions. Companion authentication requires a stable configured session secret; Atlas does not silently generate a process-local replacement on boot. Caddy is the intended loopback proxy, and login-throttle handling trusts `X-Forwarded-For` only when the direct peer is loopback.
 
 ## 17. Product boundary
 
@@ -347,7 +340,7 @@ If Morning is connected later, it must appear as an explicit external capability
 
 ## 18. Validation
 
-The acceptance suite attacks the governing invariants: policy specificity/default deny, exact confirmation and policy recheck, Work recheck, memory operation-level authority, owner-grounded post-reply capture, atomic purge rollback, hash-based redaction without item ids, untouchable confirmation windows, cycle-safe supersession purge, raw lower-is-better bm25 recall, filesystem containment, Streamable HTTP/stdio MCP inventory and dispatch, provider discovery, user-systemd dispatch, API authentication/control and deployment-state assumptions.
+The acceptance suite attacks the governing invariants: policy specificity/default deny, Work recheck, memory operation-level authority, owner-grounded post-reply capture, atomic purge rollback, hash-based redaction without item ids, untouchable executing-occurrence windows, cycle-safe supersession purge, raw lower-is-better bm25 recall, filesystem containment, Streamable HTTP/stdio MCP inventory and dispatch, provider discovery, user-systemd dispatch, API authentication/control and deployment-state assumptions.
 
 Companion has independent lint, unit tests and a production/PWA build. Runtime hardening tests additionally pin event-loop responsiveness during a slow chat turn, direct (non-environment) model credential custody, one policy-store snapshot per capability inventory, intact bounded tool-result envelopes and core-signpost-only fallback discovery.
 

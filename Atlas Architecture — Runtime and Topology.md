@@ -43,15 +43,18 @@ The model can select capabilities and construct arguments. It cannot authorize t
 
 The composition order is intentional:
 
-1. identity, policy, action and evidence stores;
-2. capability registry and canonical action gate;
-3. encrypted credentials and provider settings;
-4. MCP/n8n discovery;
-5. enrolled local sources and host capabilities;
-6. Knowledge, first-class Memory, Work and Cadence;
-7. Chat over the resulting live capability inventory and separate Knowledge/Memory recall stores.
+1. identity/policy stores plus the explicit `WorkDatabase` boundary for `atlas-work.db`;
+2. action/evidence stores and the canonical capability/action gate;
+3. encrypted credentials and model/web provider settings;
+4. local embedding-provider construction and MCP/n8n discovery;
+5. enrolled local sources, host capabilities and external providers;
+6. Knowledge, Memory V2, Work and Cadence;
+7. Chat over the live registry, hybrid capability retriever and separate Knowledge/Memory recall stores.
 
 `atlas_api` exposes the authenticated HTTP control plane and serves the built Companion PWA. It is not a second engine.
+
+`WorkDatabase` is the sole supported connection shape for the shared `atlas-work.db` transactional domain. It enforces `sqlite3.Row`, foreign keys, a >=5 s busy timeout, `synchronous=FULL`, WAL mode and a loadable `sqlite-vec` extension; store classes participating in that domain receive this boundary rather than constructing independent SQLite connections.
+
 
 ## 3. Identity and provenance
 
@@ -158,6 +161,11 @@ Google Discovery / provider tool
 
 If Google exposes a method and the connected account is technically authorized for it, Atlas can inventory that method. Whether Atlas may invoke it is an owner-policy decision.
 
+### Android phone provider
+
+`atlas_providers.android_phone_mcp` is a deliberately narrow device provider, not a general remote shell. It can expose three Termux:API-backed tools when available: current location, telephony/cell inspection and SIM SMS. In server-side production mode the stdio MCP process reaches one enrolled Android device through SSH using a dedicated identity, strict known-hosts verification, batch mode and a fixed remote bridge command. The bridge accepts bounded JSON operations rather than arbitrary commands. MCP discovery still determines the live tool inventory, and each tool crosses the ordinary `mcp/<server>/tool/<tool>` policy scope before execution.
+
+
 ### Provider-neutral web capability layer
 
 Current public-web access is expressed as stable Atlas capabilities rather than task-specific agents or provider-specific tools:
@@ -203,6 +211,9 @@ The production topology uses a lingering systemd user manager for UID `atlas`. T
 
 Self-restart is verification-sensitive. A successful dispatch enters `uncertain`; the successor process reconciles the occurrence using `INVOCATION_ID` rather than having the predecessor pretend it observed its own replacement.
 
+Debian package management is split by privilege. `host.package.inspect` uses fixed read-only `dpkg-query`/`apt-cache` calls in the Atlas process. `host.package.install`, `host.package.remove` and `host.package.refresh` are available only when the root-owned Unix-socket package broker is present and trusted. The broker verifies the peer UID, accepts only exact Debian package names and fixed operations, and executes fixed `apt-get` vectors. Runtime `NO`/`YES`/`CONFIRM` is resolved before the broker is reached; the broker is a technical privilege boundary, not a second authority system.
+
+
 ## 11. Work and Cadence
 
 Work persists an objective and ordered semantic capability steps. It does not persist a scalar authority allowance.
@@ -229,7 +240,9 @@ The provider runtime supports OpenAI-compatible chat endpoints, OpenAI Responses
 
 Enabled providers are attempted in runtime priority order. Transport/provider failure falls through to another enabled provider rather than changing Atlas semantics, and the failed provider is logged as an operational warning. Decrypted model credentials are passed directly from `CredentialStore` to the selected in-process adapter; they are never round-tripped through process-global environment variables.
 
-The model receives a bounded capability shortlist and can request a wider capability search. It returns either a conversational reply, a semantic capability selection or a capability-search request. Authorization is never delegated to the model. Capability-search fallback is limited to the small core signpost set rather than an alphabetical registry slice. Tool-result bounding preserves intact capability/status/trust envelopes, caps oversized item content, and omits older results first when the turn budget is exceeded.
+The model receives a bounded capability shortlist and can request a wider capability search. `CapabilityRetriever` builds that shortlist from live registry documents using exact/tool-name matches, weighted deterministic sparse matching and dense local embeddings, then fuses sparse/dense rank positions with reciprocal-rank fusion. The index fingerprint is derived from live definitions/schemas/selected metadata, so registry changes rebuild the in-memory retrieval representation. The default embedding provider is FastEmbed `BAAI/bge-small-en-v1.5`; its model revision, package version, dimensions, normalization and representation version are explicit `EmbeddingSpec` identity. A deterministic hash embedder exists only for tests/offline diagnostics. None of this changes capability truth or authority.
+
+The model returns either a conversational reply, a semantic capability selection or a capability-search request. Authorization is never delegated to the model. Capability-search fallback is limited to the small core signpost set rather than an alphabetical registry slice. Tool-result bounding preserves intact capability/status/trust envelopes, caps oversized item content, and omits older results first when the turn budget is exceeded.
 
 ### PDF-derived Knowledge
 
@@ -241,11 +254,15 @@ The first live representation provider is OCR-only: `atlas_providers/representat
 
 ## 13. Memory, Knowledge and Chat
 
-Memory and Knowledge are separate runtime responsibilities. `KnowledgeStore` contains durable references and notes. `MemoryStore` contains owner-scoped persistent memory with its own `memory_items` table, FTS index, supersession chain and active/retracted state. Memory never enters `knowledge_items`, so `knowledge.search` cannot retain or return memory content.
+Memory and Knowledge are separate runtime responsibilities. `KnowledgeStore` contains durable references and notes. Current `MemoryStore` is Memory V2: canonical owner data lives in `memory_v2_items` with integer internal keys, stable public item ids, explicit supersession foreign keys and active/superseded/retracted state. Memory never enters Knowledge tables.
 
-Memory FTS uses the same `item_id UNINDEXED, title, content` column order as Knowledge. Recall orders by raw `bm25(memory_fts) ASC, updated_at DESC`; the raw score is intentionally not normalized because SQLite FTS5 bm25 is lower-is-better and scores are not comparable across queries.
+Memory retrieval has two derived channels. `memory_v2_fts` provides lexical candidates; a versioned `sqlite-vec` table provides dense cosine candidates for the active embedding generation. Atlas fuses their rank positions with reciprocal-rank fusion (sparse weight 1.1, dense 1.0) rather than pretending FTS bm25 and cosine distance are directly comparable. Vector generations record provider, model, model revision, package version, dimensions, normalization and representation version. When that identity changes, Atlas builds and verifies a candidate generation, activates it, and retires the prior generation. Canonical memory rows remain the source of truth.
 
-Chat persists conversations and turns in `atlas-chat.db`. For each model decision it independently retrieves relevant active Memory and Knowledge, then combines those with bounded recent conversation and the live capability shortlist. The whole conversation history is not treated as runtime state.
+The previous `memory_items`/`memory_fts` schema is not part of live Memory V2 queries. `LegacyMemoryStore` is retained only as an explicit adapter for historical data; the runtime does not silently migrate those rows on startup. This is intentionally documented so preserved legacy rows are not mistaken for currently recalled Memory.
+
+Knowledge passage retrieval remains FTS5-based today. Dense/vector retrieval in this implementation therefore applies to Memory V2 and capability discovery, not yet to the OEM/Knowledge passage store.
+
+Chat persists conversations and turns in `atlas-chat.db`. For each model decision it independently retrieves relevant active Memory and Knowledge, then combines those with bounded recent conversation and the hybrid live capability shortlist. The whole conversation history is not treated as runtime state.
 
 After a conversational reply is already stored, Chat may run owner-turn memory reconciliation. That process produces a proposal only; it is not a capability and has no authority of its own. A proposed remember/update must be grounded in an exact substring of the authenticated owner turn, and update/retract targets must resolve to an existing owner memory candidate. Reconciliation then invokes the ordinary `memory.remember`, `memory.update` or `memory.retract` capability through `CapabilityRuntime`. `NO` therefore produces a blocked occurrence, `CONFIRM` produces an ordinary pending exact confirmation, and `YES` executes. There is no `memory.capture` operation and no policy pre-check in Chat. A capture outcome never rewrites or hijacks the reply already produced.
 
@@ -261,7 +278,7 @@ Purge matching is deliberately wider than item id alone but narrow to this princ
 
 The purge occurrence itself persists only the target `item_id`; principal context comes from trusted invocation provenance at execution time and is not added to the attested payload. Because the purge occurrence is `executing` while the transaction runs, the terminal-status guard also prevents it from redacting itself.
 
-Guaranteed. After memory.purge succeeds, within atlas-work.db, in one transaction or not at all: every memory_items row in the target supersession chain is deleted with its FTS entries; every action_occurrences row for this principal under atlas/memory in a terminal status that carries a chain item id or matching normalized content has its content-bearing fields and summary replaced; evidence rows for those occurrences are scrubbed the same way. Atlas will not surface that content again through recall, chat context assembly, capability results or the control plane.
+Guaranteed. After `memory.purge` succeeds, within `atlas-work.db`, in one transaction or not at all: every `memory_v2_items` row in the target supersession chain is deleted together with its FTS entries, vector rows and generation-representation links; every `action_occurrences` row for this principal under `atlas/memory` in a terminal status that carries a chain item id or matching normalized content has its content-bearing fields and summary replaced; evidence rows for those occurrences are scrubbed the same way. Atlas will not surface that content again through live Memory V2 recall, chat context assembly, capability results or the control plane.
 
 Not guaranteed. The originating chat turns in atlas-chat.db (delete the conversation separately); text already sent to a model provider, subject to that provider's retention; payload_sha256, kept deliberately as attestation — a hash, not a copy; SQLite WAL frames, freelist pages and page slack (no VACUUM); any backup taken before the purge; any copy made outside Atlas.
 
@@ -281,8 +298,8 @@ atlas-identity.db
   MCP servers, source roots, append-only policy events
 
 atlas-work.db
-  Work, steps, governed action occurrences, evidence,
-  Knowledge references/notes, first-class Memory + Memory FTS
+  Work, steps, governed action occurrences, evidence, Artifacts/Library,
+  Knowledge references/passages, Memory V2 canonical rows + FTS + sqlite-vec generations
 
 atlas-chat.db
   conversations and turns
@@ -300,7 +317,7 @@ The v3 migration imports selected configuration and custody state only. Legacy a
 
 `atlas_api` provides authenticated read routes and CSRF-protected mutation routes. Session authentication establishes the owner principal; it is not an authority decision by itself. Long-running synchronous runtime work — model turns, generic capability execution, Work execution, confirmation continuation, MCP refresh and provider verification — is dispatched through Starlette's worker threadpool rather than executed on the asyncio event loop, so health, polling and confirmation/cancellation remain responsive during a slow turn.
 
-Companion's primary navigation is Chat, Work, Sources and Atlas. Pending `CONFIRM` occurrences are also surfaced through the global `Needs you` affordance.
+Companion opens on `/chat` as one owner surface rather than a permanent four-item top navigation. The surface interweaves the conversation with Active Work, Cadence, `Needs you`, runtime readiness and Control awareness; a right-hand operational margin exposes pending decisions, active Work, scheduled duties and deeper plumbing links. Work, Cadence, Sources, Memory, Operations and Atlas Control remain routed deep views. Pending `CONFIRM` occurrences are surfaced both inline with the originating turn when applicable and through global owner-attention affordances.
 
 The Memory screen is a secondary durable-context surface reached from Sources; it exposes owner memory, grounding, retract/restore/purge controls and the exact purge guarantee. The Atlas screen exposes live policy, providers, MCP/n8n connections, external-account bindings, source roots, host state and capability inventory from the same runtime used for execution. A capability snapshot reads the owner's latest policy rules and revision once, then resolves the inventory against that in-memory snapshot instead of reopening SQLite and rescanning policy for every capability. Chat confirmation cards are reconciled against the live pending-action set rather than treating a historical chat-turn copy as current action state; after dispatch, a card cannot offer a second confirmation while runtime verification is pending.
 

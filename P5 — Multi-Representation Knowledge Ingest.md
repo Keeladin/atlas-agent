@@ -1,5 +1,7 @@
 # P5 — Multi-Representation Knowledge Ingest
 
+> **Current status (2026-09-03):** Implemented/current ingest design record. Multi-representation Knowledge still preserves one Work responsibility and one generation. Subsequent retrieval work did not vectorize the Knowledge passage store: `knowledge.retrieve` remains FTS-based today, while local dense embeddings are used by Memory V2 and capability discovery.
+
 ## Purpose
 
 P5 removes the one-representation bottleneck in `knowledge.ingest` while preserving Atlas's topology:

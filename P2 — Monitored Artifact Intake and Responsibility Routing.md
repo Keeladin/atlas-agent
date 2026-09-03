@@ -1,5 +1,7 @@
 # P2 — Monitored Artifact Intake and Responsibility Routing
 
+> **Current status (2026-09-03):** Implemented historical slice. Its Artifact → inspect → classify → runtime-owned workflow boundary remains current, but later P3/P4/P4.5/P5 work expanded extraction, managed custody and multi-representation ingest. Use `Atlas Architecture — Runtime and Topology.md` for present-tense runtime truth.
+
 ## Approved responsibility model
 
 A monitored Source event is not Work. Detection establishes or resolves an Artifact, then Atlas performs one bounded semantic classification before any Work ID exists.

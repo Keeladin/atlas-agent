@@ -1,10 +1,12 @@
 # P4 — Representation Provider Boundary
 
+> **Current status (2026-09-03):** Implemented historical slice with one terminology change superseded by P5: `ocr` is no longer a model-facing semantic representation need. Current semantic needs are `text`, `layout`, `tables`, and `visual`; OCR is a runtime extraction mechanism used when native searchable text is unavailable.
+
 ## Responsibility
 
 `knowledge.ingest` may require semantic representations that deterministic local extractors cannot produce. Atlas keeps that heavy interpretation behind a replaceable representation-provider boundary rather than embedding OCR or vision models into Source acquisition.
 
-The model may declare semantic `representation_needs` (`ocr`, `layout`, `tables`, `visual`). It never names an implementation, process, model, provider or capability. Runtime validates the need and maps only supported needs to registered workflow mechanics.
+At the P4 point in history the classifier could declare `ocr`, `layout`, `tables`, or `visual`. P5 superseded that contract: the current model-facing semantic `representation_needs` are `text`, `layout`, `tables`, and `visual`. OCR is now a runtime mechanism for satisfying searchable text when native text is unavailable. The model still never names an implementation, process, model, provider or capability; runtime maps validated semantic needs to registered workflow mechanics.
 
 ```text
 Artifact inspection
@@ -24,7 +26,7 @@ Provider output is bounded JSON containing text plus provider metadata/version. 
 
 If OCR is requested but no provider is configured or available, Atlas records `workflow_unavailable_for_artifact`; it does not silently fall back to a misleading text-only ingestion.
 
-Other declared needs (`layout`, `tables`, `visual`) are deliberately not executable in this slice. A workflow that requests them fails closed as unavailable instead of ignoring the need.
+In the original P4 slice, `layout`, `tables`, and `visual` were deliberately unavailable and failed closed. P5 later made those semantic needs executable through the combined governed interpretation path; this paragraph is retained only as the P4 implementation-history boundary.
 
 ## Invariant
 

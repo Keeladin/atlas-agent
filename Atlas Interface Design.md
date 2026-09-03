@@ -35,6 +35,13 @@ The primary owner interface answers continuously:
 
 Conversation is not a separate product from Operations. Work, Cadence, evidence and capability activity surface around the current objective. Control remains a deeper technical destination.
 
+### Implemented owner surface
+
+The current `/chat` implementation is the reference expression of this doctrine: a compact Atlas header; a live awareness strip for Active Work, Cadence, Needs you and Control; a searchable conversation flow; a continuous transcript/composer; and an operational margin that keeps pending decisions, active Work, scheduled duties and plumbing links visible beside the objective. Work, Cadence, Sources, Memory, Operations and Control remain routed views, but the shell no longer presents them as equal permanent product tabs.
+
+Trace/evidence is expanded inline per turn. Pending exact confirmations are reconciled against the live pending-action set before controls are shown, so a historical turn cannot manufacture a second approval affordance after the runtime has moved on.
+
+
 ### 4. State design
 
 Every primary surface must deliberately cover: initial, loading, empty/idle, active execution, partial/uncertain, failure and offline. Confirmation is an owner-attention state attached to the exact action it governs.
@@ -66,6 +73,11 @@ Required motion communicates feedback or state transition; optional motion adds 
 ### 11. Tokens
 
 Structural neutrals and semantic state colours are separate token families. Current signals are blue/cyan for active information and connectivity, violet for model/retrieval context, emerald for verified success, amber for attention/waiting, and red for failure/blocking. Legacy gold variable names may exist temporarily as compatibility aliases but must not define visual meaning.
+
+### 12. Installed PWA identity
+
+The installed-app launch experience is part of the interface, not browser chrome to ignore. `manifest.webmanifest`, `favicon.svg`, `pwa-192.png`, `pwa-512.png`, document `theme-color` and service-worker cache behavior must agree with the current Atlas identity. Checked-in startup assets use the deep blue-black canvas with cyan/violet mark; the old gold globe is legacy artwork and must not be reintroduced. When launch assets change, deployment must account for service-worker/installed-PWA cache persistence so stale startup art is not mistaken for the current UI.
+
 
 ## Typography
 

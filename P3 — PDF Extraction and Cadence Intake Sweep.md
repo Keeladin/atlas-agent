@@ -1,5 +1,7 @@
 # P3 — PDF Extraction and Cadence Intake Sweep
 
+> **Current status (2026-09-03):** Implemented historical slice. The PDF/intake-sweep behavior remains relevant. The original statement that no vector/retrieval redesign was introduced describes P3 at that time; later work added dense retrieval for Memory V2 and capability discovery, while Knowledge passage retrieval remains FTS-based.
+
 ## Outcome
 
 P3 closes the first real extraction gap without changing the Artifact → classification → Work boundary.

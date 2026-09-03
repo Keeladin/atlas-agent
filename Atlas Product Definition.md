@@ -26,7 +26,7 @@ The state is explicit and queryable rather than reconstructed from prompt histor
 
 A restart does not erase the owner's work, configuration, policy or evidence, and the UI reads the same persistent truth used by execution.
 
-Persistent Memory is structurally separate from Knowledge. Owner-turn capture is grounded in the authenticated owner turn and dispatches the same governed remember/update/retract operations available everywhere else. Purge is atomic inside `atlas-work.db` and states its application-level, non-forensic boundary explicitly.
+Persistent Memory is structurally separate from Knowledge. Current Memory V2 keeps canonical memory rows separate from derived lexical/vector retrieval state, fuses FTS5 and local semantic-vector rankings, and versions each vector generation by its embedding provider/model snapshot/package/dimensions/normalization contract. Owner-turn capture is grounded in the authenticated owner turn and dispatches the same governed remember/update/retract operations available everywhere else. Purge is atomic inside `atlas-work.db` and states its application-level, non-forensic boundary explicitly. The older `memory_items` table is preserved but is not queried or automatically migrated by Memory V2; migration of that historical data is an explicit operation, not an implicit startup side effect.
 
 ## Responsibility 2 — Own governed work
 
@@ -46,7 +46,7 @@ Availability, capability and authority are separate facts. A connected tool may 
 
 ### Done means
 
-Connecting or refreshing an MCP server updates both the live capability inventory and the Companion capability browser without adding a parallel permission mechanism or requiring a code deployment for each tool. Discovered input schemas are rendered generically, with raw JSON as the fallback rather than provider-specific UI code.
+Connecting or refreshing an MCP server updates both the live capability inventory and the Companion capability browser without adding a parallel permission mechanism or requiring a code deployment for each tool. Discovered input schemas are rendered generically, with raw JSON as the fallback rather than provider-specific UI code. Chat does not receive the whole schema inventory on every turn: it builds a semantic shortlist over live registry truth using exact/sparse matching plus local dense embeddings fused by reciprocal-rank fusion, while the complete compact capability-family catalog remains available for wider search.
 
 ## Responsibility 4 — Act under literal owner policy
 
@@ -87,11 +87,11 @@ The greenfield runtime currently owns:
 - Chat and durable conversation state;
 - Work and Cadence;
 - Knowledge references/notes and first-class owner Memory with supersession, retraction, recall and governed purge;
-- native file and host capabilities;
+- native file and host capabilities, including exact Debian package inspection and broker-mediated package mutation;
 - provider-neutral public-web search, read, fetch, extraction, confirmed download, bounded same-origin crawl, and read-only JavaScript rendering, with deterministic translation of provider-native streams into versioned `data_only` evidence plus provenance before reasoning;
-- model and web-provider configuration, encrypted credential custody, and model execution;
+- model and web-provider configuration, encrypted credential custody, model execution, and local embedding retrieval for Memory/capability discovery;
 - generic MCP/n8n discovery and invocation;
-- generic Streamable HTTP and stdio MCP capability providers;
+- generic Streamable HTTP and stdio MCP capability providers, including a narrow Termux/SSH Android-phone provider for location, telephony inspection and SMS;
 - Discovery-driven Google Workspace capabilities for Gmail, Drive and Calendar;
 - runtime owner policy and exact confirmation;
 - evidence and verification state;
@@ -103,7 +103,7 @@ Morning is not an Atlas responsibility. It is a separate product, has no runtime
 
 Atlas does not create autonomous named sub-agents, use service configuration as discretionary policy, grant authority merely because a provider advertises an operation, or preserve obsolete architecture solely for compatibility.
 
-The current product also does not claim that every possible domain workflow is already implemented. Read-only rendered browser execution is implemented; web form submission, authenticated interaction and other browser mutations remain unavailable until they have explicit capability contracts and runtime-policy semantics. New responsibilities should enter through capabilities and explicit external boundaries rather than by expanding Atlas's identity.
+The current product also does not claim that every possible domain workflow is already implemented. Read-only rendered browser execution is implemented; web form submission, authenticated interaction and other browser mutations remain unavailable until they have explicit capability contracts and runtime-policy semantics. Dense retrieval is implemented for Memory V2 and capability discovery, but Knowledge/OEM passage retrieval is still lexical FTS today; the product must not imply that manual retrieval has already been vectorized. New responsibilities should enter through capabilities and explicit external boundaries rather than by expanding Atlas's identity.
 
 ## Completion standard
 

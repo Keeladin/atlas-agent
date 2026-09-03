@@ -32,6 +32,8 @@ Atlas should retrieve the state, evidence, history and capability context needed
 
 Durable state belongs in explicit stores, not in an endlessly growing prompt.
 
+Search indexes, embeddings and ranking structures are derived representations, not canonical memory or capability truth. Their provider/model/version identity must be explicit, and Atlas must be able to rebuild or retire them without rewriting the underlying durable records.
+
 ## 6. Evidence and verification precede completion
 
 A model saying that something happened is not evidence that it happened.

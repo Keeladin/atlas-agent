@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import type { WorkItem, WorkStep } from '../api/types'
@@ -11,6 +11,7 @@ import {
   StatusLamp,
 } from '../ui/OperationsPrimitives'
 import { workStateToLamp } from '../ui/operationState'
+import { focusQuery } from '../ui/workflowPresentation'
 import { SegmentedNav } from '../ui/SegmentedNav'
 import { Workspace, WorkspaceRailSection } from '../ui/Workspace'
 import { OPERATIONS_TABS } from './operationsNav'
@@ -40,21 +41,10 @@ export function WorkList() {
   const [filter, setFilter] = useState<WorkFilter>('all')
   const [search, setSearch] = useState('')
   const [selectedId, setSelectedId] = useState('')
-  const [objective, setObjective] = useState('')
-  const [steps, setSteps] = useState('[\n  {"capability_id":"knowledge.search","input":{"query":"example"}}\n]')
-  const create = useMutation({
-    mutationFn: (payload: object) => api('/api/work', { method: 'POST', body: JSON.stringify(payload) }),
-    onSuccess: async () => { setObjective(''); await qc.invalidateQueries({ queryKey: ['work'] }) },
-  })
   const control = useMutation({
     mutationFn: ({ id, action }: { id: string; action: 'resume' | 'pause' | 'cancel' }) => api<WorkItem>(`/api/work/${id}/${action}`, { method: 'POST', body: '{}' }),
     onSuccess: async item => { setSelectedId(item.work_id); await qc.invalidateQueries({ queryKey: ['work'] }) },
   })
-  function submit(event: FormEvent) {
-    event.preventDefault()
-    try { create.mutate({ objective, steps: JSON.parse(steps), run: true }) } catch { /* rendered by native form state */ }
-  }
-
   const rows = useMemo(() => query.data?.work ?? [], [query.data?.work])
   useEffect(() => { if (!selectedId && rows.length) setSelectedId(rows[0].work_id) }, [rows, selectedId])
   const selected = rows.find(item => item.work_id === selectedId)
@@ -75,8 +65,9 @@ export function WorkList() {
       <div className="ops-filter-stack">{(['all', 'active', 'waiting', 'paused', 'failed', 'completed'] as WorkFilter[]).map(value => <button type="button" className={filter === value ? 'active' : ''} key={value} onClick={() => setFilter(value)}><span>{value}</span><strong>{value === 'all' ? rows.length : rows.filter(item => matchesFilter(item, value)).length}</strong></button>)}</div>
     </WorkspaceRailSection>
     <WorkspaceRailSection title="Search"><input aria-label="Search Work" value={search} onChange={event => setSearch(event.target.value)} placeholder="Ref, objective, workflow…" /></WorkspaceRailSection>
-    <WorkspaceRailSection title="Engineering">
-      <details className="inspect engineering-create"><summary>Create Work manually</summary><form onSubmit={submit} className="stack"><label>Objective<input value={objective} onChange={event => setObjective(event.target.value)} placeholder="What Atlas owns until done" /></label><label>Capability steps<textarea className="mono" value={steps} onChange={event => setSteps(event.target.value)} spellCheck={false} /></label><button className="primary" type="submit" disabled={!objective.trim() || create.isPending}>Create and run</button>{create.isError ? <p className="offline-banner">{create.error.message}</p> : null}</form></details>
+    <WorkspaceRailSection title="New Work">
+      <p className="meta">Describe what Atlas should own until it is done. Atlas builds the capability steps and creates the Work.</p>
+      <Link className="button-link primary" to={`/chat?ask=${encodeURIComponent('Take this on as Work: ')}`}>Ask Atlas in Chat</Link>
     </WorkspaceRailSection>
   </div>
 
@@ -84,6 +75,7 @@ export function WorkList() {
     {canResume ? <button className="confirm" type="button" disabled={control.isPending} onClick={() => control.mutate({ id: selected.work_id, action: 'resume' })}>{selected.status === 'failed' ? 'Retry' : 'Resume'}</button> : null}
     {canPause ? <button type="button" disabled={control.isPending} onClick={() => control.mutate({ id: selected.work_id, action: 'pause' })}>Pause</button> : null}
     {!terminal ? <button className="danger" type="button" disabled={control.isPending} onClick={() => control.mutate({ id: selected.work_id, action: 'cancel' })}>Cancel</button> : null}
+    <Link className="button-link" to={`/chat?${focusQuery({ work_id: selected.work_id })}&ask=${encodeURIComponent(`About the Work “${selected.objective}” — `)}`}>Open in Chat</Link>
     <Link className="button-link primary" to={`/work/${selected.work_id}`}>Open full Work</Link>
   </>}>
     <InspectorSection title="Responsibility"><FactList items={[

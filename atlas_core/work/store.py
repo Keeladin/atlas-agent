@@ -20,9 +20,13 @@ class WorkStore:
             CREATE TABLE IF NOT EXISTS work_steps(step_id TEXT PRIMARY KEY,work_id TEXT NOT NULL,ordinal INTEGER NOT NULL,description TEXT NOT NULL,capability_id TEXT NOT NULL,input_json TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('queued','running','waiting','completed','failed','cancelled')),occurrence_id TEXT,output_json TEXT,error TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(work_id) REFERENCES work_items(work_id) ON DELETE CASCADE,UNIQUE(work_id,ordinal));
             """)
             columns={row[1] for row in db.execute("PRAGMA table_info(work_items)")}
-            for name in ("display_ref","artifact_class","workflow_class"):
+            for name in ("display_ref","artifact_class","workflow_class","source_cadence_id"):
                 if name not in columns:db.execute(f"ALTER TABLE work_items ADD COLUMN {name} TEXT")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS work_display_ref_unique ON work_items(display_ref) WHERE display_ref IS NOT NULL")
+            db.execute("CREATE INDEX IF NOT EXISTS work_source_cadence_id_idx ON work_items(source_cadence_id) WHERE source_cadence_id IS NOT NULL")
+            # Cadence-created Work has always recorded the relationship in metadata; promote
+            # existing rows so run history covers Work created before the column existed.
+            db.execute("UPDATE work_items SET source_cadence_id=json_extract(metadata_json,'$.cadence_id') WHERE source_cadence_id IS NULL AND json_extract(metadata_json,'$.cadence_id') IS NOT NULL")
     def create(self,objective:str,owner_principal_id:str,steps:list[dict[str,Any]],*,metadata:dict[str,Any]|None=None,artifact_class:str|None=None,workflow_class:str|None=None)->WorkItem:
         if not objective.strip():raise ValueError("work objective is required")
         if not steps:raise ValueError("work requires at least one step")
@@ -33,7 +37,8 @@ class WorkStore:
                 if not (isinstance(artifact_class,str) and len(artifact_class)==1 and artifact_class.isalpha() and isinstance(workflow_class,str) and len(workflow_class)==1 and workflow_class.isalpha()):raise ValueError("routed work requires one-letter artifact and workflow classes")
                 route=(artifact_class+workflow_class).upper();row=db.execute("SELECT next_value FROM work_route_sequences WHERE route_code=?",(route,)).fetchone();number=int(row[0]) if row else 1
                 db.execute("INSERT INTO work_route_sequences(route_code,next_value) VALUES (?,?) ON CONFLICT(route_code) DO UPDATE SET next_value=excluded.next_value",(route,number+1));display_ref=f"{route}-{number:03d}"
-            db.execute("INSERT INTO work_items(work_id,display_ref,artifact_class,workflow_class,objective,status,owner_principal_id,metadata_json) VALUES (?,?,?,?,?,'queued',?,?)",(wid,display_ref,artifact_class.upper() if artifact_class else None,workflow_class.upper() if workflow_class else None,objective,owner_principal_id,json.dumps(metadata or {},sort_keys=True,separators=(",",":"))))
+            source_cadence_id=(metadata or {}).get("cadence_id")
+            db.execute("INSERT INTO work_items(work_id,display_ref,artifact_class,workflow_class,objective,status,owner_principal_id,metadata_json,source_cadence_id) VALUES (?,?,?,?,?,'queued',?,?,?)",(wid,display_ref,artifact_class.upper() if artifact_class else None,workflow_class.upper() if workflow_class else None,objective,owner_principal_id,json.dumps(metadata or {},sort_keys=True,separators=(",",":")),str(source_cadence_id) if source_cadence_id else None))
             for i,s in enumerate(steps,1):
                 cid=str(s.get("capability_id") or "").strip();inp=s.get("input") or {};desc=str(s.get("description") or cid).strip()
                 if not cid or not isinstance(inp,dict):raise ValueError("each work step requires capability_id and object input")
@@ -42,9 +47,11 @@ class WorkStore:
     def get(self,work_id:str)->WorkItem:
         with self._db() as db:r=db.execute("SELECT * FROM work_items WHERE work_id=?",(work_id,)).fetchone()
         if r is None:raise KeyError(work_id)
-        return WorkItem(r["work_id"],r["objective"],r["status"],r["owner_principal_id"],r["created_at"],r["updated_at"],json.loads(r["metadata_json"] or "{}"),r["display_ref"],r["artifact_class"],r["workflow_class"])
-    def list(self,*,limit:int=200)->tuple[WorkItem,...]:
-        with self._db() as db:rows=db.execute("SELECT work_id FROM work_items ORDER BY created_at DESC LIMIT ?",(limit,)).fetchall()
+        return WorkItem(r["work_id"],r["objective"],r["status"],r["owner_principal_id"],r["created_at"],r["updated_at"],json.loads(r["metadata_json"] or "{}"),r["display_ref"],r["artifact_class"],r["workflow_class"],r["source_cadence_id"])
+    def list(self,*,limit:int=200,cadence_id:str|None=None)->tuple[WorkItem,...]:
+        with self._db() as db:
+            if cadence_id:rows=db.execute("SELECT work_id FROM work_items WHERE source_cadence_id=? ORDER BY created_at DESC LIMIT ?",(cadence_id,limit)).fetchall()
+            else:rows=db.execute("SELECT work_id FROM work_items ORDER BY created_at DESC LIMIT ?",(limit,)).fetchall()
         return tuple(self.get(r["work_id"]) for r in rows)
     def steps(self,work_id:str)->tuple[WorkStep,...]:
         with self._db() as db:rows=db.execute("SELECT * FROM work_steps WHERE work_id=? ORDER BY ordinal",(work_id,)).fetchall()

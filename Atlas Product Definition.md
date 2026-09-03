@@ -34,6 +34,8 @@ Atlas can create durable Work consisting of explicit semantic capability steps. 
 
 Each step is resolved against current runtime policy when it actually executes. If the resulting outcome is unverified, the Work waits on the same durable `uncertain` action occurrence used by Chat and direct control surfaces until it is reconciled.
 
+Chat authors and interprets ordinary Work and recurring `work_template` Cadence through governed capabilities; Cadence remains durable recurring intent and Work remains durable execution truth. Monitored `intake_sweep` duties are readable and runnable but are not conversationally authored or edited in this iteration. Links from Work/Cadence can focus one inference on an exact runtime identity, while the persisted reference remains historical provenance rather than sticky conversational state.
+
 ### Done means
 
 A policy change made after Work was created still governs the eventual side effect, and the evidence records the resulting action state.
@@ -68,7 +70,7 @@ Host self-restart is a special verification case: dispatch may leave the predece
 
 ### Done means
 
-The UI and Chat can explain what happened from persisted runtime evidence rather than inventing a post-hoc story.
+The UI and Chat can explain what happened from persisted runtime evidence rather than inventing a post-hoc story. Successful conversational Work/Cadence mutations persist their presentable action occurrence on the assistant turn; scheduled Cadence runs remain visible through Cadence history and their materialized Work rather than being mislabeled as owner-triggered run cards.
 
 ## Responsibility 6 — Remain useful across interfaces
 

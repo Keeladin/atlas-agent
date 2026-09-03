@@ -201,9 +201,10 @@ async def conversation_send(request: Request) -> JSONResponse:
     if isinstance(gate, JSONResponse): return gate
     try:
         body = await _body(request); owner = _owner(request, gate); rt = _runtime(request)
+        focus = body.get("focus") if isinstance(body.get("focus"), dict) else None
         result = await run_in_threadpool(
             rt.chat.send, request.path_params["conversation_id"], str(body.get("message") or "").strip(),
-            principal_id=owner.principal_id, defer_capture=True,
+            principal_id=owner.principal_id, defer_capture=True, focus=focus,
         )
         capture = result.pop("_post_turn_capture", None)
         background = BackgroundTask(rt.chat.run_post_turn_capture, **capture) if capture else None
@@ -214,7 +215,8 @@ async def conversation_send(request: Request) -> JSONResponse:
 async def work_list(request: Request) -> JSONResponse:
     gate = require_session(request)
     if isinstance(gate, JSONResponse): return gate
-    return JSONResponse({"work": [x.as_dict() for x in _runtime(request).work_store.list()]})
+    cadence_id = request.query_params.get("cadence_id") or None
+    return JSONResponse({"work": [x.as_dict() for x in _runtime(request).work_store.list(cadence_id=cadence_id)]})
 
 
 async def work_create(request: Request) -> JSONResponse:

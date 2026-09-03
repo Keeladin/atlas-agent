@@ -41,6 +41,10 @@ The current `/chat` implementation is the reference expression of this doctrine:
 
 Trace/evidence is expanded inline per turn, grounded directly from the durable action occurrence rather than reconstructed from chat-turn history.
 
+Work and Cadence deep screens expose runtime truth and direct controls, while conversational creation and interpretation return to Chat rather than growing a parallel workflow-builder interface. A link may focus exactly one Chat inference on a Work, Cadence or Work step; that identity is persisted on the originating turn as provenance and appears in later bounded history only as historical context.
+
+Successful `work.create`, `cadence.create`, `cadence.update` and owner-triggered `cadence.run_now` turns may render an inline WorkflowCard from the persisted action occurrence. Scheduled runs are represented by Cadence run history and ordinary Work detail; a later `work.get` read is not presented as though the owner just invoked `cadence.run_now`. `intake_sweep` can be inspected and run but has no conversational authoring/editing controls in this iteration.
+
 
 ### 4. State design
 

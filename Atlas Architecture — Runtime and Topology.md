@@ -215,6 +215,12 @@ When a step runs it invokes `CapabilityRuntime`, so current policy governs the a
 
 Cadence stores recurring duties. `work_template` cadences materialize normal Work; `intake_sweep` cadences schedule bounded monitored-Source intake outside Work, where each Artifact is independently classified and may create one ordinary Work item. Neither kind has a privileged execution path around capability policy.
 
+Chat is the authoring and interpretation surface for ordinary Work and `work_template` Cadence. It resolves real object ids, validates step inputs through capability schemas and invokes the same governed `work.create`, `cadence.create`, `cadence.update` and `cadence.run_now` capabilities used by other trusted surfaces. `intake_sweep` remains readable and runnable through these capabilities but is not conversationally creatable or editable in this iteration.
+
+A Work/Cadence link into Chat may attach a cleaned `focused_reference` to one inference only. That reference is persisted on the originating owner turn as provenance; bounded later conversation can carry it as historical `reference_provenance`, but it is never promoted back into active focus or stored as sticky current-object state.
+
+Successful presentable workflow mutations retain the latest action occurrence on the final assistant turn so Companion can render a WorkflowCard from durable runtime truth. This applies to `work.create`, `cadence.create`, `cadence.update` and owner-triggered `cadence.run_now`; transient tool context is not persisted wholesale. Scheduler-fired Cadence runs do not manufacture a Chat action card. Their results are read through the Cadence run reference/history and ordinary `work.get`/Work detail.
+
 ### Artifact intake before Work
 
 A monitored Source event is not itself Work. Deterministic detection first establishes or resolves an Artifact. Atlas then performs one bounded semantic classification over that Artifact and selects a workflow intent. Work is created only when that classification establishes a real durable responsibility.

@@ -10,6 +10,7 @@ import {
   StatusLamp,
 } from '../ui/OperationsPrimitives'
 import { workStateToLamp } from '../ui/operationState'
+import { focusQuery } from '../ui/workflowPresentation'
 import { SegmentedNav } from '../ui/SegmentedNav'
 import { Workspace, WorkspaceRailSection } from '../ui/Workspace'
 import { OPERATIONS_TABS } from './operationsNav'
@@ -72,7 +73,10 @@ export function WorkDetail() {
         <div className="execution-step-body"><div className="execution-step-head"><div><strong>{step.description}</strong><span className="mono">{step.capability_id}</span></div><span className={`chip ${step.status === 'completed' ? 'done' : step.status === 'failed' ? 'failed' : 'running'}`}>{step.status.replaceAll('_', ' ')}</span></div>
           <div className="execution-step-meta"><span>Step <strong className="mono">{step.ordinal}</strong></span><span>Occurrence <strong className="mono">{step.occurrence_id ?? '—'}</strong></span></div>
           {step.error ? <p className="offline-banner">{step.error}</p> : null}
-          {step.output ? <details className="inspect"><summary>Evidence / output</summary><pre className="mono">{JSON.stringify(step.output, null, 2)}</pre></details> : null}
+          {step.output || step.error ? <div className="execution-step-read">
+            <Link className="button-link" to={`/chat?${focusQuery({ work_id: workId, step_ordinal: step.ordinal })}&ask=${encodeURIComponent(`What did step ${step.ordinal} (${step.capability_id}) of “${item?.objective ?? 'this Work'}” actually produce?`)}`}>Ask Atlas about this step</Link>
+            {step.output ? <details className="inspect"><summary>Technical output</summary><pre className="mono">{JSON.stringify(step.output, null, 2)}</pre></details> : null}
+          </div> : null}
         </div>
       </article>)}</div>
       {!item?.steps?.length && !query.isLoading ? <div className="empty-state"><strong>No execution steps</strong></div> : null}

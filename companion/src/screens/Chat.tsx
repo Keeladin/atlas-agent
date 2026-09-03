@@ -1,15 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
-import type { ActionOccurrence, Cadence, ChatTurn, Conversation, WorkItem } from '../api/types'
+import type { ActionOccurrence, Cadence, ChatFocus, ChatTurn, Conversation, WorkItem } from '../api/types'
 import { FactList, InspectorSection, StatusLamp } from '../ui/OperationsPrimitives'
 import type { LampTone } from '../ui/operationState'
 import { cadenceStateToLamp, workStateToLamp } from '../ui/operationState'
+import { WorkflowCard } from '../ui/WorkflowCard'
+import { readFocus, workflowVariant } from '../ui/workflowPresentation'
 import { Workspace } from '../ui/Workspace'
 
 type ConversationList = { conversations: Conversation[] }
-type SendRequest = { conversationId: string; text: string }
+type SendRequest = { conversationId: string; text: string; focus?: ChatFocus | null }
 type Health = { ok: boolean; service: string; version: string }
 
 function when(value?: string | null) {
@@ -55,7 +57,20 @@ export function Chat() {
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null)
   const [conversationFilter, setConversationFilter] = useState('')
   const [message, setMessage] = useState('')
+  const [pendingFocus, setPendingFocus] = useState<ChatFocus | null>(null)
   const threadEndRef = useRef<HTMLDivElement | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // Entering Chat from a specific Work/Cadence carries that object's exact runtime identity
+  // alongside the human-readable prompt, so Atlas does not have to re-resolve it from a title.
+  useEffect(() => {
+    const focus = readFocus(searchParams)
+    const ask = searchParams.get('ask')
+    if (!focus && !ask) return
+    if (focus) setPendingFocus(focus)
+    if (ask) setMessage(ask)
+    setSearchParams(new URLSearchParams(), { replace: true })
+  }, [searchParams, setSearchParams])
 
   const { mutate: createConversation, isPending: createPending } = useMutation({
     mutationFn: () => api<Conversation>('/api/chat/conversations', { method: 'POST', body: JSON.stringify({ title: 'Conversation' }) }),
@@ -92,13 +107,15 @@ export function Chat() {
   const selectedValid = Boolean(selected && items.some(item => item.conversation_id === selected))
   const detail = useQuery({ queryKey: ['conversation', selected], queryFn: () => api<{ conversation: Conversation; turns: ChatTurn[] }>(`/api/chat/conversations/${selected}`), enabled: selectedValid })
   const send = useMutation({
-    mutationFn: ({ conversationId, text }: SendRequest) => api<{ turn: ChatTurn; action?: Record<string, unknown> }>(`/api/chat/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify({ message: text }) }),
+    mutationFn: ({ conversationId, text, focus }: SendRequest) => api<{ turn: ChatTurn; action?: Record<string, unknown> }>(`/api/chat/conversations/${conversationId}/messages`, { method: 'POST', body: JSON.stringify(focus ? { message: text, focus } : { message: text }) }),
     onSuccess: async (_data, variables) => {
       setMessage('')
+      setPendingFocus(null)
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['conversation', variables.conversationId] }),
         qc.invalidateQueries({ queryKey: ['conversations'] }),
         qc.invalidateQueries({ queryKey: ['work'] }),
+        qc.invalidateQueries({ queryKey: ['cadence'] }),
       ])
     },
   })
@@ -124,13 +141,13 @@ export function Chat() {
   function submit(event: FormEvent) {
     event.preventDefault()
     const text = message.trim()
-    if (text && selected && selectedValid && !send.isPending) send.mutate({ conversationId: selected, text })
+    if (text && selected && selectedValid && !send.isPending) send.mutate({ conversationId: selected, text, focus: pendingFocus })
   }
   function submitFromKeyboard(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
     event.preventDefault()
     const text = message.trim()
-    if (text && selected && selectedValid && !send.isPending) send.mutate({ conversationId: selected, text })
+    if (text && selected && selectedValid && !send.isPending) send.mutate({ conversationId: selected, text, focus: pendingFocus })
   }
   function removeConversation(item: Conversation) {
     if (window.confirm(`Delete conversation “${item.title}”? This removes its chat history.`)) deleteConversation.mutate(item.conversation_id)
@@ -162,7 +179,7 @@ export function Chat() {
           const selectedHere = selectedTurn?.turn_id === turn.turn_id
           const status = recorded?.status
           const turnError = typeof turn.metadata?.error === 'string' ? turn.metadata.error : null
-          return <article key={turn.turn_id} className={`chat-turn ${turn.role} ${selectedHere ? 'selected' : ''}`}><div className="chat-turn-meta"><span className="chat-turn-role">{turn.role === 'user' ? 'You' : turn.role === 'assistant' ? 'Atlas' : turn.role}</span><time>{when(turn.created_at)}</time></div><div className="chat-turn-main"><div className="chat-turn-content">{turn.content}</div>{tools.length ? <div className="chat-turn-tools">{tools.map(tool => <span className="chat-tool-trace" key={tool}><StatusLamp tone={recorded?.capability_id === tool ? actionTone(status) : 'blue'} /><span>{tool}</span></span>)}</div> : null}{turnError ? <p className="offline-banner">{turnError}</p> : null}<button type="button" className="chat-trace-toggle" aria-expanded={selectedHere} onClick={() => setSelectedTurnId(selectedHere ? null : turn.turn_id)}>{selectedHere ? 'Close trace' : 'Trace'}</button>{selectedHere ? <div className="chat-inline-context"><InspectorSection title="Runtime trace"><FactList items={[
+          return <article key={turn.turn_id} className={`chat-turn ${turn.role} ${selectedHere ? 'selected' : ''}`}><div className="chat-turn-meta"><span className="chat-turn-role">{turn.role === 'user' ? 'You' : turn.role === 'assistant' ? 'Atlas' : turn.role}</span><time>{when(turn.created_at)}</time></div><div className="chat-turn-main"><div className="chat-turn-content">{turn.content}</div>{recorded && workflowVariant(recorded.capability_id) ? <WorkflowCard action={recorded} /> : null}{tools.length ? <div className="chat-turn-tools">{tools.map(tool => <span className="chat-tool-trace" key={tool}><StatusLamp tone={recorded?.capability_id === tool ? actionTone(status) : 'blue'} /><span>{tool}</span></span>)}</div> : null}{turnError ? <p className="offline-banner">{turnError}</p> : null}<button type="button" className="chat-trace-toggle" aria-expanded={selectedHere} onClick={() => setSelectedTurnId(selectedHere ? null : turn.turn_id)}>{selectedHere ? 'Close trace' : 'Trace'}</button>{selectedHere ? <div className="chat-inline-context"><InspectorSection title="Runtime trace"><FactList items={[
             { label: 'Turn', value: turn.turn_id, mono: true },
             { label: 'Created', value: when(turn.created_at), mono: true },
             ...(recorded ? [

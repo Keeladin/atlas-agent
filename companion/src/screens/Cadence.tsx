@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client'
-import type { Cadence, Capability, WorkItem } from '../api/types'
+import type { ActionOccurrence, Cadence, WorkItem } from '../api/types'
 import {
   FactList,
   InspectorPanel,
@@ -12,26 +12,9 @@ import {
 } from '../ui/OperationsPrimitives'
 import { cadenceStateToLamp, workStateToLamp } from '../ui/operationState'
 import { SegmentedNav } from '../ui/SegmentedNav'
-import { Sheet } from '../ui/Sheet'
 import { Workspace } from '../ui/Workspace'
+import { focusQuery, readSteps, scheduleLabel, stepLabel, when } from '../ui/workflowPresentation'
 import { OPERATIONS_TABS } from './operationsNav'
-
-const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-type StepDraft = { capability_id: string; input: string }
-
-function scheduleLabel(schedule: Record<string, unknown>) {
-  const kind = String(schedule.kind ?? '')
-  if (kind === 'interval') return `Every ${Number(schedule.minutes ?? 0)} minutes`
-  const time = `${String(schedule.hour ?? 8).padStart(2, '0')}:${String(schedule.minute ?? 0).padStart(2, '0')}`
-  if (kind === 'weekly') return `${WEEKDAYS[Number(schedule.weekday ?? 0)] ?? 'Weekly'} at ${time}`
-  return `Daily at ${time}`
-}
-
-function when(value?: string | null) {
-  if (!value) return '—'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
-}
 
 function weekDays() {
   const today = new Date(); today.setHours(0, 0, 0, 0)
@@ -47,64 +30,83 @@ function sameDay(value: string | null | undefined, day: Date) {
 export function CadenceList() {
   const qc = useQueryClient()
   const query = useQuery({ queryKey: ['cadence'], queryFn: () => api<{ cadences: Cadence[] }>('/api/cadence') })
-  const capabilities = useQuery({ queryKey: ['capabilities'], queryFn: () => api<{ capabilities: Capability[] }>('/api/capabilities') })
-  const work = useQuery({ queryKey: ['work'], queryFn: () => api<{ work: WorkItem[] }>('/api/work') })
   const [selectedId, setSelectedId] = useState('')
-  const [createOpen, setCreateOpen] = useState(false)
-  const [name, setName] = useState(''); const [objective, setObjective] = useState('')
-  const [kind, setKind] = useState<'daily' | 'weekly' | 'interval'>('daily')
-  const [hour, setHour] = useState(8); const [minute, setMinute] = useState(0); const [weekday, setWeekday] = useState(0); const [interval, setInterval] = useState(60)
-  const [timezone, setTimezone] = useState('Africa/Johannesburg')
-  const [steps, setSteps] = useState<StepDraft[]>([{ capability_id: 'knowledge.search', input: '{"query":"daily brief"}' }])
-  const [formError, setFormError] = useState<string | null>(null)
-  const create = useMutation({ mutationFn: (payload: object) => api('/api/cadence', { method: 'POST', body: JSON.stringify(payload) }), onSuccess: async () => { setName(''); setObjective(''); setFormError(null); setCreateOpen(false); await qc.invalidateQueries({ queryKey: ['cadence'] }) } })
-  const enable = useMutation({ mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api<Cadence>(`/api/cadence/${id}/enabled`, { method: 'POST', body: JSON.stringify({ enabled }) }), onSuccess: async item => { setSelectedId(item.cadence_id); await qc.invalidateQueries({ queryKey: ['cadence'] }) } })
-  const remove = useMutation({ mutationFn: (id: string) => api(`/api/cadence/${id}`, { method: 'DELETE' }), onSuccess: async () => { setSelectedId(''); await qc.invalidateQueries({ queryKey: ['cadence'] }) } })
-
-  function submit(event: FormEvent) {
-    event.preventDefault(); setFormError(null)
-    try {
-      if (!name.trim() || !objective.trim()) throw new Error('Name and objective are required.')
-      const schedule = kind === 'interval' ? { kind, minutes: interval, timezone } : kind === 'weekly' ? { kind, weekday, hour, minute, timezone } : { kind, hour, minute, timezone }
-      const parsedSteps = steps.map(step => ({ capability_id: step.capability_id.trim(), input: JSON.parse(step.input || '{}') }))
-      if (parsedSteps.some(step => !step.capability_id)) throw new Error('Every step needs a capability.')
-      create.mutate({ name: name.trim(), objective: objective.trim(), schedule, steps: parsedSteps })
-    } catch (error) { setFormError(error instanceof Error ? error.message : String(error)) }
-  }
+  const [message, setMessage] = useState<string | null>(null)
 
   const rows = useMemo(() => query.data?.cadences ?? [], [query.data?.cadences])
   useEffect(() => { if (!selectedId && rows.length) setSelectedId(rows[0].cadence_id) }, [rows, selectedId])
   const selected = rows.find(item => item.cadence_id === selectedId)
-  const selectedWork = selected?.last_work_id ? (work.data?.work ?? []).find(item => item.work_id === selected.last_work_id) : undefined
-  const days = useMemo(() => weekDays(), [])
+
+  const history = useQuery({
+    queryKey: ['work', 'cadence', selectedId],
+    queryFn: () => api<{ work: WorkItem[] }>(`/api/work?cadence_id=${encodeURIComponent(selectedId)}`),
+    enabled: Boolean(selectedId),
+  })
+
+  async function refresh() {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ['cadence'] }),
+      qc.invalidateQueries({ queryKey: ['work'] }),
+    ])
+  }
+
+  const enable = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api<Cadence>(`/api/cadence/${id}/enabled`, { method: 'POST', body: JSON.stringify({ enabled }) }),
+    onSuccess: async item => { setSelectedId(item.cadence_id); setMessage(null); await refresh() },
+  })
+  const remove = useMutation({
+    mutationFn: (id: string) => api(`/api/cadence/${id}`, { method: 'DELETE' }),
+    onSuccess: async () => { setSelectedId(''); setMessage(null); await refresh() },
+  })
+  const runNow = useMutation({
+    mutationFn: (id: string) => api<{ action: ActionOccurrence }>('/api/capabilities/cadence.run_now/invoke', { method: 'POST', body: JSON.stringify({ input: { cadence_id: id } }) }),
+    onSuccess: async ({ action }) => {
+      setMessage(action.status === 'succeeded' ? 'Ran now. The schedule is unchanged.' : action.error || `Runtime returned ${action.status}.`)
+      await refresh()
+    },
+    onError: error => setMessage(error instanceof Error ? error.message : String(error)),
+  })
+
   const enabledCount = rows.filter(item => item.enabled).length
   const disabledCount = rows.length - enabledCount
+  const days = useMemo(() => weekDays(), [])
   const dueThisWeek = rows.filter(item => days.some(day => sameDay(item.next_run_at, day))).length
   const neverRun = rows.filter(item => !item.last_run_at).length
-  const available = (capabilities.data?.capabilities ?? []).filter(item => item.available && !item.id.startsWith('cadence.'))
+  const historyRows = history.data?.work ?? []
 
   const inspector = selected ? <InspectorPanel title={selected.name} eyebrow="Standing duty" status={<StatusLamp tone={cadenceStateToLamp(selected.enabled, selected.next_run_at)} label={selected.enabled ? 'enabled' : 'disabled'} />} actions={<>
+    <button type="button" disabled={runNow.isPending} onClick={() => runNow.mutate(selected.cadence_id)}>{runNow.isPending ? 'Running…' : 'Run now'}</button>
     <button className={selected.enabled ? '' : 'confirm'} type="button" disabled={enable.isPending} onClick={() => enable.mutate({ id: selected.cadence_id, enabled: !selected.enabled })}>{selected.enabled ? 'Disable' : 'Enable'}</button>
+    <Link className="button-link primary" to={`/chat?${focusQuery({ cadence_id: selected.cadence_id })}&ask=${encodeURIComponent(`About the standing duty “${selected.name}” — `)}`}>Open in Chat</Link>
     <button className="danger" type="button" disabled={remove.isPending} onClick={() => remove.mutate(selected.cadence_id)}>Delete</button>
   </>}>
     <p className="ops-inspector-objective">{selected.objective}</p>
     <InspectorSection title="Definition"><FactList items={[
+      { label: 'Kind', value: selected.kind === 'intake_sweep' ? 'Intake sweep' : 'Work template' },
       { label: 'Schedule', value: scheduleLabel(selected.schedule) },
       { label: 'Timezone', value: String(selected.schedule.timezone ?? '—'), mono: true },
       { label: 'Next run', value: when(selected.next_run_at), mono: true },
       { label: 'Last run', value: when(selected.last_run_at), mono: true },
     ]} /></InspectorSection>
-    <InspectorSection title="Capability steps"><div className="ops-timeline compact">{selected.steps.map((step, index) => {
-      const row = step as Record<string, unknown>
-      return <div key={`${String(row.capability_id)}:${index}`}><span className="cadence-step-number">{index + 1}</span><span><strong>{String(row.description ?? row.capability_id ?? `Step ${index + 1}`)}</strong><small className="mono">{String(row.capability_id ?? '—')}</small></span></div>
-    })}</div></InspectorSection>
-    <InspectorSection title="Latest run">{selected.last_work_id ? <Link className="ops-linked-row" to={`/work/${selected.last_work_id}`}><span><strong className="mono">{selectedWork?.display_ref ?? selected.last_work_id}</strong><small>{selectedWork?.objective ?? when(selected.last_run_at)}</small></span><StatusLamp tone={selectedWork ? workStateToLamp(selectedWork.status) : 'dim'} label={selectedWork?.status.replaceAll('_', ' ') ?? 'Work reference'} /></Link> : <p className="meta">This cadence has not created Work yet.</p>}</InspectorSection>
-    <p className="ops-authority-note"><StatusLamp tone="dim" /><span>Cadence creates ordinary governed Work. Every consequential step resolves current owner policy when it executes.</span></p>
+    {selected.kind === 'work_template' ? <InspectorSection title="Capability steps"><div className="ops-timeline compact">{readSteps(selected.steps).map((step, index) => (
+      <div key={`${step.capability_id}:${index}`}><span className="cadence-step-number">{index + 1}</span><span><strong>{stepLabel(step)}</strong><small className="mono">{step.capability_id}</small></span></div>
+    ))}</div></InspectorSection> : <InspectorSection title="Monitored source"><FactList items={[
+      { label: 'Root', value: String(selected.intake_root_id ?? '—'), mono: true },
+      { label: 'Max candidates', value: selected.max_candidates ?? '—' },
+    ]} /></InspectorSection>}
+    <InspectorSection title="Run history">{historyRows.length ? <div className="stack compact">{historyRows.slice(0, 8).map(item => (
+      <Link className="ops-linked-row" key={item.work_id} to={`/work/${item.work_id}`}>
+        <span><strong className="mono">{item.display_ref ?? item.work_id}</strong><small>{when(item.created_at)}</small></span>
+        <StatusLamp tone={workStateToLamp(item.status)} label={item.status.replaceAll('_', ' ')} />
+      </Link>
+    ))}</div> : <p className="meta">This cadence has not created Work yet.</p>}</InspectorSection>
+    <p className="ops-authority-note"><StatusLamp tone="dim" /><span>Cadence creates ordinary governed Work. Every consequential step resolves current owner policy when it executes. Ask Atlas in Chat to change what this duty does.</span></p>
+    {message ? <p className="meta">{message}</p> : null}
     {enable.isError ? <p className="offline-banner">{enable.error.message}</p> : null}
     {remove.isError ? <p className="offline-banner">{remove.error.message}</p> : null}
-  </InspectorPanel> : <InspectorPanel title="No standing duty selected" eyebrow="Cadence inspector"><div className="empty-state compact"><strong>Select a cadence</strong><span>Its definition, timing, steps, and latest Work will appear here.</span></div></InspectorPanel>
+  </InspectorPanel> : <InspectorPanel title="No standing duty selected" eyebrow="Cadence inspector"><div className="empty-state compact"><strong>Select a cadence</strong><span>Its definition, timing, steps, and run history will appear here.</span></div></InspectorPanel>
 
-  return <Workspace className="operations-workspace" title="Cadence" subtitle="Recurring standing duties that instantiate ordinary Work." tabs={<SegmentedNav items={OPERATIONS_TABS} />} headerActions={<button className="primary" type="button" onClick={() => setCreateOpen(true)}>New standing duty</button>} context={inspector} contextLabel="Cadence details" banner={<OperationalRibbon items={[
+  return <Workspace className="operations-workspace" title="Cadence" subtitle="Recurring standing duties that instantiate ordinary Work." tabs={<SegmentedNav items={OPERATIONS_TABS} />} headerActions={<Link className="button-link primary" to={`/chat?ask=${encodeURIComponent('Set up a new standing duty that ')}`}>Ask Atlas to add one</Link>} context={inspector} contextLabel="Cadence details" banner={<OperationalRibbon items={[
     { label: 'Enabled', value: enabledCount, tone: enabledCount ? 'green' : 'dim' },
     { label: 'Disabled', value: disabledCount, tone: 'dim' },
     { label: 'Due in 7 days', value: dueThisWeek, tone: dueThisWeek ? 'amber' : 'dim' },
@@ -123,21 +125,7 @@ export function CadenceList() {
         </button>)}</div>
       </div>
       {query.isError ? <p className="offline-banner">{query.error.message}</p> : null}
-      {!query.isLoading && !rows.length ? <div className="empty-state"><strong>No standing duties yet</strong><span>Create one when Atlas has Work that should recur on a predictable rhythm.</span></div> : null}
+      {!query.isLoading && !rows.length ? <div className="empty-state"><strong>No standing duties yet</strong><span>Describe one to Atlas in Chat — “every weekday morning, check my calendar and summarize what’s coming up.”</span></div> : null}
     </section>
-    {createOpen ? <Sheet title="Create standing duty" onClose={() => setCreateOpen(false)}><form className="stack cadence-create-form" onSubmit={submit}>
-      <label>Name<input value={name} onChange={event => setName(event.target.value)} placeholder="Monday engineering brief" /></label>
-      <label>Objective<input value={objective} onChange={event => setObjective(event.target.value)} placeholder="Prepare the weekly engineering brief" /></label>
-      <div className="cadence-schedule-grid">
-        <label>Repeat<select value={kind} onChange={event => setKind(event.target.value as typeof kind)}><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="interval">Interval</option></select></label>
-        {kind === 'weekly' ? <label>Day<select value={weekday} onChange={event => setWeekday(Number(event.target.value))}>{WEEKDAYS.map((day, index) => <option key={day} value={index}>{day}</option>)}</select></label> : null}
-        {kind === 'interval' ? <label>Every (minutes)<input type="number" min={1} value={interval} onChange={event => setInterval(Number(event.target.value))} /></label> : <><label>Hour<input type="number" min={0} max={23} value={hour} onChange={event => setHour(Number(event.target.value))} /></label><label>Minute<input type="number" min={0} max={59} value={minute} onChange={event => setMinute(Number(event.target.value))} /></label></>}
-        <label>Timezone<input value={timezone} onChange={event => setTimezone(event.target.value)} /></label>
-      </div>
-      <div className="cadence-step-head"><div><span className="eyebrow">Work steps</span><div className="meta">Deterministic capabilities Atlas will run in order.</div></div><button type="button" onClick={() => setSteps(current => [...current, { capability_id: available[0]?.id ?? '', input: '{}' }])}>Add step</button></div>
-      <div className="stack">{steps.map((step, index) => <div className="cadence-step" key={index}><div className="row-head"><strong>Step {index + 1}</strong>{steps.length > 1 ? <button className="danger" type="button" onClick={() => setSteps(current => current.filter((_, row) => row !== index))}>Remove</button> : null}</div><label>Capability<select value={step.capability_id} onChange={event => setSteps(current => current.map((item, row) => row === index ? { ...item, capability_id: event.target.value } : item))}><option value={step.capability_id}>{step.capability_id || 'Select capability'}</option>{available.filter(item => item.id !== step.capability_id).map(item => <option key={item.id} value={item.id}>{item.id} — {item.description}</option>)}</select></label><details className="inspect"><summary>Input payload</summary><textarea className="mono" value={step.input} onChange={event => setSteps(current => current.map((item, row) => row === index ? { ...item, input: event.target.value } : item))} /></details></div>)}</div>
-      {formError ? <p className="offline-banner">{formError}</p> : null}{create.isError ? <p className="offline-banner">{create.error.message}</p> : null}
-      <button className="primary" type="submit" disabled={create.isPending}>{create.isPending ? 'Creating…' : 'Create standing duty'}</button>
-    </form></Sheet> : null}
   </Workspace>
 }

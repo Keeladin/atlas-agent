@@ -152,6 +152,28 @@ def register_work_capabilities(registry, runtime:WorkRuntime)->None:
     # owner context is trusted execution context injected after the occurrence payload has been attested.
     registry.register(CapabilityRegistration(CapabilityDefinition("work.create","Create durable Work from an objective and explicit capability steps.","create","internal",schema,source="work",tags=("work",)),resolve,execute,metadata={"scope_hint":"atlas/work","requires_owner_context":True}),replace=True)
 
+    get_schema={"type":"object","required":["work_id"],"properties":{"work_id":{"type":"string"}},"additionalProperties":False}
+    list_schema={"type":"object","properties":{"query":{"type":"string"},"cadence_id":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":200}},"additionalProperties":False}
+
+    def get_execute(payload):
+        payload.pop("__owner_principal_id",None);payload.pop("__invocation_surface",None)
+        try:
+            return ActionResult(True,runtime.detail(payload["work_id"]),{"ok":True,"operation":"work.get","work_id":payload["work_id"]})
+        except KeyError:
+            return ActionResult(False,error_code="work_unknown",error="work not found",receipt={"ok":False,"operation":"work.get"})
+
+    def list_execute(payload):
+        payload.pop("__owner_principal_id",None);payload.pop("__invocation_surface",None)
+        rows=[item.as_dict() for item in runtime.store.list(limit=int(payload.get("limit") or 50),cadence_id=payload.get("cadence_id"))]
+        query=str(payload.get("query") or "").strip().lower()
+        if query:
+            terms=[term for term in query.split() if term]
+            rows=[row for row in rows if any(term in f"{row.get('objective','')} {row.get('display_ref') or ''} {row.get('status','')}".lower() for term in terms)]
+        return ActionResult(True,rows,{"ok":True,"operation":"work.list","count":len(rows)})
+
+    registry.register(CapabilityRegistration(CapabilityDefinition("work.get","Read one Work item with its ordered steps, statuses, and each step's recorded output.","get","none",get_schema,source="work",tags=("work","evidence")),lambda p:ScopeResolution("atlas/work",dict(p),f"Read Work: {p.get('work_id','')}"),get_execute,metadata={"scope_hint":"atlas/work"}),replace=True)
+    registry.register(CapabilityRegistration(CapabilityDefinition("work.list","List durable Work, optionally narrowed by objective text or originating standing duty.","list","none",list_schema,source="work",tags=("work",)),lambda p:ScopeResolution("atlas/work",dict(p),"List Work"),list_execute,metadata={"scope_hint":"atlas/work"}),replace=True)
+
 
 def _json_pointer(value: Any, pointer: str) -> Any:
     if pointer in {"", "/"}:

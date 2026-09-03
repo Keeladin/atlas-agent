@@ -6,6 +6,15 @@ from typing import Any
 from uuid import uuid4
 from .models import Cadence
 
+CADENCE_DEFINITION_FIELDS=("name","objective","schedule","steps","kind","intake_root_id","max_candidates")
+
+def _validate(candidate:dict[str,Any])->None:
+    kind=str(candidate.get("kind") or "")
+    if kind not in {"work_template","intake_sweep"}: raise ValueError("unknown cadence kind")
+    if kind=="work_template" and not candidate.get("steps"): raise ValueError("work_template cadence requires steps")
+    if kind=="intake_sweep" and not candidate.get("intake_root_id"): raise ValueError("intake_sweep cadence requires intake_root_id")
+    if not 1<=int(candidate.get("max_candidates") or 0)<=250: raise ValueError("max_candidates must be between 1 and 250")
+
 class CadenceStore:
     def __init__(self,path:str|Path)->None:self.path=Path(path)
     @contextmanager
@@ -22,10 +31,7 @@ class CadenceStore:
             for name,definition in additions.items():
                 if name not in columns: db.execute(f"ALTER TABLE cadences ADD COLUMN {name} {definition}")
     def create(self,*,name:str,objective:str,schedule:dict[str,Any],steps:list[dict[str,Any]],owner_principal_id:str,next_run_at:str|None,kind:str="work_template",intake_root_id:str|None=None,max_candidates:int=25)->Cadence:
-        if kind not in {"work_template","intake_sweep"}: raise ValueError("unknown cadence kind")
-        if kind=="work_template" and not steps: raise ValueError("work_template cadence requires steps")
-        if kind=="intake_sweep" and not intake_root_id: raise ValueError("intake_sweep cadence requires intake_root_id")
-        if not 1<=int(max_candidates)<=250: raise ValueError("max_candidates must be between 1 and 250")
+        _validate({"name":name,"objective":objective,"schedule":schedule,"steps":steps,"kind":kind,"intake_root_id":intake_root_id,"max_candidates":max_candidates})
         cid=f"cadence_{uuid4().hex}"
         with self._db() as db:db.execute("INSERT INTO cadences(cadence_id,name,objective,schedule_json,steps_json,owner_principal_id,next_run_at,kind,intake_root_id,max_candidates) VALUES (?,?,?,?,?,?,?,?,?,?)",(cid,name,objective,json.dumps(schedule,sort_keys=True,separators=(",",":")),json.dumps(steps,sort_keys=True,separators=(",",":"),default=str),owner_principal_id,next_run_at,kind,intake_root_id,int(max_candidates)))
         return self.get(cid)
@@ -39,8 +45,21 @@ class CadenceStore:
     def due(self,now_iso:str)->tuple[Cadence,...]:
         with self._db() as db:rows=db.execute("SELECT * FROM cadences WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at<=? ORDER BY next_run_at",(now_iso,)).fetchall()
         return tuple(_cadence(r) for r in rows)
+    def update(self,cadence_id:str,patch:dict[str,Any],*,next_run_at:str|None)->Cadence:
+        unknown=set(patch)-set(CADENCE_DEFINITION_FIELDS)
+        if unknown:raise ValueError(f"unsupported cadence fields: {sorted(unknown)}")
+        current=self.get(cadence_id)
+        candidate={field:getattr(current,field) for field in CADENCE_DEFINITION_FIELDS}
+        candidate.update(patch)
+        _validate(candidate)
+        with self._db() as db:db.execute("UPDATE cadences SET name=?,objective=?,schedule_json=?,steps_json=?,kind=?,intake_root_id=?,max_candidates=?,next_run_at=?,updated_at=CURRENT_TIMESTAMP WHERE cadence_id=?",(candidate["name"],candidate["objective"],json.dumps(candidate["schedule"],sort_keys=True,separators=(",",":")),json.dumps(candidate["steps"],sort_keys=True,separators=(",",":"),default=str),candidate["kind"],candidate["intake_root_id"],int(candidate["max_candidates"]),next_run_at,cadence_id))
+        return self.get(cadence_id)
     def mark_run(self,cadence_id:str,*,last_run_at:str,last_work_id:str|None,next_run_at:str,last_result:dict[str,Any]|None=None)->Cadence:
         with self._db() as db:db.execute("UPDATE cadences SET last_run_at=?,last_work_id=?,next_run_at=?,last_result_json=?,updated_at=CURRENT_TIMESTAMP WHERE cadence_id=?",(last_run_at,last_work_id,next_run_at,None if last_result is None else json.dumps(last_result,sort_keys=True,separators=(",",":"),default=str),cadence_id))
+        return self.get(cadence_id)
+    def mark_manual_run(self,cadence_id:str,*,last_run_at:str,last_work_id:str|None,last_result:dict[str,Any]|None=None)->Cadence:
+        """Record an owner-triggered run without advancing the schedule."""
+        with self._db() as db:db.execute("UPDATE cadences SET last_run_at=?,last_work_id=?,last_result_json=?,updated_at=CURRENT_TIMESTAMP WHERE cadence_id=?",(last_run_at,last_work_id,None if last_result is None else json.dumps(last_result,sort_keys=True,separators=(",",":"),default=str),cadence_id))
         return self.get(cadence_id)
     def set_enabled(self,cadence_id:str,enabled:bool,next_run_at:str|None)->Cadence:
         with self._db() as db:db.execute("UPDATE cadences SET enabled=?,next_run_at=?,updated_at=CURRENT_TIMESTAMP WHERE cadence_id=?",(1 if enabled else 0,next_run_at,cadence_id))

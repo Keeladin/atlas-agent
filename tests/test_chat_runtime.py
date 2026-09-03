@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from atlas_api.compose import build_runtime
 from atlas_core.chat.runtime import ChatRuntime
 from atlas_core.chat.store import ChatStore
 from atlas_core.actions import ActionResult, ActionRuntime, ActionStore
@@ -91,6 +92,80 @@ class SequenceProvider:
         self.requests.append(request)
         text = self.responses.pop(0)
         return ModelResponse(text=text, provider_key="test", model="test-model", raw={})
+
+
+def test_successful_workflow_action_is_persisted_for_the_chat_workflow_card(tmp_path):
+    runtime = build_runtime(tmp_path / "instance")
+    owner = runtime.identities.current_owner()
+    conversation_id = runtime.chat_store.create_conversation("Standing duty")["conversation_id"]
+    runtime.policy_store.set(
+        principal_id=owner.principal_id, scope="atlas/cadence", operation="create", decision="YES",
+    )
+    runtime.chat.provider = SequenceProvider(
+        json.dumps({
+            "kind": "capability",
+            "capability_id": "cadence.create",
+            "input": {
+                "name": "Morning brief",
+                "objective": "Prepare the morning brief",
+                "schedule": {"kind": "daily", "hour": 8, "minute": 0, "timezone": "UTC"},
+                "steps": [{"capability_id": "knowledge.search", "input": {"query": "morning brief"}}],
+            },
+        }),
+        '{"kind":"reply","reply":"The morning brief is scheduled."}',
+    )
+
+    result = runtime.chat.send(
+        conversation_id, "Create a daily morning brief", principal_id=owner.principal_id, defer_capture=True,
+    )
+
+    action = result["turn"]["metadata"]["action"]
+    assert action["capability_id"] == "cadence.create"
+    assert action["status"] == "succeeded"
+    assert action["result"]["name"] == "Morning brief"
+    stored = runtime.chat_store.turns(conversation_id)[-1]
+    assert stored["role"] == "assistant"
+    assert stored["metadata"]["action"] == action
+    assert stored["metadata"]["tools_used"] == ["cadence.create"]
+
+
+def test_focus_is_one_turn_and_later_survives_only_as_reference_provenance(tmp_path):
+    composed = build_runtime(tmp_path / "instance")
+    store = composed.chat_store
+    conversation_id = store.create_conversation("Work follow-up")["conversation_id"]
+    owner = composed.identities.current_owner()
+    provider = SequenceProvider(
+        '{"kind":"reply","reply":"That step failed because its source was unavailable."}',
+        '{"kind":"reply","reply":"The same source failure is what I was referring to."}',
+    )
+    runtime = composed.chat
+    runtime.provider = provider
+    focus = {"cadence_id": "cadence_1", "work_id": "work_9", "step_ordinal": 2}
+
+    runtime.send(
+        conversation_id, "What happened here?", principal_id=owner.principal_id,
+        defer_capture=True, focus=focus,
+    )
+    first_prompt = json.loads(provider.requests[0].input)
+    assert first_prompt["focused_reference"] == focus
+    focused_turn = store.turns(conversation_id)[0]
+    assert focused_turn["metadata"] == {"focus": focus}
+
+    runtime.send(
+        conversation_id, "Why did that happen?", principal_id=owner.principal_id, defer_capture=True,
+    )
+    later_prompt = json.loads(provider.requests[1].input)
+    assert "focused_reference" not in later_prompt
+    assert "contextual evidence only, not the active focus" in provider.requests[1].system
+    assert later_prompt["recent_conversation"][0] == {
+        "role": "user",
+        "content": "What happened here?",
+        "reference_provenance": focus,
+    }
+    assert all(
+        "reference_provenance" not in turn or turn["reference_provenance"] == focus
+        for turn in later_prompt["recent_conversation"]
+    )
 
 
 def _chat_with_memory(tmp_path, capture_decision: str):

@@ -8,7 +8,7 @@ export function Panel({
 }: {
   title?: string
   children: ReactNode
-  tone?: 'attention' | 'decision-auth' | 'decision-confirm' | 'failed'
+  tone?: 'attention' | 'failed'
   className?: string
 }) {
   const toneClass = tone ? ` ${tone}` : ''

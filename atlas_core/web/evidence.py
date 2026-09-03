@@ -184,13 +184,16 @@ def evaluate_response_quality(response: WebResponse, evidence: dict[str, Any]) -
     visible_bytes = len(visible.encode("utf-8", errors="replace"))
     ratio = script_bytes / max(visible_bytes, 1)
     lower = raw.casefold()
+    visible_lower = visible.casefold()
     noscript_alert = bool(re.search(
         r"<noscript\b[^>]*>.*?(enable javascript|javascript[^<]{0,80}(required|enabled)|supported browser).*?</noscript\s*>",
         raw, flags=re.I | re.S,
     ))
-    challenge = any(token in lower for token in (
-        "verify you are human", "captcha", "cf-chl-", "challenge-platform", "access denied",
+    visible_challenge = any(token in visible_lower for token in (
+        "verify you are human", "captcha", "access denied", "checking your browser", "security challenge",
     ))
+    embedded_challenge = any(token in lower for token in ("cf-chl-", "challenge-platform")) and visible_bytes < 1000
+    challenge = visible_challenge or embedded_challenge
     signals: list[str] = []
     status = "usable"
     if challenge:
@@ -199,11 +202,11 @@ def evaluate_response_quality(response: WebResponse, evidence: dict[str, Any]) -
     elif visible_bytes < 20 and script_bytes < 1000:
         status = "empty"
         signals.append("low_visible_text")
-    elif noscript_alert or (visible_bytes < 300 and script_bytes > max(1000, visible_bytes * 3)):
+    elif noscript_alert or (visible_bytes < 1500 and script_bytes > max(5000, visible_bytes * 25)):
         status = "dynamic_suspected"
         if noscript_alert:
             signals.append("javascript_required_message")
-        if script_bytes > max(1000, visible_bytes * 3):
+        if script_bytes > max(5000, visible_bytes * 25):
             signals.append("script_dominant")
         if visible_bytes < 300:
             signals.append("low_visible_text")

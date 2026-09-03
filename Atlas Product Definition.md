@@ -72,7 +72,7 @@ The UI and Chat can explain what happened from persisted runtime evidence rather
 
 ## Responsibility 6 — Remain useful across interfaces
 
-Companion is the canonical owner interface today. Its primary surfaces are Chat, Work, Sources and Atlas control. Memory is a secondary durable-context surface reached from Sources.
+Companion is the canonical owner interface today. Its default owner surface interweaves conversation, active Work, Cadence, attention and runtime activity around the current objective. Work, Sources and Atlas Control remain deeper operational and technical views rather than competing primary products. Memory is a secondary durable-context surface reached from the owner surface or Sources.
 
 The interface may evolve, but authority and durable state remain backend/runtime responsibilities rather than UI-local state.
 

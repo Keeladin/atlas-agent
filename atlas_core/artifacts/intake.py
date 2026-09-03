@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from atlas_core.actions import ActionResult
+from atlas_core.database import WorkDatabase, as_work_database
 from atlas_core.capabilities import CapabilityDefinition, CapabilityRegistration, CapabilityRegistry, CapabilityRuntime, ScopeResolution
 from atlas_core.providers import ModelRequest, ProviderRuntime
 from atlas_core.provenance import InvocationProvenance
@@ -46,13 +47,11 @@ CLASSIFICATION_SCHEMA = {
 
 
 class ArtifactIntakeStore:
-    def __init__(self, path: str | Path) -> None: self.path = Path(path)
+    def __init__(self, database: WorkDatabase | str | Path) -> None:
+        self.database = as_work_database(database); self.path = self.database.path
     @contextmanager
     def _db(self):
-        db = sqlite3.connect(self.path); db.row_factory = sqlite3.Row; db.execute("PRAGMA busy_timeout=5000")
-        try:
-            with db: yield db
-        finally: db.close()
+        with self.database.connection() as db: yield db
     def initialize(self) -> None:
         with self._db() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS artifact_intakes(

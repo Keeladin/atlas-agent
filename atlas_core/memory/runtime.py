@@ -168,8 +168,7 @@ class MemoryRuntime:
                 chain = self.store.chain(owner, item_id, db=db)
                 item_ids = {item["item_id"] for item in chain}
                 hashes = {memory_content_hash(value) for item in chain for value in (item.get("content"), item.get("grounding_excerpt")) if isinstance(value, str) and value}
-                placeholders = ",".join("?" for _ in item_ids)
-                db.execute(f"DELETE FROM memory_items WHERE principal_id=? AND item_id IN ({placeholders})", (owner, *sorted(item_ids)))
+                self.store.purge_chain(owner, item_id, db=db)
                 redacted = _redact_occurrences(
                     db, self.actions_store, principal_id=owner, item_ids=item_ids, content_hashes=hashes,
                 )

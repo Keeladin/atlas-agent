@@ -1,4 +1,4 @@
-export type LampTone = 'green' | 'amber' | 'red' | 'dim'
+export type LampTone = 'green' | 'amber' | 'red' | 'blue' | 'dim'
 
 const GREEN_STATES = new Set(['approved', 'completed', 'enabled', 'established', 'healthy', 'managed', 'succeeded', 'verified'])
 const AMBER_STATES = new Set(['active', 'executing', 'in_progress', 'paused', 'review_required', 'reviewed', 'running', 'waiting'])

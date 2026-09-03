@@ -81,7 +81,16 @@ class PlaywrightBrowserProvider:
                 ],
             )
             context = browser.new_context(java_script_enabled=True, service_workers="block", accept_downloads=False)
-            allowed_document_hosts = {(urlsplit(url).hostname or "").casefold()}
+            # Resolve the top-level navigation through Atlas' governed HTTP transport first.
+            # Chromium is intentionally pointed at a dead proxy so every subsequent request
+            # must still cross route_handler; navigating directly to a redirecting URL can
+            # otherwise make Chromium attempt the redirect through that dead proxy.
+            preflight = _request(url, max_bytes=MAX_RESOURCE_BYTES, method="GET")
+            navigation_url = preflight.final_url
+            allowed_document_hosts = {
+                (urlsplit(url).hostname or "").casefold(),
+                (urlsplit(navigation_url).hostname or "").casefold(),
+            }
 
             def route_handler(route, request) -> None:
                 if request.method.upper() not in {"GET", "HEAD"}:
@@ -119,7 +128,7 @@ class PlaywrightBrowserProvider:
             context.route("**/*", route_handler)
             page = context.new_page()
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                page.goto(navigation_url, wait_until="domcontentloaded", timeout=timeout_ms)
                 page.wait_for_timeout(settle_ms)
                 title = page.title()
                 final_url = page.url

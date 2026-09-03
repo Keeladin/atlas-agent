@@ -26,12 +26,12 @@ function renderShell() {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('Atlas shell', () => {
-  it('keeps the primary destinations in runtime order with Atlas last', async () => {
+  it('keeps one owner surface and tucks plumbing behind Control', async () => {
     renderShell()
-    const nav = screen.getByRole('navigation', { name: 'Primary' })
-    const labels = Array.from(nav.querySelectorAll('a')).map(node => node.textContent)
-    expect(labels).toEqual(['Chat', 'Operations', 'Atlas'])
-    expect(screen.queryByText('Now')).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'Primary' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Atlas surface' })).toHaveAttribute('href', '/chat')
+    expect(screen.getByRole('link', { name: 'Control' })).toHaveAttribute('href', '/atlas')
+    expect(screen.queryByText('Operations')).not.toBeInTheDocument()
     expect(screen.queryByText('Morning')).not.toBeInTheDocument()
     expect(await screen.findByText('Chat body')).toBeInTheDocument()
   })

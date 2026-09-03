@@ -308,3 +308,31 @@ def test_redirect_rejects_https_downgrade_before_resolving_target(monkeypatch):
     with pytest.raises(PermissionError, match="plaintext HTTP"):
         _request("https://oem.example/manual", max_bytes=1000)
     assert len(calls) == 1
+
+
+def test_response_quality_flags_script_dominant_shell_but_not_useful_visible_forecast():
+    dynamic_body = (
+        b"<html><body><nav>Forecasts Radar Today Hourly 10-Day Monthly</nav>"
+        + b"<script>" + (b"x" * 50000) + b"</script></body></html>"
+    )
+    dynamic = WebResponse(
+        "https://weather.example", "https://weather.example", 200, {"content-type": "text/html"},
+        dynamic_body, "2026-09-02T00:00:00+00:00", "fixture",
+    )
+    dynamic_evidence = translate_response(dynamic, max_chars=60000, max_links=0)
+    dynamic_quality = evaluate_response_quality(dynamic, dynamic_evidence)
+    assert dynamic_quality["content_quality"]["status"] == "dynamic_suspected"
+    assert "script_dominant" in dynamic_quality["content_quality"]["signals"]
+
+    useful_text = ("Cullinan 13 C clear sky. Tomorrow 26 C clear sky. " * 100).encode()
+    useful_body = (
+        b"<html><body><main>" + useful_text + b"</main>"
+        b"<script>const captcha = 'library token only';</script></body></html>"
+    )
+    useful = WebResponse(
+        "https://forecast.example", "https://forecast.example", 200, {"content-type": "text/html"},
+        useful_body, "2026-09-02T00:00:00+00:00", "fixture",
+    )
+    useful_evidence = translate_response(useful, max_chars=60000, max_links=0)
+    useful_quality = evaluate_response_quality(useful, useful_evidence)
+    assert useful_quality["content_quality"]["status"] == "usable"

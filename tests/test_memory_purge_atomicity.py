@@ -42,6 +42,9 @@ def test_purge_rolls_back_memory_delete_and_redaction_together(tmp_path, monkeyp
     remembered = capabilities.invoke("memory.remember", {"content": text}, provenance=_prov())
     item_id = remembered.result["item_id"]
     before = action_store.get(remembered.occurrence_id)
+    before_index = memory_store.index_status()
+    assert before_index["vectors"] == 1
+    assert before_index["representations"] == 1
     original = memory_runtime_module._redact_occurrences
 
     def explode(db, actions_store, **kwargs):
@@ -55,6 +58,9 @@ def test_purge_rolls_back_memory_delete_and_redaction_together(tmp_path, monkeyp
     after = action_store.get(remembered.occurrence_id)
     assert after.payload == before.payload
     assert after.payload_sha256 == before.payload_sha256
+    after_index = memory_store.index_status()
+    assert after_index["vectors"] == 1
+    assert after_index["representations"] == 1
 
 
 def test_hash_matching_reaches_blocked_occurrence_without_item_id(tmp_path):
@@ -108,15 +114,20 @@ def test_three_deep_cycle_safe_chain_purges_all_rows_and_fts(tmp_path):
     second = memory_store.update(principal_id=owner, item_id=first["item_id"], title="two", content="chain content two")
     third = memory_store.update(principal_id=owner, item_id=second["item_id"], title="three", content="chain content three")
     with memory_store._db() as db:
-        db.execute("UPDATE memory_items SET supersedes=? WHERE item_id=?", (third["item_id"], first["item_id"]))
+        first_pk = db.execute("SELECT memory_pk FROM memory_v2_items WHERE item_id=?", (first["item_id"],)).fetchone()[0]
+        third_pk = db.execute("SELECT memory_pk FROM memory_v2_items WHERE item_id=?", (third["item_id"],)).fetchone()[0]
+        db.execute("UPDATE memory_v2_items SET supersedes_pk=? WHERE memory_pk=?", (third_pk, first_pk))
 
     _set(policy_store, "purge", "YES", owner)
     purged = capabilities.invoke("memory.purge", {"item_id": second["item_id"]}, provenance=_prov(owner))
     assert purged.status == "succeeded"
     assert purged.result["purged_items"] == 3
     with memory_store._db() as db:
-        assert db.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0] == 0
-        assert db.execute("SELECT COUNT(*) FROM memory_fts").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM memory_v2_items").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM memory_v2_fts").fetchone()[0] == 0
+    status = memory_store.index_status()
+    assert status["vectors"] == 0
+    assert status["representations"] == 0
 
 
 def test_purge_scrubs_matching_evidence_and_adds_content_free_redaction_evidence(tmp_path):

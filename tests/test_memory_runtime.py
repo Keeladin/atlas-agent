@@ -248,5 +248,5 @@ def test_chat_memory_provenance_overwrites_forged_reserved_metadata(tmp_path):
 def test_fresh_memory_schema_requires_content_hash(tmp_path):
     store = MemoryStore(tmp_path / "work.db"); store.initialize()
     with store._db() as db:
-        columns = {row[1]: row for row in db.execute("PRAGMA table_info(memory_items)").fetchall()}
+        columns = {row[1]: row for row in db.execute("PRAGMA table_info(memory_v2_items)").fetchall()}
     assert columns["content_hash"][3] == 1

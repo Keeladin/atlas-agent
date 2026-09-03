@@ -7,20 +7,20 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from atlas_core.database import WorkDatabase, as_work_database
+
 
 class KnowledgeStore:
     """Durable references and notes. Persistent owner memory has its own runtime."""
 
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+    def __init__(self, database: WorkDatabase | str | Path) -> None:
+        self.database = as_work_database(database)
+        self.path = self.database.path
 
     @contextmanager
     def _db(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(self.path); db.row_factory = sqlite3.Row; db.execute("PRAGMA busy_timeout=5000")
-        try:
-            with db: yield db
-        finally: db.close()
+        with self.database.connection() as db:
+            yield db
 
     def initialize(self) -> None:
         with self._db() as db:

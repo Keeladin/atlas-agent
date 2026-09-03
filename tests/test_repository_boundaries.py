@@ -53,4 +53,4 @@ def test_companion_has_no_now_route():
     shell = (ROOT / "companion/src/ui/Shell.tsx").read_text()
     assert 'path="/now"' not in app
     assert "['/now'" not in shell
-    assert "['/atlas', 'Atlas']" in shell
+    assert 'to="/atlas">Control' in shell

@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from atlas_core.database import WorkDatabase, as_work_database
+
 from .passages import DEFAULT_SEGMENTER_SPEC, SEGMENTER_HEADINGS_V1, canonical_json
 
 FTS_MECHANISM = "mechanism:fts.bm25@1"
@@ -58,23 +60,14 @@ class GenerationStore:
     forever: historical retrieval evidence must stay traversable.
     """
 
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+    def __init__(self, database: WorkDatabase | str | Path) -> None:
+        self.database = as_work_database(database)
+        self.path = self.database.path
 
     @contextmanager
     def _db(self, db: sqlite3.Connection | None = None):
-        if db is not None:
-            yield db
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=5000")
-        try:
-            with conn:
-                yield conn
-        finally:
-            conn.close()
+        with self.database.connection(db) as conn:
+            yield conn
 
     def initialize(self) -> None:
         with self._db() as db:

@@ -8,11 +8,12 @@ from atlas_core.actions import ActionRuntime, ActionStore
 from atlas_core.artifacts import (
     ArtifactRuntime, ArtifactStore, ArtifactIntakeRuntime, ArtifactIntakeStore,
     ManagedIntakeRuntime, MANAGED_ROOT_ID, MANAGED_PROVIDER_NAMESPACE,
+    OwnerUploadRuntime, UPLOAD_ROOT_ID, UPLOAD_PROVIDER_NAMESPACE,
 )
 from atlas_core.cadence import CadenceRuntime, CadenceStore
 from atlas_core.cadence.runtime import register_cadence_capabilities
 from atlas_core.capabilities import CapabilityRegistry, CapabilityRuntime
-from atlas_core.chat import ChatRuntime, ChatStore
+from atlas_core.chat import ChatRuntime, ChatStore, CORE_SIGNPOST_IDS
 from atlas_core.database import WorkDatabase
 from atlas_core.evidence import EvidenceStore
 from atlas_core.host import HostRuntime
@@ -73,6 +74,7 @@ class AtlasRuntime:
     managed_intake: ManagedIntakeRuntime
     artifact_intake_store: ArtifactIntakeStore
     artifact_intake: ArtifactIntakeRuntime
+    uploads: OwnerUploadRuntime
     model_inference: ModelInferenceRuntime
     representations: RepresentationRuntime
     memory_store: MemoryStore
@@ -136,7 +138,7 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     identities = IdentityStore(identity_db); identities.initialize()
     policy_store = PolicyStore(identity_db); policy_store.initialize(); policy = OwnerPolicy(policy_store)
     work_database = WorkDatabase(work_db); work_database.initialize()
-    actions_store = ActionStore(work_database); actions_store.initialize()
+    actions_store = ActionStore(work_database); actions_store.initialize(); actions_store.recover_executing()
     evidence = EvidenceStore(work_database); evidence.initialize()
     registry = CapabilityRegistry()
     credentials = CredentialStore(root); credentials.initialize()
@@ -152,6 +154,10 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
         root_id=MANAGED_ROOT_ID, host_path=str(managed_root), display_name="Atlas managed intake",
         provider_namespace=MANAGED_PROVIDER_NAMESPACE, quarantine_relative_path=None, enabled=True,
     )
+    upload_root = root / "owner-uploads"
+    upload_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    source_roots.put(root_id=UPLOAD_ROOT_ID, host_path=str(upload_root), display_name="Owner uploads",
+                     provider_namespace=UPLOAD_PROVIDER_NAMESPACE, quarantine_relative_path=None, enabled=True)
     library_root = root / "library-clean"
     library_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     source_roots.put(
@@ -168,6 +174,7 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     mcp = MCPRuntime(mcp_store, credentials, registry); mcp.refresh_all()
     artifact_store = ArtifactStore(work_database); artifact_store.initialize()
     sources = SourceRuntime(source_roots, registry, artifact_store)
+    uploads = OwnerUploadRuntime(staging_root=root / "upload-staging", upload_root=upload_root, sources=sources, registry=registry)
     web_providers = ConfiguredWebProvider(web_provider_settings, credentials)
     web_browser = PlaywrightBrowserProvider()
     web = WebRuntime(registry, web_providers, managed_root / "web", browser=web_browser)
@@ -197,24 +204,24 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
             indexing.abandon_for_work(item.work_id)
     work_store = WorkStore(work_database); work_store.initialize(); work = WorkRuntime(
         work_store, capabilities, actions_store, cancel_hook=cancel_work_cleanup,
-    )
+    ); work.recover_incomplete()
     artifact_intake_store = ArtifactIntakeStore(work_database); artifact_intake_store.initialize()
     artifact_intake = ArtifactIntakeRuntime(
         artifact_intake_store, artifact_store, providers, work, registry, capabilities,
-        representations=representations, managed_intake=managed_intake,
+        representations=representations, managed_intake=managed_intake, indexing=indexing,
     )
     cadence_store = CadenceStore(cadence_db); cadence_store.initialize(); cadence = CadenceRuntime(cadence_store, work, artifact_intake)
     register_work_capabilities(registry, work)
     register_cadence_capabilities(registry, cadence)
     chat = ChatRuntime(chat_store, providers, registry, capabilities, knowledge, memory_store, identities,
-                       source_roots=source_roots, artifacts=artifact_store,
-                       capability_retriever=CapabilityRetriever(embedding_provider))
+                       source_roots=source_roots, artifacts=artifact_store, work_store=work_store,
+                       capability_retriever=CapabilityRetriever(embedding_provider, core_signposts=CORE_SIGNPOST_IDS))
 
     runtime = AtlasRuntime(
         root, identities, policy_store, policy, work_database, actions_store, evidence, registry,
         actions, capabilities, credentials, provider_settings, providers,
         mcp_store, mcp, source_roots, sources, web_provider_settings, web_providers, web, host, knowledge_store, knowledge, library_store, library,
-        passages, generations, indexing, artifact_store, artifacts, managed_intake, artifact_intake_store, artifact_intake, model_inference, representations, memory_store, memory,
+        passages, generations, indexing, artifact_store, artifacts, managed_intake, artifact_intake_store, artifact_intake, uploads, model_inference, representations, memory_store, memory,
         work_store, work, cadence_store, cadence, chat_store, chat,
     )
     runtime.seed_policy()

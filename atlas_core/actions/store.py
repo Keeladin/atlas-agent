@@ -75,6 +75,18 @@ class ActionStore:
         if changed != 1: raise ValueError("action occurrence state changed or is not eligible")
         return self.get(occurrence_id)
 
+
+    def recover_executing(self) -> int:
+        """On process start, convert abandoned in-flight occurrences to uncertain.
+
+        Atlas cannot know whether an external side effect happened after the old
+        process disappeared, so restart recovery must never silently retry it.
+        """
+        receipt=json.dumps({"ok":False,"recovery_required":True,"reason":"runtime restarted while action was executing"},sort_keys=True,separators=(",",":"))
+        with self._db() as db:
+            changed=db.execute("UPDATE action_occurrences SET status='uncertain',receipt_json=?,error_code='runtime_restart_uncertain',error='runtime restarted while action outcome was unresolved' WHERE status='executing'",(receipt,)).rowcount
+        return int(changed)
+
     def memory_occurrence_rows(self, db: sqlite3.Connection, *, principal_id: str) -> tuple[dict[str, Any], ...]:
         rows = db.execute(
             """SELECT occurrence_id,capability_id,payload_json,result_json,receipt_json,summary,status

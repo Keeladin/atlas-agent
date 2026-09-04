@@ -140,7 +140,11 @@ class CapabilityRetriever:
 
         fused = reciprocal_rank_fusion([sparse, dense], weights={"sparse": 1.15, "dense": 1.0})
         ordered: list[str] = []
-        for item_id in exact + [row.item_id for row in fused]:
+        # When lexical/exact retrieval has no signal, core signposts are safer
+        # discovery anchors than an arbitrary nearest dense capability. Dense
+        # results still follow, so the model can widen beyond the anchors.
+        anchors = sorted(item_id for item_id in self.core_signposts if item_id in self._documents) if not exact and not sparse else []
+        for item_id in exact + anchors + [row.item_id for row in fused]:
             if item_id not in ordered:
                 ordered.append(item_id)
             if len(ordered) >= limit:

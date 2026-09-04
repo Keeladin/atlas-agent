@@ -202,14 +202,39 @@ async def conversation_send(request: Request) -> JSONResponse:
     try:
         body = await _body(request); owner = _owner(request, gate); rt = _runtime(request)
         focus = body.get("focus") if isinstance(body.get("focus"), dict) else None
+        attachments = [str(value) for value in body.get("attachments", []) if str(value).strip()] if isinstance(body.get("attachments"), list) else []
         result = await run_in_threadpool(
             rt.chat.send, request.path_params["conversation_id"], str(body.get("message") or "").strip(),
-            principal_id=owner.principal_id, defer_capture=True, focus=focus,
+            principal_id=owner.principal_id, defer_capture=True, focus=focus, attachments=attachments,
         )
         capture = result.pop("_post_turn_capture", None)
         background = BackgroundTask(rt.chat.run_post_turn_capture, **capture) if capture else None
         return JSONResponse(result, background=background)
     except Exception as exc: return _error(exc, 500)
+
+
+async def chat_attachment_upload(request: Request) -> JSONResponse:
+    gate = require_mutation_auth(request)
+    if isinstance(gate, JSONResponse): return gate
+    staged = None
+    try:
+        rt=_runtime(request);owner=_owner(request,gate)
+        from atlas_core.artifacts.uploads import MAX_CHAT_UPLOAD_BYTES
+        declared=int(request.headers.get("content-length") or 0)
+        if declared > MAX_CHAT_UPLOAD_BYTES: return _error(ValueError("upload exceeds 30 MB"),413)
+        data=await request.body()
+        filename=str(request.headers.get("x-atlas-filename") or "upload")
+        staged=rt.uploads.stage(data,filename=filename,media_type=request.headers.get("content-type"))
+        from atlas_core.provenance import InvocationProvenance
+        occurrence=await run_in_threadpool(rt.capabilities.invoke,"artifacts.accept_upload",staged,provenance=InvocationProvenance(owner.principal_id,"human","chat"))
+        if occurrence.status!="succeeded":
+            rt.uploads.discard(staged["staging_token"]);return JSONResponse({"action":occurrence.public(),"error":occurrence.error or occurrence.error_code or occurrence.status},status_code=409)
+        return JSONResponse({"action":occurrence.public(),"artifact":occurrence.result},status_code=201)
+    except Exception as exc:
+        if staged:
+            try: _runtime(request).uploads.discard(staged["staging_token"])
+            except Exception: pass
+        return _error(exc,413 if "30 MB" in str(exc) else 400)
 
 
 async def work_list(request: Request) -> JSONResponse:
@@ -243,13 +268,13 @@ async def work_action(request: Request) -> JSONResponse:
     gate = require_mutation_auth(request)
     if isinstance(gate, JSONResponse): return gate
     try:
-        rt=_runtime(request);wid=request.path_params["work_id"];action=request.path_params["action"]
-        if action=="run":result=await run_in_threadpool(rt.work.run,wid)
-        elif action=="resume":result=await run_in_threadpool(rt.work.resume,wid)
-        elif action=="pause":rt.work.pause(wid);result=rt.work.detail(wid)
-        elif action=="cancel":rt.work.cancel(wid);result=rt.work.detail(wid)
-        else:return _error(ValueError("unsupported work action"),404)
-        return JSONResponse(result)
+        rt=_runtime(request);owner=_owner(request,gate);wid=request.path_params["work_id"];action=request.path_params["action"]
+        capability={"run":"work.run","resume":"work.resume","pause":"work.pause","cancel":"work.cancel"}.get(action)
+        if not capability:return _error(ValueError("unsupported work action"),404)
+        from atlas_core.provenance import InvocationProvenance
+        occurrence=await run_in_threadpool(rt.capabilities.invoke,capability,{"work_id":wid},provenance=InvocationProvenance(owner.principal_id,"human","control"))
+        if occurrence.status!="succeeded":return JSONResponse({"action":occurrence.public(),"error":occurrence.error or occurrence.error_code or occurrence.status},status_code=409)
+        return JSONResponse(occurrence.result)
     except Exception as exc:return _error(exc)
 
 
@@ -276,14 +301,23 @@ async def cadence_enable(request: Request) -> JSONResponse:
     gate=require_mutation_auth(request)
     if isinstance(gate,JSONResponse):return gate
     try:
-        rt=_runtime(request);body=await _body(request);item=rt.cadence_store.get(request.path_params["cadence_id"]);enabled=bool(body.get("enabled",True));next_run=None if not enabled else rt.cadence.next_after(item.schedule,datetime.now(timezone.utc)).isoformat();return JSONResponse(rt.cadence_store.set_enabled(item.cadence_id,enabled,next_run).as_dict())
+        rt=_runtime(request);owner=_owner(request,gate);body=await _body(request)
+        from atlas_core.provenance import InvocationProvenance
+        occurrence=await run_in_threadpool(rt.capabilities.invoke,"cadence.enable",{"cadence_id":request.path_params["cadence_id"],"enabled":bool(body.get("enabled",True))},provenance=InvocationProvenance(owner.principal_id,"human","control"))
+        if occurrence.status!="succeeded":return JSONResponse({"action":occurrence.public(),"error":occurrence.error or occurrence.error_code or occurrence.status},status_code=409)
+        return JSONResponse(occurrence.result)
     except Exception as exc:return _error(exc)
 
 
 async def cadence_delete(request: Request) -> JSONResponse:
     gate=require_mutation_auth(request)
     if isinstance(gate,JSONResponse):return gate
-    try:_runtime(request).cadence_store.delete(request.path_params["cadence_id"]);return JSONResponse({"ok":True})
+    try:
+        rt=_runtime(request);owner=_owner(request,gate)
+        from atlas_core.provenance import InvocationProvenance
+        occurrence=await run_in_threadpool(rt.capabilities.invoke,"cadence.delete",{"cadence_id":request.path_params["cadence_id"]},provenance=InvocationProvenance(owner.principal_id,"human","control"))
+        if occurrence.status!="succeeded":return JSONResponse({"action":occurrence.public(),"error":occurrence.error or occurrence.error_code or occurrence.status},status_code=409)
+        return JSONResponse({"ok":True,"action":occurrence.public()})
     except Exception as exc:return _error(exc)
 
 
@@ -342,7 +376,7 @@ async def source_root_put(request: Request) -> JSONResponse:
     try:
         body=await _body(request);rt=_runtime(request)
         root_id=str(body.get("root_id") or "");provider_namespace=str(body.get("provider_namespace") or "local")
-        if root_id in {"atlas-managed-intake", "atlas-library-clean"} or provider_namespace in {"atlas-managed", "atlas-library"}: raise ValueError("Atlas-managed root identity is reserved")
+        if root_id in {"atlas-managed-intake", "atlas-library-clean", "atlas-owner-uploads"} or provider_namespace in {"atlas-managed", "atlas-library", "atlas-upload"}: raise ValueError("Atlas-managed root identity is reserved")
         item=rt.source_roots.put(root_id=root_id,host_path=str(body.get("host_path") or ""),display_name=body.get("display_name"),provider_namespace=provider_namespace,quarantine_relative_path=body.get("quarantine_relative_path",".atlas-quarantine"),enabled=bool(body.get("enabled",True)));rt.sources.reload();rt.seed_policy();return JSONResponse(item.public())
     except Exception as exc:return _error(exc)
 
@@ -352,7 +386,7 @@ async def source_root_delete(request: Request) -> JSONResponse:
     if isinstance(gate,JSONResponse):return gate
     try:
         rt=_runtime(request); root_id=request.path_params["root_id"]
-        if root_id in {"atlas-managed-intake", "atlas-library-clean"}: raise ValueError("Atlas-managed root cannot be removed")
+        if root_id in {"atlas-managed-intake", "atlas-library-clean", "atlas-owner-uploads"}: raise ValueError("Atlas-managed root cannot be removed")
         rt.source_roots.delete(root_id);rt.sources.reload();return JSONResponse({"ok":True})
     except Exception as exc:return _error(exc)
 
@@ -440,6 +474,36 @@ async def artifact_detail(request: Request) -> JSONResponse:
         if item["principal_id"]!=owner.principal_id:return _error(KeyError("artifact not found"),404)
         return JSONResponse({"artifact":item,"passages":[{k:v for k,v in row.items() if k!="content"} for row in rt.passages.for_source(item["artifact_id"])]})
     except KeyError:return _error(KeyError("artifact not found"),404)
+
+
+async def artifact_content(request: Request) -> Response:
+    gate=require_session(request)
+    if isinstance(gate,JSONResponse):return gate
+    fd=None
+    try:
+        rt=_runtime(request);owner=_owner(request,gate);item=rt.artifact_store.get(request.path_params["artifact_id"])
+        if item["principal_id"]!=owner.principal_id:return _error(KeyError("artifact not found"),404)
+        facet=next((row for row in item.get("facets",[]) if row.get("kind")=="local_file" and row.get("state")=="present"),None)
+        if facet is None:return _error(ValueError("artifact has no readable local representation"),404)
+        root=rt.source_roots.get(facet["root_id"]);relative_path=str(facet["relative_path"] or "")
+        scope=f"files/{root.provider_namespace}/{root.root_id}/{relative_path}"
+        decision=rt.policy.resolve(principal_id=owner.principal_id,scope=scope,operation="read")
+        if decision.decision!="YES":return forbidden("artifact viewing is not allowed by current owner policy")
+        fd,_ref,info=rt.sources.kernel.open_binary(root.provider_namespace,root.root_id,relative_path,configuration_revision=rt.sources._revision(root))
+        media_type=item.get("media_type") or mimetypes.guess_type(relative_path)[0] or "application/octet-stream"
+        opened_fd=fd;fd=None
+        def chunks():
+            try:
+                while True:
+                    chunk=os.read(opened_fd,256*1024)
+                    if not chunk:break
+                    yield chunk
+            finally:os.close(opened_fd)
+        return StreamingResponse(chunks(),media_type=media_type,headers={"Content-Length":str(info.st_size),"Content-Disposition":"inline","X-Content-Type-Options":"nosniff","Cache-Control":"private, no-store"})
+    except KeyError:return _error(KeyError("artifact not found"),404)
+    except Exception as exc:
+        if fd is not None:os.close(fd)
+        return _error(exc)
 
 
 async def knowledge_generations(request: Request) -> JSONResponse:

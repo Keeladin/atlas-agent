@@ -44,7 +44,7 @@ class IndexingRuntime:
             f"another knowledge ingest owns the open generation{detail}; finish, cancel, or resume it before continuing"
         )
 
-    def _contains_source(self, generation_id: str, source_artifact_id: str) -> bool:
+    def contains_source(self, generation_id: str, source_artifact_id: str) -> bool:
         with self.passages._db() as db:
             row = db.execute(
                 """SELECT 1 FROM generation_passages g
@@ -187,7 +187,7 @@ class IndexingRuntime:
                 # that another intake activated while this work was paused. Rebase only if
                 # this source was already part of that generation; arbitrary writes to a
                 # closed generation remain forbidden.
-                if generation["state"] in {"active", "retired", "failed"} and self._contains_source(generation_id, source_artifact_id):
+                if generation["state"] in {"active", "retired", "failed"} and self.contains_source(generation_id, source_artifact_id):
                     rebased_from = generation_id
                     generation = self.ensure_generation(source_artifact_id, occurrence_hint, owner_work_id)
                 else:

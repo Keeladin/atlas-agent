@@ -22,6 +22,13 @@ class WorkStore:
             columns={row[1] for row in db.execute("PRAGMA table_info(work_items)")}
             for name in ("display_ref","artifact_class","workflow_class","source_cadence_id"):
                 if name not in columns:db.execute(f"ALTER TABLE work_items ADD COLUMN {name} TEXT")
+            if "revision" not in columns: db.execute("ALTER TABLE work_items ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+            db.execute("""CREATE TABLE IF NOT EXISTS work_adaptations(
+                adaptation_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, base_revision INTEGER NOT NULL, new_revision INTEGER NOT NULL,
+                from_ordinal INTEGER NOT NULL, change_intent TEXT NOT NULL, reason TEXT NOT NULL, unchanged_goal TEXT NOT NULL,
+                expected_impact TEXT NOT NULL, before_steps_json TEXT NOT NULL, after_steps_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(work_id) REFERENCES work_items(work_id) ON DELETE CASCADE)""")
+            db.execute("CREATE INDEX IF NOT EXISTS work_adaptations_work ON work_adaptations(work_id,new_revision)")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS work_display_ref_unique ON work_items(display_ref) WHERE display_ref IS NOT NULL")
             db.execute("CREATE INDEX IF NOT EXISTS work_source_cadence_id_idx ON work_items(source_cadence_id) WHERE source_cadence_id IS NOT NULL")
             # Cadence-created Work has always recorded the relationship in metadata; promote
@@ -47,7 +54,7 @@ class WorkStore:
     def get(self,work_id:str)->WorkItem:
         with self._db() as db:r=db.execute("SELECT * FROM work_items WHERE work_id=?",(work_id,)).fetchone()
         if r is None:raise KeyError(work_id)
-        return WorkItem(r["work_id"],r["objective"],r["status"],r["owner_principal_id"],r["created_at"],r["updated_at"],json.loads(r["metadata_json"] or "{}"),r["display_ref"],r["artifact_class"],r["workflow_class"],r["source_cadence_id"])
+        return WorkItem(r["work_id"],r["objective"],r["status"],r["owner_principal_id"],r["created_at"],r["updated_at"],json.loads(r["metadata_json"] or "{}"),r["display_ref"],r["artifact_class"],r["workflow_class"],r["source_cadence_id"],int(r["revision"] if "revision" in r.keys() else 1))
     def list(self,*,limit:int=200,cadence_id:str|None=None)->tuple[WorkItem,...]:
         with self._db() as db:
             if cadence_id:rows=db.execute("SELECT work_id FROM work_items WHERE source_cadence_id=? ORDER BY created_at DESC LIMIT ?",(cadence_id,limit)).fetchall()
@@ -71,8 +78,8 @@ class WorkStore:
         with self._db() as db:
             db.execute(
                 """UPDATE work_steps SET status=?,occurrence_id=COALESCE(?,occurrence_id),output_json=?,error=?,updated_at=CURRENT_TIMESTAMP
-                   WHERE step_id=? AND (status!='completed' OR ?='completed')""",
-                (status,occurrence_id,None if output is None else json.dumps(output,default=str,ensure_ascii=False),error,step_id,status),
+                   WHERE step_id=? AND status!='completed'""",
+                (status,occurrence_id,None if output is None else json.dumps(output,default=str,ensure_ascii=False),error,step_id),
             )
         return self.step(step_id)
     def claim_step(self,step_id:str)->bool:
@@ -108,6 +115,44 @@ class WorkStore:
                 db.execute("UPDATE work_steps SET status='queued',occurrence_id=NULL,output_json=NULL,error=NULL,updated_at=CURRENT_TIMESTAMP WHERE work_id=? AND ordinal>=? AND status!='completed'",(work_id,int(ordinal)))
                 db.execute("UPDATE work_items SET status='queued',updated_at=CURRENT_TIMESTAMP WHERE work_id=?",(work_id,))
         return self.get(work_id)
+
+    def adaptations(self,work_id:str)->tuple[dict[str,Any],...]:
+        with self._db() as db:
+            rows=db.execute("SELECT * FROM work_adaptations WHERE work_id=? ORDER BY new_revision,created_at",(work_id,)).fetchall()
+        result=[]
+        for row in rows:
+            item=dict(row);item["before_steps"]=json.loads(item.pop("before_steps_json"));item["after_steps"]=json.loads(item.pop("after_steps_json"));result.append(item)
+        return tuple(result)
+
+    def revise(self,work_id:str,*,base_revision:int,from_ordinal:int,replacement_steps:list[dict[str,Any]],change_intent:str,reason:str,unchanged_goal:str,expected_impact:str)->WorkItem:
+        if from_ordinal < 1: raise ValueError("from_ordinal must be at least 1")
+        with self._db() as db:
+            work=db.execute("SELECT * FROM work_items WHERE work_id=?",(work_id,)).fetchone()
+            if work is None: raise KeyError(work_id)
+            if int(work["revision"] if "revision" in work.keys() else 1) != int(base_revision): raise ValueError("work revision changed; reload before revising")
+            if work["status"] in {"completed","cancelled"}: raise ValueError("terminal Work cannot be revised")
+            running=db.execute("SELECT 1 FROM work_steps WHERE work_id=? AND status='running' LIMIT 1",(work_id,)).fetchone()
+            if running is not None: raise ValueError("Work cannot be revised while a step is running")
+            completed=db.execute("SELECT MAX(ordinal) FROM work_steps WHERE work_id=? AND status='completed'",(work_id,)).fetchone()[0]
+            if completed is not None and from_ordinal <= int(completed): raise ValueError("revision cannot replace completed Work history")
+            rows=db.execute("SELECT * FROM work_steps WHERE work_id=? AND ordinal>=? ORDER BY ordinal",(work_id,from_ordinal)).fetchall()
+            if not rows: raise ValueError("revision must replace an unfinished route")
+            before=[{
+                "step_id":r["step_id"],"ordinal":int(r["ordinal"]),"description":r["description"],"capability_id":r["capability_id"],
+                "input":json.loads(r["input_json"] or "{}"),"status":r["status"],"occurrence_id":r["occurrence_id"],
+                "output":None if not r["output_json"] else json.loads(r["output_json"]),"error":r["error"],
+            } for r in rows]
+            adaptation_id=f"adaptation_{uuid4().hex}";new_revision=int(base_revision)+1
+            db.execute("DELETE FROM work_steps WHERE work_id=? AND ordinal>=?",(work_id,from_ordinal))
+            after=[]
+            for offset,step in enumerate(replacement_steps):
+                ordinal=from_ordinal+offset;cid=str(step.get("capability_id") or "").strip();inp=step.get("input") or {};desc=str(step.get("description") or cid).strip();step_id=f"step_{uuid4().hex}"
+                db.execute("INSERT INTO work_steps(step_id,work_id,ordinal,description,capability_id,input_json,status) VALUES (?,?,?,?,?,?,'queued')",(step_id,work_id,ordinal,desc,cid,json.dumps(inp,sort_keys=True,separators=(",",":"),default=str)))
+                after.append({"step_id":step_id,"ordinal":ordinal,"description":desc,"capability_id":cid,"input":inp,"status":"queued"})
+            db.execute("INSERT INTO work_adaptations(adaptation_id,work_id,base_revision,new_revision,from_ordinal,change_intent,reason,unchanged_goal,expected_impact,before_steps_json,after_steps_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)",(adaptation_id,work_id,int(base_revision),new_revision,from_ordinal,change_intent,reason,unchanged_goal,expected_impact,json.dumps(before,default=str,ensure_ascii=False),json.dumps(after,default=str,ensure_ascii=False)))
+            db.execute("UPDATE work_items SET revision=?,status='queued',updated_at=CURRENT_TIMESTAMP WHERE work_id=?",(new_revision,work_id))
+        return self.get(work_id)
+
     def cancel(self,work_id:str)->WorkItem:
         with self._db() as db:db.execute("UPDATE work_items SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE work_id=?",(work_id,));db.execute("UPDATE work_steps SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE work_id=? AND status NOT IN ('completed','failed')",(work_id,))
         return self.get(work_id)

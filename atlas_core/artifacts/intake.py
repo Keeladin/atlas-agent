@@ -315,8 +315,9 @@ class DeterministicIntakeWorkflow:
 class ArtifactIntakeRuntime:
     """Semantic intake before Work exists. Work is created only for a routed responsibility."""
     def __init__(self, store: ArtifactIntakeStore, artifacts, providers: ProviderRuntime,
-                 work, registry: CapabilityRegistry, capabilities: CapabilityRuntime, workflows: WorkflowCatalog | None = None, representations=None, managed_intake=None, intake_workflow: DeterministicIntakeWorkflow | None = None) -> None:
+                 work, registry: CapabilityRegistry, capabilities: CapabilityRuntime, workflows: WorkflowCatalog | None = None, representations=None, managed_intake=None, intake_workflow: DeterministicIntakeWorkflow | None = None, indexing=None) -> None:
         self.store, self.artifacts, self.providers, self.work, self.registry, self.capabilities = store, artifacts, providers, work, registry, capabilities
+        self.indexing = indexing
         self.managed_intake = managed_intake
         self.intake_workflow = intake_workflow or (DeterministicIntakeWorkflow(capabilities, artifacts) if managed_intake is not None else None)
         self.workflows = workflows or WorkflowCatalog(representations); self._register()
@@ -330,6 +331,18 @@ class ArtifactIntakeRuntime:
             lambda p: ScopeResolution("atlas/artifacts/intake", dict(p), f"Classify artifact {p['artifact_id']}"),
             self._execute, metadata={"scope_hint": "atlas/artifacts/intake", "requires_owner_context": True},
         ), replace=True)
+        ingest_schema = {"type": "object", "required": ["artifact_id"], "properties": {
+            "artifact_id": {"type": "string", "minLength": 1},
+            "representation_needs": {"type": "array", "minItems": 1, "uniqueItems": True,
+                "items": {"type": "string", "enum": ["text", "layout", "tables", "visual"]}},
+        }, "additionalProperties": False}
+        self.registry.register(CapabilityRegistration(
+            CapabilityDefinition("knowledge.ingest", "Make one governed artifact available as durable derived Knowledge using the runtime-owned representation, indexing, verification and activation pipeline.", "ingest", "internal", ingest_schema, source="knowledge", tags=("knowledge", "ingest", "artifacts", "work")),
+            lambda p: ScopeResolution("atlas/knowledge", dict(p), f"Ingest artifact {p['artifact_id']} into Knowledge"),
+            self._knowledge_ingest_execute,
+            metadata={"scope_hint": "atlas/knowledge", "requires_owner_context": True, "work_composable": False},
+        ), replace=True)
+
         if self.managed_intake is not None:
             file_schema = {"type": "object", "required": ["root_id", "relative_path"], "properties": {
                 "root_id": {"type": "string", "minLength": 1},
@@ -340,6 +353,92 @@ class ArtifactIntakeRuntime:
                 self._file_scope, self._file_execute,
                 metadata={"scope_hint": "files", "requires_owner_context": True},
             ), replace=True)
+    def _managed_artifact_for_ingest(self, artifact: dict[str, Any], owner: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+        """Return (managed artifact, inspection, custody receipt) without semantic classification."""
+        if artifact["principal_id"] != owner:
+            raise KeyError(artifact["artifact_id"])
+        managed = self.artifacts.managed_by_artifact(artifact["artifact_id"])
+        if managed is not None:
+            target = artifact
+            inspected = self.capabilities.invoke(
+                "artifacts.inspect", {"artifact_id": target["artifact_id"]},
+                provenance=InvocationProvenance(owner, "human", "system"),
+            )
+            if inspected.status != "succeeded":
+                raise RuntimeError(f"artifact inspection {inspected.status}: {inspected.error or inspected.error_code or inspected.policy_decision}")
+            return target, inspected.result["inspection"], None
+
+        linked = self.artifacts.managed_for_source(artifact["artifact_id"])
+        if linked:
+            target = self.artifacts.get(linked[0]["managed_artifact_id"])
+            inspected = self.capabilities.invoke(
+                "artifacts.inspect", {"artifact_id": target["artifact_id"]},
+                provenance=InvocationProvenance(owner, "human", "system"),
+            )
+            if inspected.status != "succeeded":
+                raise RuntimeError(f"artifact inspection {inspected.status}: {inspected.error or inspected.error_code or inspected.policy_decision}")
+            return target, inspected.result["inspection"], {"reused_managed_artifact": True, "managed_artifact_id": target["artifact_id"]}
+
+        if self.intake_workflow is None:
+            raise WorkflowUnsupported("knowledge.ingest requires managed custody for source artifacts")
+        stage = self.intake_workflow.run(artifact, owner=owner)
+        return stage["artifact"], stage["inspection"], {
+            "reused_managed_artifact": False,
+            "managed_artifact_id": stage["artifact"]["artifact_id"],
+            "stage_occurrence_ids": stage["stage_occurrence_ids"],
+            "acquisition": stage["acquisition"],
+        }
+
+    def _existing_ingest_work(self, managed_artifact_id: str) -> dict[str, Any] | None:
+        for item in self.work.store.list(limit=500):
+            if str(item.metadata.get("workflow_intent") or "") != "knowledge.ingest":
+                continue
+            if str(item.metadata.get("artifact_id") or "") != managed_artifact_id:
+                continue
+            if item.status in {"queued", "active", "waiting", "paused"}:
+                return self.work.detail(item.work_id)
+        return None
+
+    def _knowledge_ingest_execute(self, payload: dict[str, Any]) -> ActionResult:
+        owner = str(payload.pop("__owner_principal_id", "") or "")
+        payload.pop("__invocation_surface", None)
+        try:
+            if not owner:
+                raise ValueError("owner principal unavailable")
+            source = self.artifacts.get(payload["artifact_id"])
+            managed, inspection, custody = self._managed_artifact_for_ingest(source, owner)
+            existing = self._existing_ingest_work(managed["artifact_id"])
+            if existing is not None:
+                return ActionResult(True, {**existing, "reused_existing_work": True}, {"ok": True, "operation": "knowledge.ingest", "work_id": existing["work_id"], "reused_existing_work": True})
+
+            active_generation = None
+            index_runtime = getattr(self, "indexing", None)
+            if index_runtime is not None:
+                active_generation = index_runtime.generations.active()
+                if active_generation and index_runtime.contains_source(active_generation["generation_id"], managed["artifact_id"]):
+                    return ActionResult(True, {
+                        "work_id": None, "status": "completed", "objective": f"Ingest {managed['display_name']} into Knowledge",
+                        "already_indexed": True, "artifact_id": managed["artifact_id"], "generation_id": active_generation["generation_id"],
+                        "steps": [], "adaptations": [],
+                    }, {"ok": True, "operation": "knowledge.ingest", "already_indexed": True, "artifact_id": managed["artifact_id"]})
+
+            needs = list(dict.fromkeys(payload.get("representation_needs") or ["text"]))
+            decision = {"representation_needs": needs}
+            preflight = self.workflows.preflight("knowledge.ingest", managed, inspection, decision)
+            objective, steps = self.workflows.build("knowledge.ingest", managed, inspection, decision)
+            item = self.work.create(
+                objective, steps, owner_principal_id=owner,
+                metadata={
+                    "artifact_id": managed["artifact_id"], "source_artifact_id": source["artifact_id"],
+                    "workflow_intent": "knowledge.ingest", "workflow_preflight": preflight,
+                    "custody": custody,
+                },
+            )
+            result = self.work.run(item.work_id)
+            return ActionResult(True, result, {"ok": True, "operation": "knowledge.ingest", "work_id": item.work_id, "artifact_id": managed["artifact_id"], "work_status": result["status"]})
+        except Exception as exc:
+            return ActionResult(False, {}, {"ok": False, "operation": "knowledge.ingest"}, error_code="knowledge_ingest_failed", error=str(exc))
+
     def _file_scope(self, payload: dict[str, Any]) -> ScopeResolution:
         root_id = str(payload.get("root_id") or "").strip()
         relative_path = str(payload.get("relative_path") or "").strip()

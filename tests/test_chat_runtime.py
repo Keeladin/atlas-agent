@@ -566,3 +566,29 @@ def test_read_only_web_failure_returns_to_reasoning_without_exposing_provider_ex
     assert "Page.goto" not in json.dumps(failure)
     occurrence = next(row for row in action_store.recent(limit=10) if row.capability_id == "web.read")
     assert "Page.goto" in (occurrence.error or "")
+
+
+def test_composition_context_includes_open_work_and_related_completed_work(tmp_path):
+    runtime=build_runtime(tmp_path/"instance");owner=runtime.identities.current_owner();cid=runtime.chat_store.create_conversation("Context")["conversation_id"]
+    open_work=runtime.work.create("Research loader service interval",[{"capability_id":"knowledge.search","description":"Find prior loader maintenance evidence","input":{"query":"loader service interval"}}],owner_principal_id=owner.principal_id)
+    completed=runtime.work.create("Review loader maintenance evidence",[{"capability_id":"knowledge.search","description":"Review loader maintenance evidence","input":{"query":"loader maintenance"}}],owner_principal_id=owner.principal_id)
+    runtime.work_store.set_step(runtime.work_store.steps(completed.work_id)[0].step_id,status="completed",output={"finding":"dust exposure matters"})
+    runtime.work_store.set_work_status(completed.work_id,"completed")
+    runtime.chat.provider=SequenceProvider('{"kind":"reply","reply":"I found the related Work."}')
+    runtime.chat.send(cid,"What should we do about the loader service interval?",principal_id=owner.principal_id,defer_capture=True)
+    prompt=json.loads(runtime.chat.provider.requests[0].input)
+    work_context=[row for row in prompt["relevant_durable_context"] if row["kind"].startswith("work_")]
+    assert any(row.get("reference",{}).get("work_id")==open_work.work_id for row in work_context)
+    assert any(row.get("reference",{}).get("work_id")==completed.work_id for row in work_context)
+    assert "multi-step route" in runtime.chat.provider.requests[0].system
+    assert "knowledge.ingest" in runtime.chat.provider.requests[0].system
+    assert "work.revise" in runtime.chat.provider.requests[0].system
+
+
+def test_unrelated_capability_query_keeps_core_signposts_available(tmp_path):
+    runtime=build_runtime(tmp_path/"instance")
+    matches=runtime.chat.search_capabilities("flibbertigibbet quux zzyzx",limit=40)
+    ids={row["id"] for row in matches}
+    assert "work.create" in ids
+    assert "knowledge.ingest" in ids
+    assert "artifacts.list" in ids

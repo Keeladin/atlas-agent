@@ -2,6 +2,7 @@ from __future__ import annotations
 from datetime import datetime,timedelta,timezone
 from zoneinfo import ZoneInfo
 from typing import Any
+from uuid import uuid4
 from atlas_core.work import WorkRuntime
 from .store import CadenceStore
 
@@ -11,6 +12,7 @@ def _iso(dt:datetime)->str:return dt.astimezone(timezone.utc).isoformat()
 class CadenceRuntime:
     def __init__(self,store:CadenceStore,work:WorkRuntime,intake=None)->None:self.store=store;self.work=work;self.intake=intake
     def create(self,*,name:str,objective:str,schedule:dict[str,Any],steps:list[dict[str,Any]],owner_principal_id:str,kind:str="work_template",intake_root_id:str|None=None,max_candidates:int=25):
+        if kind == "work_template": self.work.validate_steps(steps)
         next_run=self.next_after(schedule,_utcnow()-timedelta(seconds=1))
         return self.store.create(name=name,objective=objective,schedule=schedule,steps=steps,owner_principal_id=owner_principal_id,next_run_at=_iso(next_run),kind=kind,intake_root_id=intake_root_id,max_candidates=max_candidates)
     def _materialize(self,cadence)->tuple[dict[str,Any],str|None,dict[str,Any]|None]:
@@ -26,10 +28,18 @@ class CadenceRuntime:
     def tick(self)->tuple[dict[str,Any],...]:
         now=_utcnow();created=[]
         for cadence in self.store.due(_iso(now)):
+            expected=cadence.next_run_at
+            if not expected: continue
+            token=f"cadence_run_{uuid4().hex}"
+            if not self.store.claim_due(cadence.cadence_id,expected,token): continue
             next_run=self.next_after(cadence.schedule,now)
-            entry,last_work_id,last_result=self._materialize(cadence)
-            self.store.mark_run(cadence.cadence_id,last_run_at=_iso(now),last_work_id=last_work_id,next_run_at=_iso(next_run),last_result=last_result)
-            created.append(entry)
+            try:
+                entry,last_work_id,last_result=self._materialize(cadence)
+                self.store.mark_run(cadence.cadence_id,last_run_at=_iso(now),last_work_id=last_work_id,next_run_at=_iso(next_run),last_result=last_result)
+                created.append(entry)
+            except Exception as exc:
+                self.store.release_claim(cadence.cadence_id,token)
+                created.append({"cadence_id":cadence.cadence_id,"kind":cadence.kind,"status":"failed","error":str(exc)})
         return tuple(created)
     def update(self,cadence_id:str,patch:dict[str,Any]):
         current=self.store.get(cadence_id)
@@ -40,6 +50,7 @@ class CadenceRuntime:
         """Chat-facing update. Authoring an intake sweep definition is deliberately not exposed."""
         current=self.store.get(cadence_id)
         if current.kind!="work_template":raise ValueError("cadence_update_not_supported")
+        if "steps" in patch: self.work.validate_steps(patch["steps"])
         return self.update(cadence_id,patch)
     def run_now(self,cadence_id:str)->dict[str,Any]:
         """Owner-triggered manual run.
@@ -49,10 +60,14 @@ class CadenceRuntime:
         object may never execute"; an explicit owner trigger is a different origin
         from the scheduler. The schedule itself is left untouched.
         """
-        cadence=self.store.get(cadence_id)
-        entry,last_work_id,last_result=self._materialize(cadence)
-        self.store.mark_manual_run(cadence_id,last_run_at=_iso(_utcnow()),last_work_id=last_work_id,last_result=last_result)
-        return {**entry,"trigger":"manual"}
+        cadence=self.store.get(cadence_id);token=f"cadence_manual_{uuid4().hex}"
+        if not self.store.claim_manual(cadence_id,token): raise RuntimeError("cadence run already in progress")
+        try:
+            entry,last_work_id,last_result=self._materialize(cadence)
+            self.store.mark_manual_run(cadence_id,last_run_at=_iso(_utcnow()),last_work_id=last_work_id,last_result=last_result)
+            return {**entry,"trigger":"manual"}
+        except Exception:
+            self.store.release_claim(cadence_id,token);raise
     def next_after(self,schedule:dict[str,Any],after:datetime)->datetime:
         kind=str(schedule.get("kind") or "");tz=ZoneInfo(str(schedule.get("timezone") or "UTC"));local=after.astimezone(tz)
         if kind=="interval":
@@ -132,9 +147,24 @@ def register_cadence_capabilities(registry,runtime:CadenceRuntime)->None:
         except KeyError:
             return ActionResult(False,error_code="cadence_unknown",error="cadence not found",receipt={"ok":False,"operation":"cadence.get"})
 
-    owner_meta={"scope_hint":"atlas/cadence","requires_owner_context":True}
+    def enable_execute(payload):
+        _owner(payload);cadence_id=payload["cadence_id"]
+        try:
+            item=runtime.store.get(cadence_id);enabled=bool(payload["enabled"]);next_run=None if not enabled else _iso(runtime.next_after(item.schedule,_utcnow()-timedelta(seconds=1)))
+            item=runtime.store.set_enabled(cadence_id,enabled,next_run)
+            return ActionResult(True,item.as_dict(),{"ok":True,"operation":"cadence.enable","cadence_id":cadence_id,"enabled":enabled})
+        except Exception as exc:return ActionResult(False,error_code="cadence_enable_failed",error=str(exc),receipt={"ok":False,"operation":"cadence.enable"})
+    def delete_execute(payload):
+        _owner(payload);cadence_id=payload["cadence_id"]
+        try:runtime.store.delete(cadence_id);return ActionResult(True,{"cadence_id":cadence_id,"deleted":True},{"ok":True,"operation":"cadence.delete","cadence_id":cadence_id})
+        except Exception as exc:return ActionResult(False,error_code="cadence_delete_failed",error=str(exc),receipt={"ok":False,"operation":"cadence.delete"})
+    enable_schema={"type":"object","required":["cadence_id","enabled"],"properties":{"cadence_id":{"type":"string","minLength":1},"enabled":{"type":"boolean"}},"additionalProperties":False}
+    owner_meta={"scope_hint":"atlas/cadence","requires_owner_context":True,"work_composable":False}
     registry.register(CapabilityRegistration(CapabilityDefinition("cadence.create","Create a recurring standing duty that materializes ordinary Work on a schedule.","create","internal",create_schema,source="cadence",tags=("cadence","work")),lambda p:ScopeResolution("atlas/cadence",dict(p),f"Create Cadence: {p.get('name','')}"),create_execute,metadata=owner_meta),replace=True)
     registry.register(CapabilityRegistration(CapabilityDefinition("cadence.update","Change an existing standing duty's name, objective, schedule, or capability steps.","update","internal",update_schema,source="cadence",tags=("cadence","work")),lambda p:ScopeResolution("atlas/cadence",dict(p),f"Update Cadence: {p.get('cadence_id','')}"),update_execute,metadata=owner_meta),replace=True)
     registry.register(CapabilityRegistration(CapabilityDefinition("cadence.run_now","Run an existing standing duty immediately without changing its schedule.","run_now","internal",run_schema,source="cadence",tags=("cadence","work")),lambda p:ScopeResolution("atlas/cadence",dict(p),f"Run Cadence now: {p.get('cadence_id','')}"),run_execute,metadata=owner_meta),replace=True)
     registry.register(CapabilityRegistration(CapabilityDefinition("cadence.list","List standing duties, optionally narrowed by a name or objective query.","list","none",list_schema,source="cadence",tags=("cadence","work")),lambda p:ScopeResolution("atlas/cadence",dict(p),"List Cadence"),list_execute,metadata=owner_meta),replace=True)
+
+    registry.register(CapabilityRegistration(CapabilityDefinition("cadence.enable","Enable or disable automatic scheduling for a standing duty without changing its definition.","enable","internal",enable_schema,source="cadence",tags=("cadence","control")),lambda p:ScopeResolution("atlas/cadence",dict(p),f"{'Enable' if p.get('enabled') else 'Disable'} Cadence: {p.get('cadence_id','')}"),enable_execute,metadata=owner_meta),replace=True)
+    registry.register(CapabilityRegistration(CapabilityDefinition("cadence.delete","Delete a standing duty definition. Existing Work history is not deleted.","delete","internal",run_schema,source="cadence",tags=("cadence","control")),lambda p:ScopeResolution("atlas/cadence",dict(p),f"Delete Cadence: {p.get('cadence_id','')}"),delete_execute,metadata=owner_meta),replace=True)
     registry.register(CapabilityRegistration(CapabilityDefinition("cadence.get","Read one standing duty's full definition and latest run reference.","get","none",get_schema,source="cadence",tags=("cadence","work")),lambda p:ScopeResolution("atlas/cadence",dict(p),f"Read Cadence: {p.get('cadence_id','')}"),get_execute,metadata=owner_meta),replace=True)

@@ -45,16 +45,19 @@ describe('Chat', () => {
   it('renders a compact transcript and highlights the selected conversation', async () => {
     renderChat()
     expect(await screen.findByText('Hello there')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
     const selected = screen.getByRole('button', { name: /Chat 2026-08-29 17:34:11/ })
-    expect(selected).toHaveClass('active')
-    expect(screen.getByText('Hello there').closest('.chat-turn')).toHaveClass('assistant')
+    expect(selected.parentElement).toHaveClass('active')
+    expect(screen.getByText('Hello there').closest('.owner-turn')).toHaveClass('assistant')
     expect(screen.getByText('Hello there').closest('.card')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Trace' }))
     expect(screen.getAllByText('knowledge.search')).not.toHaveLength(0)
   })
 
   it('filters the local conversation rail without changing the active thread', async () => {
     renderChat()
     expect(await screen.findByText('Hello there')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
     fireEvent.change(screen.getByRole('textbox', { name: 'Search conversations' }), { target: { value: 'missing' } })
     expect(screen.getByText('No matching conversations')).toBeInTheDocument()
     expect(screen.getByText('Hello there')).toBeInTheDocument()
@@ -63,6 +66,7 @@ describe('Chat', () => {
   it('deletes a conversation through the authenticated API surface', async () => {
     const fetchMock = renderChat()
     await screen.findByText('Hello there')
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
     fireEvent.click(screen.getByRole('button', { name: 'Delete Chat' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations/conversation_1', expect.objectContaining({ method: 'DELETE' })))
   })
@@ -99,6 +103,7 @@ it('never sends to a conversation deleted from stale cache', async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   render(<QueryClientProvider client={client}><MemoryRouter><Chat /></MemoryRouter></QueryClientProvider>)
   await screen.findByText('Old reply')
+  fireEvent.click(screen.getByRole('button', { name: 'History' }))
   fireEvent.click(screen.getByRole('button', { name: 'Delete Chat' }))
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations', expect.objectContaining({ method: 'POST' })))
   const box = screen.getByPlaceholderText('Ask Atlas…')

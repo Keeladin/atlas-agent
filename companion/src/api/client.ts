@@ -89,3 +89,25 @@ export async function logout(): Promise<void> {
   await api('/api/auth/logout', { method: 'POST', body: '{}' })
   setCsrfToken(null)
 }
+
+
+export async function uploadArtifact<T = unknown>(file: File): Promise<T> {
+  const headers = new Headers()
+  headers.set('Content-Type', file.type || 'application/octet-stream')
+  headers.set('X-Atlas-Filename', file.name)
+  if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
+  const response = await fetch('/api/chat/attachments', {
+    method: 'POST', body: file, headers, credentials: 'include',
+  })
+  const text = await response.text()
+  let body: unknown = null
+  if (text) {
+    try { body = JSON.parse(text) } catch { body = text }
+  }
+  if (!response.ok) {
+    const message = typeof body === 'object' && body && 'error' in body && typeof (body as { error: unknown }).error === 'string'
+      ? (body as { error: string }).error : `HTTP ${response.status}`
+    throw new ApiError(response.status, message, body)
+  }
+  return body as T
+}

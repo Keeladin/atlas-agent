@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -34,10 +35,19 @@ def _sqlite_state(root: Path) -> tuple[Path, ...]:
     return tuple(rows)
 
 def _verify_sqlite(path: Path) -> None:
-    uri = f"file:{path.resolve()}?mode=ro"
+    # Cutover verification runs only while the runtime is stopped. immutable=1
+    # prevents SQLite from creating WAL/SHM sidecars during this read-only check.
+    uri = f"file:{path.resolve()}?mode=ro&immutable=1"
     with sqlite3.connect(uri, uri=True) as db:
         if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise RuntimeError(f"SQLite verification failed: {path}")
+
+def _assert_instance_owner(instance_root: Path) -> None:
+    owner_uid = instance_root.stat().st_uid
+    if os.geteuid() != owner_uid:
+        raise PermissionError(
+            f"cutover must run as instance owner uid {owner_uid}; current uid is {os.geteuid()}"
+        )
 
 def reset_sqlite_state(instance_root: Path) -> tuple[str, ...]:
     removed = []
@@ -52,6 +62,7 @@ def perform_cutover(instance_root: Path, *, service_unit: str | None = None, ass
         raise FileNotFoundError(instance_root)
     if not service_unit and not assume_stopped:
         raise ValueError("provide --service-unit or explicitly use --assume-stopped")
+    _assert_instance_owner(instance_root)
     stopped_by_us = False
     if service_unit:
         _service("stop", service_unit); stopped_by_us = True

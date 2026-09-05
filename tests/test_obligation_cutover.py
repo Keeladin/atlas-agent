@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
+
+import pytest
 
 from atlas_api.compose import build_runtime
 from scripts.atlas_obligation_cutover import perform_cutover
@@ -40,3 +43,26 @@ def test_cutover_destroys_sqlite_state_and_preserves_non_sqlite_files(tmp_path):
     for name in ("atlas-identity.db", "atlas-work.db", "atlas-chat.db", "atlas-cadence.db"):
         with sqlite3.connect(root / name) as db:
             assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def test_cutover_refuses_wrong_instance_owner_before_reset(tmp_path, monkeypatch):
+    from scripts import atlas_obligation_cutover as cutover
+    root = tmp_path / "instance"
+    build_runtime(root)
+    existing = root / "atlas-chat.db"
+    assert existing.exists()
+    monkeypatch.setattr(cutover.os, "geteuid", lambda: root.stat().st_uid + 1)
+    with pytest.raises(PermissionError, match="cutover must run as instance owner"):
+        cutover.perform_cutover(root, assume_stopped=True)
+    assert existing.exists()
+
+
+def test_immutable_integrity_check_does_not_create_sqlite_sidecars(tmp_path):
+    from scripts.atlas_obligation_cutover import _verify_sqlite
+    path = tmp_path / "state.db"
+    with sqlite3.connect(path) as db:
+        db.execute("create table marker(value text)")
+        db.execute("insert into marker values ('ok')")
+    _verify_sqlite(path)
+    assert not Path(str(path) + "-wal").exists()
+    assert not Path(str(path) + "-shm").exists()

@@ -543,3 +543,25 @@ def test_interrupted_work_create_reconciles_without_pre_handoff_execution(tmp_pa
     rt.chat_store.mark_response_handed_off(owner_turn["turn_id"])
     assert rt.work.promote_runnable() == (work.work_id,)
     assert rt.work.run_runnable()[0]["status"] == "completed"
+
+
+def test_chat_refuses_same_turn_run_of_newly_staged_ledger_work(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner()
+    cid = rt.chat_store.create_conversation("Handoff guard")["conversation_id"]
+    rt.chat.provider = SequenceProvider(
+        lambda request: (lambda oid: json.dumps({"kind":"capability","capability_id":"work.create","input":{
+            "objective":"Check Atlas service state durably",
+            "steps":[{"capability_id":"host.service.status","description":"Check Atlas API status","input":{"unit":"atlas-api.service"},"obligation_ids":[oid]}]
+        }}))(json.loads(request.input)["owner_obligations"][0]["obligation_id"]),
+        lambda request: json.dumps({"kind":"capability","capability_id":"work.run","input":{
+            "work_id": json.loads(request.input)["tool_results"][-1]["result"]["work_id"]
+        },"obligation_ids":[]}),
+        '{"kind":"reply","reply":"I staged that Work and will run it after this response is handed off."}',
+    )
+    result = rt.chat.send(cid, "Check your API status durably", principal_id=owner.principal_id, defer_capture=True)
+    work = rt.work_store.list(limit=10)[0]
+    assert work.status == "staged"
+    assert result["turn"]["content"].startswith("I staged that Work")
+    assert any(row.get("status") == "staged_until_handoff" for row in json.loads(rt.chat.provider.requests[2].input)["tool_results"])
+    assert not [row for row in rt.actions_store.recent(limit=20) if row.capability_id == "work.run"]

@@ -30,6 +30,9 @@ type HostStatus = {
   pid?: number
   uid?: number
   invocation_id?: string | null
+  service_unit?: string | null
+  service_identity_source?: 'configured' | 'cgroup' | 'unresolved' | string
+  runtime_revision?: string
   timestamp?: string
 }
 
@@ -284,6 +287,9 @@ export function RuntimeOverview({ state }: { state?: SystemState }) {
       { label: 'Kernel', value: status.kernel ?? '—', mono: true },
       { label: 'PID / UID', value: `${status.pid ?? '—'} / ${status.uid ?? '—'}`, mono: true },
       { label: 'Invocation', value: invocation, mono: true },
+      { label: 'Service unit', value: status.service_unit ?? 'unresolved', mono: true },
+      { label: 'Identity source', value: status.service_identity_source ?? 'unresolved', mono: true },
+      { label: 'Runtime revision', value: status.runtime_revision ?? state?.version ?? '—', mono: true },
       { label: 'Timestamp', value: when(status.timestamp), mono: true },
     ]} /></section>
     <section className="ops-surface atlas-runtime-telemetry"><header className="ops-surface-head"><div><span className="eyebrow">Telemetry</span><strong>Host resources and storage</strong></div><span className="meta mono">{resources.cpu_count ?? '—'} CPU</span></header><div className="atlas-telemetry-grid"><section><h3>Resources</h3><FactList items={[

@@ -19,7 +19,7 @@ const state: RuntimeState = {
   connections: [],
   service_bindings: [],
   host: {
-    status: { hostname: 'ubuntuserver', kernel: '7.0.0', pid: 1234, uid: 995, invocation_id: 'abcdef1234567890' },
+    status: { hostname: 'ubuntuserver', kernel: '7.0.0', pid: 1234, uid: 995, invocation_id: 'abcdef1234567890', service_unit: 'atlas-api.service', service_identity_source: 'cgroup', runtime_revision: 'abc123' },
     resources: { load_1: 1.25, load_5: 1.5, load_15: 1.75, cpu_count: 12, memory: { MemTotal: '32768000 kB', MemAvailable: '16384000 kB', SwapFree: '4096000 kB' } },
     storage: { filesystems: [{ path: '/', total: 1024 ** 4, free: 512 * 1024 ** 3 }] },
   },
@@ -34,6 +34,9 @@ describe('RuntimeOverview', () => {
     expect(screen.getByText('Resources')).toBeInTheDocument()
     expect(screen.getByText('Storage')).toBeInTheDocument()
     expect(screen.getByText('ubuntuserver')).toBeInTheDocument()
+    expect(screen.getByText('atlas-api.service')).toBeInTheDocument()
+    expect(screen.getByText('cgroup')).toBeInTheDocument()
+    expect(screen.getByText('abc123')).toBeInTheDocument()
     expect(screen.getByText('16 GiB')).toBeInTheDocument()
     expect(screen.getByText('Raw host evidence')).toBeInTheDocument()
     expect(screen.getByText(/"hostname": "ubuntuserver"/)).not.toBeVisible()

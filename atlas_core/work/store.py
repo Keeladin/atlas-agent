@@ -92,6 +92,18 @@ class WorkStore:
                 (status,work_id),
             )
         return self.get(work_id)
+    def merge_metadata(self,work_id:str,patch:dict[str,Any])->WorkItem:
+        """Merge top-level runtime metadata without changing Work execution truth."""
+        with self._db() as db:
+            row=db.execute("SELECT metadata_json FROM work_items WHERE work_id=?",(work_id,)).fetchone()
+            if row is None:raise KeyError(work_id)
+            metadata=json.loads(row["metadata_json"] or "{}")
+            metadata.update(dict(patch or {}))
+            db.execute(
+                "UPDATE work_items SET metadata_json=?,updated_at=CURRENT_TIMESTAMP WHERE work_id=?",
+                (json.dumps(metadata,sort_keys=True,separators=(",",":"),default=str),work_id),
+            )
+        return self.get(work_id)
     def set_step(self,step_id:str,*,status:str,occurrence_id:str|None=None,output:Any=None,error:str|None=None)->WorkStep:
         with self._db() as db:
             db.execute(

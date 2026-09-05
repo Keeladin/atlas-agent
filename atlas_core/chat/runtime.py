@@ -558,14 +558,19 @@ class ChatRuntime:
         terminal_occurrence_id = next((str(step.get("occurrence_id")) for step in reversed(steps) if isinstance(step, dict) and step.get("occurrence_id")), "")
         terminal_identity = terminal_occurrence_id or str(detail.get("updated_at") or "")
         key = f"{detail.get('work_id')}:{detail.get('revision')}:{detail.get('status')}:{terminal_identity}"
-        text = self._work_completion_text(detail)
+        text, report_meta = self._work_completion_text(detail)
+        final_output = None
+        if steps and isinstance(steps[-1], dict):
+            final_output = steps[-1].get("output")
         turn_meta = {
             "work_completion_key": key,
             "work_completion": {
                 "work_id": detail.get("work_id"), "revision": detail.get("revision"),
                 "terminal_status": detail.get("status"), "updated_at": detail.get("updated_at"),
                 "terminal_occurrence_id": terminal_occurrence_id or None,
+                "final_output": _bounded(final_output, 4000) if final_output is not None else None,
             },
+            "completion_report": report_meta,
             "objects": [{"kind": "work", "id": detail.get("work_id")}],
             "tools_used": [],
         }
@@ -575,26 +580,90 @@ class ChatRuntime:
         except KeyError:
             return None
 
-    @staticmethod
-    def _work_completion_text(detail: dict[str, Any]) -> str:
+    def _work_completion_text(self, detail: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         objective = str(detail.get("objective") or "Work")
         status = str(detail.get("status") or "")
-        if status == "completed":
-            steps = detail.get("steps") if isinstance(detail.get("steps"), list) else []
-            final = steps[-1] if steps else {}
-            output = final.get("output") if isinstance(final, dict) else None
-            if isinstance(output, dict):
-                properties = output.get("properties") if isinstance(output.get("properties"), dict) else {}
-                unit = str(output.get("unit") or "")
-                active = str(properties.get("ActiveState") or "")
-                sub = str(properties.get("SubState") or "")
-                if unit and active:
-                    state = f"{active}/{sub}" if sub else active
-                    return f"Completed: {objective}. {unit} is {state}."
-            return f"Completed: {objective}."
-        if status == "failed":
-            return f"Work failed: {objective}. Open the Work item for the recorded failure evidence."
-        return f"Work {status}: {objective}."
+        if status != "completed":
+            if status == "failed":
+                return f"Work failed: {objective}. Open the Work item for the recorded failure evidence.", {"mode": "deterministic", "status": status}
+            return f"Work {status}: {objective}.", {"mode": "deterministic", "status": status}
+
+        steps = detail.get("steps") if isinstance(detail.get("steps"), list) else []
+        report_detail = {
+            "work_id": detail.get("work_id"),
+            "objective": objective,
+            "status": status,
+            "revision": detail.get("revision"),
+            "steps": [
+                {
+                    "ordinal": step.get("ordinal"),
+                    "description": step.get("description"),
+                    "capability_id": step.get("capability_id"),
+                    "status": step.get("status"),
+                    "output": _bounded(step.get("output"), 6000) if step.get("output") is not None else None,
+                    "error": step.get("error"),
+                }
+                for step in steps if isinstance(step, dict)
+            ],
+        }
+        try:
+            response = self.provider.generate(ModelRequest(
+                capability_id="chat.work_completion_report",
+                system=(
+                    "Report one terminal Atlas Work item from the supplied durable record. "
+                    "This is reporting, not planning: do not propose steps, invoke capabilities, or infer facts beyond the recorded outputs. "
+                    "Every factual claim must be directly supported by the supplied step outputs. "
+                    "Include all material owner-requested results that are present in those outputs, not merely that the Work completed. "
+                    "Return exactly one JSON object of the form {\"kind\":\"reply\",\"reply\":\"...\"}."
+                ),
+                input=json.dumps(report_detail, ensure_ascii=False, default=str),
+                max_output_chars=2200,
+                metadata={"response_format": {"type": "json_object"}},
+            ))
+            decision, parse_mode, error_code = _planner_decision(response.text)
+            if decision is not None and decision.get("kind") == "reply":
+                reply = str(decision.get("reply") or "").strip()
+                if reply:
+                    return reply, {
+                        "mode": "grounded_model", "provider": response.provider_key, "model": response.model,
+                        "parse_mode": parse_mode, "error_code": None, "metrics": dict(response.metrics or {}),
+                    }
+            logger.warning("work completion report model returned unusable output: %s", error_code or "invalid_report_shape")
+        except Exception as exc:
+            logger.warning("work completion report model failed", exc_info=True)
+            error_code = type(exc).__name__
+
+        return self._deterministic_work_completion_text(detail), {
+            "mode": "deterministic_fallback", "error_code": str(error_code or "completion_report_unusable"),
+        }
+
+    @staticmethod
+    def _deterministic_work_completion_text(detail: dict[str, Any]) -> str:
+        objective = str(detail.get("objective") or "Work")
+        steps = detail.get("steps") if isinstance(detail.get("steps"), list) else []
+        final = steps[-1] if steps else {}
+        output = final.get("output") if isinstance(final, dict) else None
+        if isinstance(output, dict):
+            properties = output.get("properties") if isinstance(output.get("properties"), dict) else {}
+            unit = str(output.get("unit") or "")
+            active = str(properties.get("ActiveState") or "")
+            sub = str(properties.get("SubState") or "")
+            if unit and active:
+                state = f"{active}/{sub}" if sub else active
+                return f"Completed: {objective}. {unit} is {state}."
+            text = output.get("text")
+            if not isinstance(text, str):
+                payload = output.get("payload")
+                if isinstance(payload, dict):
+                    text = payload.get("text")
+            if isinstance(text, str) and text.strip():
+                return f"Completed: {objective}. {text.strip()[:1600]}"
+            preview = json.dumps(output, ensure_ascii=False, default=str)
+            if preview and preview != "{}":
+                return f"Completed: {objective}. Final recorded output: {preview[:1600]}"
+        if isinstance(output, str) and output.strip():
+            return f"Completed: {objective}. {output.strip()[:1600]}"
+        return f"Completed: {objective}."
 
     def run_post_turn_capture(self, *, conversation_id: str, message: str, principal_id: str,
                               owner_turn: dict[str, Any]) -> None:

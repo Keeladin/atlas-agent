@@ -205,6 +205,12 @@ def test_self_restart_rate_limit_prevents_restart_storm(tmp_path, monkeypatch):
     first = rt.capabilities.invoke("host.service.restart", {"unit":"atlas-api.service"}, provenance=provenance, work_id="work-1", step_id="step-1")
     second = rt.capabilities.invoke("host.service.restart", {"unit":"atlas-api.service"}, provenance=provenance, work_id="work-2", step_id="step-2")
     assert first.status == "uncertain"
+    dispatched_at = str(first.receipt.get("dispatched_at") or "")
+    assert "T" in dispatched_at and dispatched_at.endswith("+00:00")
+    assert rt.actions_store.has_recent_receipt(
+        capability_id="host.service.restart", scope="host/service/atlas-api.service",
+        receipt_key="dispatched_at", within_seconds=31.0,
+    ) is True
     assert second.status == "failed"
     assert second.error_code == "self_restart_rate_limited"
     restart_calls = [row for row in calls if row[:3] == ["systemctl", "--user", "restart"]]
@@ -377,6 +383,57 @@ def test_normal_work_completion_posts_exactly_one_chat_turn(tmp_path):
     assert len(completions) == 1
     rt.work.run(work.work_id)
     assert len([t for t in rt.chat_store.turns(cid) if t["metadata"].get("work_completion")]) == 1
+
+
+def test_grounded_work_completion_report_surfaces_final_residual_output(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    cid = rt.chat_store.create_conversation("Completion report")["conversation_id"]
+    rt.chat.provider = SequenceProvider(
+        '{"kind":"reply","reply":"The API restarted and verified healthy. Cullinan weather: 24°C and clear."}'
+    )
+    detail = {
+        "work_id": "work_report_test",
+        "objective": "Restart the API, verify health, and report the Cullinan weather",
+        "status": "completed",
+        "revision": 1,
+        "updated_at": "2026-09-05T04:31:42+00:00",
+        "metadata": {"chat_origin": {"conversation_id": cid, "owner_turn_id": "turn_owner"}},
+        "steps": [
+            {"ordinal": 1, "description": "Restart", "capability_id": "host.service.restart", "status": "completed", "output": {"unit": "atlas-api.service", "dispatched": True}, "occurrence_id": "action_restart"},
+            {"ordinal": 2, "description": "Verify", "capability_id": "host.service.status", "status": "completed", "output": {"unit": "atlas-api.service", "properties": {"ActiveState": "active", "SubState": "running"}}, "occurrence_id": "action_status"},
+            {"ordinal": 3, "description": "Weather", "capability_id": "web.fetch", "status": "completed", "output": {"payload": {"text": "Cullinan: 24°C, clear"}}, "occurrence_id": "action_weather"},
+        ],
+    }
+
+    turn = rt.chat.record_work_completion(detail)
+    assert turn is not None
+    assert "24°C and clear" in turn["content"]
+    assert turn["metadata"]["completion_report"]["mode"] == "grounded_model"
+    assert turn["metadata"]["work_completion"]["final_output"] == {"payload": {"text": "Cullinan: 24°C, clear"}}
+    report_input = json.loads(rt.chat.provider.requests[0].input)
+    assert report_input["steps"][-1]["output"]["payload"]["text"] == "Cullinan: 24°C, clear"
+    assert rt.chat.provider.requests[0].capability_id == "chat.work_completion_report"
+
+
+def test_completion_reporting_failure_never_flips_completed_work(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner().principal_id
+    work = rt.work.create(
+        "Search durable memory", [{"capability_id": "memory.search", "input": {"query": "nothing"}}],
+        owner_principal_id=owner,
+    )
+
+    def broken_reporter(_detail):
+        raise RuntimeError("report persistence unavailable")
+
+    rt.work.set_completion_hook(broken_reporter)
+    detail = rt.work.run(work.work_id)
+    assert detail["status"] == "completed"
+    assert detail["steps"][0]["status"] == "completed"
+    reporting = detail["metadata"]["completion_reporting"]
+    assert reporting["status"] == "failed"
+    assert reporting["error_type"] == "RuntimeError"
+    assert "report persistence unavailable" in reporting["error"]
 
 
 def test_restart_rate_limit_is_not_row_bounded(tmp_path, monkeypatch):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json, os, re, shutil, socket, stat, subprocess
+import json, logging, os, re, shutil, socket, stat, subprocess
 from datetime import datetime,timezone
 from pathlib import Path
 from typing import Any
@@ -11,6 +11,7 @@ from atlas_core.capabilities import CapabilityDefinition,CapabilityRegistration,
 _UNIT=re.compile(r"^[A-Za-z0-9_.@:-]+\.service$")
 _PACKAGE=re.compile(r"^[a-z0-9][a-z0-9+.-]{0,127}$")
 _PACKAGE_SOCKET=Path("/run/atlas-package-broker/control.sock")
+logger=logging.getLogger(__name__)
 
 def _iso()->str:return datetime.now(timezone.utc).isoformat()
 def _unit(value:str)->str:
@@ -55,8 +56,6 @@ def _current_service_unit()->str|None:
     if proc.returncode != 0:
         return None
     value=proc.stdout.strip()
-    if "MainPID=" in value:
-        value=next((line.split("=",1)[1].strip() for line in value.splitlines() if line.startswith("MainPID=")), "")
     return candidate if value == str(os.getpid()) else None
 
 class HostRuntime:
@@ -70,6 +69,10 @@ class HostRuntime:
             raise RuntimeError(f"Atlas service identity mismatch: configured={configured}, detected={detected}")
         self.self_service_unit=configured or detected
         self.self_service_identity_source="configured" if configured else ("cgroup" if detected else "unresolved")
+        logger.info(
+            "Atlas runtime service identity resolved unit=%s source=%s pid=%s revision=%s",
+            self.self_service_unit or "unresolved", self.self_service_identity_source, os.getpid(), self.runtime_revision,
+        )
         self._register()
     def _register(self)->None:
         empty={"type":"object","properties":{},"additionalProperties":False}

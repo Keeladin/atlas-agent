@@ -1,6 +1,8 @@
 from __future__ import annotations
 import hashlib
 import json
+import logging
+from datetime import datetime, timezone
 from typing import Any, Callable
 from atlas_core.actions import ActionStore
 from atlas_core.actions.models import payload_sha256
@@ -8,6 +10,8 @@ from atlas_core.capabilities import CapabilityRuntime
 from atlas_core.provenance import InvocationProvenance
 from .store import WorkStore
 from .validation import validate_workflow_steps
+
+logger = logging.getLogger(__name__)
 
 def _chat_work_key(owner_turn_id: str, objective: str, steps: list[dict[str, Any]]) -> str:
     signature=json.dumps({"objective":objective,"steps":steps},sort_keys=True,separators=(",",":"),ensure_ascii=False,default=str)
@@ -36,7 +40,26 @@ class WorkRuntime:
 
     def _notify_terminal(self, detail: dict[str, Any]) -> dict[str, Any]:
         if detail.get("status") in {"completed", "failed", "cancelled"} and self.completion_hook is not None:
-            self.completion_hook(detail)
+            try:
+                self.completion_hook(detail)
+            except Exception as exc:
+                # Reporting is downstream of execution truth. A Chat persistence or
+                # model-report failure must never make completed Work look failed.
+                logger.warning("work completion reporting failed for %s", detail.get("work_id"), exc_info=True)
+                work_id = str(detail.get("work_id") or "")
+                if work_id:
+                    try:
+                        self.store.merge_metadata(work_id, {
+                            "completion_reporting": {
+                                "status": "failed",
+                                "error_type": type(exc).__name__,
+                                "error": str(exc)[:500],
+                                "observed_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                        })
+                        return self.detail(work_id)
+                    except Exception:
+                        logger.warning("could not record completion reporting failure for %s", work_id, exc_info=True)
         return detail
 
     def validate_steps(self, steps: list[dict[str, Any]]) -> None:

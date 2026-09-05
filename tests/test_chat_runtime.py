@@ -227,6 +227,42 @@ def test_deferred_auto_capture_runs_after_user_visible_turn(tmp_path):
     assert len(rows) == 1 and rows[0].status == "succeeded"
 
 
+def test_memory_grounding_failure_remains_tool_evidence_not_raw_chat_copy(tmp_path):
+    runtime, cid, owner, action_store = _chat_with_memory(tmp_path, "YES")
+    provider = SequenceProvider(
+        '{"kind":"capability","capability_id":"memory.remember","input":{"title":"Version","content":"Atlas is now version 4","grounding_excerpt":"Atlas is now version 4"}}',
+        '{"kind":"reply","reply":"I could not ground that memory exactly, so I did not save it."}',
+    )
+    runtime.provider = provider
+    result = runtime.send(
+        cid, "Quick note: Atlas is currently version four", principal_id=owner.principal_id,
+    )
+    assert result["turn"]["content"] == "I could not ground that memory exactly, so I did not save it."
+    rows = [row for row in action_store.recent(limit=20) if row.capability_id == "memory.remember"]
+    assert len(rows) == 1 and rows[0].status == "failed"
+    assert rows[0].error_code == "memory_grounding_invalid"
+    tool_prompt = json.loads(provider.requests[1].input)
+    assert tool_prompt["tool_results"][0]["error_code"] == "memory_grounding_invalid"
+
+
+def test_direct_memory_update_canonicalizes_content_to_exact_owner_excerpt():
+    message = "Quick note: we're past version 3.5 and currently stand on version 4"
+    owner_turn = {"conversation_id": "conversation_1", "turn_id": "turn_1"}
+    grounded = ChatRuntime._ground_memory_payload(
+        {
+            "item_id": "memory_1",
+            "content": "Atlas is now version 4",
+            "grounding_excerpt": "currently stand on version 4",
+        },
+        message,
+        owner_turn,
+        capability_id="memory.update",
+    )
+    assert grounded["content"] == "currently stand on version 4"
+    assert grounded["grounding_excerpt"] == "currently stand on version 4"
+    assert grounded["source_ref"] == "chat:conversation_1:turn_1"
+
+
 def test_chat_action_yes_executes_and_continues_with_tool_result(tmp_path):
     runtime, cid, owner, action_store = _chat_with_memory(tmp_path, "YES")
     provider = SequenceProvider(

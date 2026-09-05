@@ -111,6 +111,14 @@ export function Chat() {
     setSelected(items[0]?.conversation_id ?? null)
   }, [items, selected])
   useEffect(() => {
+    const requested = searchParams.get('conversation')
+    if (!requested || !items.some(item => item.conversation_id === requested)) return
+    setSelected(requested)
+    const next = new URLSearchParams(searchParams)
+    next.delete('conversation')
+    setSearchParams(next, { replace: true })
+  }, [items, searchParams, setSearchParams])
+  useEffect(() => {
     if (!selected && conversations.isSuccess && items.length === 0 && !createConversation.isPending) createConversation.mutate()
   }, [selected, conversations.isSuccess, items.length, createConversation])
 

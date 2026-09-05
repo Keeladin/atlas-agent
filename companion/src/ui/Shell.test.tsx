@@ -26,12 +26,15 @@ function renderShell() {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('Atlas shell', () => {
-  it('keeps one owner surface and tucks plumbing behind Control', async () => {
+  it('keeps one owner environment with primary surfaces and Control', async () => {
     renderShell()
-    expect(screen.queryByRole('navigation', { name: 'Primary' })).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Atlas surface' })).toHaveAttribute('href', '/chat')
+    expect(screen.getByRole('navigation', { name: 'Primary' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Atlas surface' })).toHaveAttribute('href', '/')
+    expect(screen.getByRole('link', { name: 'Home' })).toHaveAttribute('href', '/')
+    expect(screen.getByRole('link', { name: 'Work' })).toHaveAttribute('href', '/work')
+    expect(screen.getByRole('link', { name: 'Explorer' })).toHaveAttribute('href', '/sources')
+    expect(screen.getByRole('link', { name: 'Library' })).toHaveAttribute('href', '/memory')
     expect(screen.getByRole('link', { name: 'Control' })).toHaveAttribute('href', '/atlas')
-    expect(screen.queryByText('Operations')).not.toBeInTheDocument()
     expect(screen.queryByText('Morning')).not.toBeInTheDocument()
     expect(await screen.findByText('Chat body')).toBeInTheDocument()
   })

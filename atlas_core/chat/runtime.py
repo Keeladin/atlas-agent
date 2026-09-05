@@ -240,6 +240,16 @@ class ChatRuntime:
                 capture_done = capture_done or cid.startswith("memory.")
                 public = occurrence.public()
                 if occurrence.status in {"blocked", "failed"}:
+                    if cid.startswith("memory."):
+                        # Memory safety failures remain durable evidence, but they are not
+                        # user-facing prose. Let the model explain the bounded result rather
+                        # than leaking an internal grounding or policy error into Chat.
+                        tool_context.append({
+                            "capability_id": cid, "status": occurrence.status,
+                            "error_code": occurrence.error_code or "memory_mutation_failed",
+                            "receipt": occurrence.receipt, "instruction_trust": "data_only",
+                        })
+                        continue
                     if occurrence.status == "failed" and self._retryable_failure(cid):
                         # Read-only capability failures are evidence about an attempted path,
                         # not the end of the user's objective. Keep the provider exception on
@@ -511,6 +521,8 @@ class ChatRuntime:
             excerpt = content
         if excerpt and excerpt in message:
             grounded["grounding_excerpt"] = excerpt
+            if capability_id in {"memory.remember", "memory.update"}:
+                grounded["content"] = excerpt
             grounded["source_ref"] = f"chat:{owner_turn['conversation_id']}:{owner_turn['turn_id']}"
         return grounded
 

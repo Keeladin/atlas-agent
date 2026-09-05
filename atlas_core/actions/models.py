@@ -28,6 +28,7 @@ class ActionRequest:
     work_id: str | None = None
     step_id: str | None = None
     summary: str | None = None
+    initial_receipt: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

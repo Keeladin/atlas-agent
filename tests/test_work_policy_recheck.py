@@ -106,3 +106,20 @@ def test_concurrent_runs_claim_step_once(tmp_path):
     release.set(); first.join(2)
     assert len(calls) == 1
     assert rt.work.detail(work.work_id)["status"] == "completed"
+
+
+def test_registry_drift_pauses_work_instead_of_failing_objective(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner().principal_id
+    rt.capabilities_registry.register(CapabilityRegistration(
+        CapabilityDefinition("test.temp", "Temporary capability", "read", "none", {"type":"object","properties":{},"additionalProperties":False}),
+        lambda payload: ScopeResolution("test/temp", dict(payload), "Temporary"),
+        lambda payload: ActionResult(True, {"ok": True}, {"ok": True}),
+    ))
+    work = rt.work.create("Use a temporarily available capability", [{"capability_id":"test.temp","input":{}}], owner_principal_id=owner)
+    rt.capabilities_registry.unregister_prefix("test.temp")
+
+    detail = rt.work.run(work.work_id)
+    assert detail["status"] == "paused"
+    assert detail["steps"][0]["status"] == "waiting"
+    assert "unknown capability" in (detail["steps"][0]["error"] or "")

@@ -45,6 +45,9 @@ def test_user_service_contains_startup_mechanics_not_owner_policy():
     assert "PrivateTmp=" not in unit
     assert "Polkit" not in unit
     assert "ATLAS_HOST_RESTART_ENABLED" not in unit
+    assert "Environment=ATLAS_SERVICE_UNIT=%n" in unit
+    assert "StartLimitIntervalSec=60" in unit
+    assert "StartLimitBurst=3" in unit
     assert "CONFIRM" not in unit
 
 

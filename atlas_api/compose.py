@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Any
 
@@ -138,7 +139,7 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     identities = IdentityStore(identity_db); identities.initialize()
     policy_store = PolicyStore(identity_db); policy_store.initialize(); policy = OwnerPolicy(policy_store)
     work_database = WorkDatabase(work_db); work_database.initialize()
-    actions_store = ActionStore(work_database); actions_store.initialize(); actions_store.recover_executing()
+    actions_store = ActionStore(work_database); actions_store.initialize()
     evidence = EvidenceStore(work_database); evidence.initialize()
     registry = CapabilityRegistry()
     credentials = CredentialStore(root); credentials.initialize()
@@ -185,7 +186,10 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     if len(parts) > 2 and parts[1] == "home":
         owner_home = Path("/home") / parts[2]
         sensitive_host.extend((owner_home / ".ssh", owner_home / ".gnupg"))
-    host = HostRuntime(registry, actions_store, protected_paths=tuple(sensitive_host))
+    host = HostRuntime(
+        registry, actions_store, protected_paths=tuple(sensitive_host),
+        self_service_unit=os.environ.get("ATLAS_SERVICE_UNIT") or None,
+    )
     knowledge_store = KnowledgeStore(work_database); knowledge_store.initialize()
     passages = PassageStore(work_database); passages.initialize()
     generations = GenerationStore(work_database); generations.initialize()
@@ -204,7 +208,7 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
             indexing.abandon_for_work(item.work_id)
     work_store = WorkStore(work_database); work_store.initialize(); work = WorkRuntime(
         work_store, capabilities, actions_store, cancel_hook=cancel_work_cleanup,
-    ); work.recover_incomplete()
+    )
     artifact_intake_store = ArtifactIntakeStore(work_database); artifact_intake_store.initialize()
     artifact_intake = ArtifactIntakeRuntime(
         artifact_intake_store, artifact_store, providers, work, registry, capabilities,
@@ -225,5 +229,14 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
         work_store, work, cadence_store, cadence, chat_store, chat,
     )
     runtime.seed_policy()
+
+    # Recovery order is load-bearing: preserve abandoned Action evidence, resolve any
+    # self-restart against the successor invocation, then reconcile and resume only
+    # Work that was actually touched by this recovery pass.
+    actions_store.recover_executing()
     host.reconcile_self_restart()
+    recovery = work.recover_incomplete()
+    recovered_results = work.resume_recovered(recovery.get("touched_work_ids", []))
+    for detail in recovered_results:
+        runtime.chat.record_recovered_work_completion(detail)
     return runtime

@@ -27,7 +27,7 @@ class ActionRuntime:
         self.evidence = evidence
         self.executor_resolver = executor_resolver
 
-    def submit(self, request: ActionRequest) -> ActionOccurrence:
+    def submit(self, request: ActionRequest, *, on_created: Callable[[ActionOccurrence], None] | None = None) -> ActionOccurrence:
         resolution = self.policy.resolve(
             principal_id=request.provenance.principal_id, scope=request.scope, operation=request.operation,
         )
@@ -36,11 +36,21 @@ class ActionRuntime:
                 request, decision="NO", revision=resolution.revision, event_id=resolution.event_id, status="blocked",
             )
             self.evidence.add(occurrence.occurrence_id, "policy", {**resolution.as_dict(), "outcome": "blocked"})
+            if on_created is not None:
+                on_created(occurrence)
             return occurrence
         occurrence = self.store.create(
             request, decision="YES", revision=resolution.revision, event_id=resolution.event_id, status="executing",
         )
         self.evidence.add(occurrence.occurrence_id, "policy", {**resolution.as_dict(), "outcome": "execute"})
+        if on_created is not None:
+            try:
+                on_created(occurrence)
+            except Exception as exc:
+                return self.store.transition(
+                    occurrence.occurrence_id, from_status=("executing",), to_status="failed",
+                    error_code="pre_dispatch_binding_failed", error=str(exc), completed_at=_iso(),
+                )
         return self._execute(occurrence)
 
     def _execute(self, occurrence: ActionOccurrence) -> ActionOccurrence:
@@ -55,25 +65,26 @@ class ActionRuntime:
             result = executor(dict(occurrence.payload))
         except Exception as exc:
             result = ActionResult(False, error_code="executor_exception", error=str(exc), receipt={"ok": False})
+        merged_receipt = {**(occurrence.receipt or {}), **(result.receipt or {})}
         self.evidence.add(
             occurrence.occurrence_id, "execution_receipt",
-            {"ok": result.ok, "receipt": result.receipt, "error_code": result.error_code, "error": result.error},
+            {"ok": result.ok, "receipt": merged_receipt, "error_code": result.error_code, "error": result.error},
         )
-        if result.ok and result.receipt.get("verification_pending") is True:
+        if result.ok and merged_receipt.get("verification_pending") is True:
             return self.store.transition(
                 occurrence.occurrence_id, from_status=("executing",), to_status="uncertain",
                 result_json=json.dumps(result.output, default=str, ensure_ascii=False),
-                receipt_json=json.dumps(result.receipt, default=str, ensure_ascii=False),
+                receipt_json=json.dumps(merged_receipt, default=str, ensure_ascii=False),
             )
         if result.ok:
             return self.store.transition(
                 occurrence.occurrence_id, from_status=("executing",), to_status="succeeded",
                 result_json=json.dumps(result.output, default=str, ensure_ascii=False),
-                receipt_json=json.dumps(result.receipt, default=str, ensure_ascii=False), completed_at=_iso(),
+                receipt_json=json.dumps(merged_receipt, default=str, ensure_ascii=False), completed_at=_iso(),
             )
         return self.store.transition(
             occurrence.occurrence_id, from_status=("executing",), to_status="failed",
             result_json=json.dumps(result.output, default=str, ensure_ascii=False),
-            receipt_json=json.dumps(result.receipt, default=str, ensure_ascii=False),
+            receipt_json=json.dumps(merged_receipt, default=str, ensure_ascii=False),
             error_code=result.error_code or "execution_failed", error=result.error or "execution failed", completed_at=_iso(),
         )

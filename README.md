@@ -79,6 +79,8 @@ Google Workspace is integrated as a provider rather than a mail subsystem: Googl
 
 The conversational model selects capabilities and arguments. It does not decide whether the operation is allowed. Chat's schema-rich shortlist is retrieved from the live registry with a hybrid ranker: exact/tool-name matches and deterministic sparse metadata/schema matching are fused with local dense embeddings by reciprocal-rank fusion. The current production embedding implementation is FastEmbed `BAAI/bge-small-en-v1.5`; its model snapshot/package/dimension/normalization identity is explicit and it remains derived retrieval machinery, not durable capability truth. Tool-result bounding preserves capability/status/trust envelopes and drops older results before corrupting the newest result into an unusable raw JSON tail. An unmatched capability query falls back only to the small core signpost set, never to an alphabetical slice of the registry.
 
+Chat may execute ordinary in-turn reads, retrieval chains and bounded actions directly, while Work owns responsibilities that must survive the turn. That boundary now has a runtime floor: after scope resolution a capability can require durable Work, and `CapabilityRuntime` refuses the ephemeral invocation before dispatch. The current self-restart path uses this invariant so `atlas-api.service` cannot be restarted directly from Chat/Control without Work, while unrelated user services remain direct. Uncertain actions are not automatically replayed; Chat may observe them, or adopt the same durable occurrence into Work when a residual obligation remains.
+
 ## Persistence
 
 Production state is separate from the code checkout. The deployed instance root is:

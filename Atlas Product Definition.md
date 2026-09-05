@@ -36,6 +36,8 @@ Each step is resolved against current runtime policy when it actually executes. 
 
 Chat authors and interprets ordinary Work and recurring `work_template` Cadence through governed capabilities; Cadence remains durable recurring intent and Work remains durable execution truth. Monitored `intake_sweep` duties are readable and runnable but are not conversationally authored or edited in this iteration. Links from Work/Cadence can focus one inference on an exact runtime identity, while the persisted reference remains historical provenance rather than sticky conversational state.
 
+The model proposes when an objective deserves durable ownership, but it is not the sole continuity boundary. After resource resolution, `CapabilityRuntime` refuses an action that cannot safely remain owned by an ephemeral caller unless a real `work_id` is present. Self-restart is the canonical example: Atlas may discuss or inspect it in Chat, but the restart itself must belong to Work before dispatch. An already-dispatched `uncertain` action is never replayed; if an obligation remains, Work may adopt that exact occurrence after deterministic identity checks.
+
 ### Done means
 
 A policy change made after Work was created still governs the eventual side effect, and the evidence records the resulting action state.

@@ -112,3 +112,38 @@ it('never sends to a conversation deleted from stale cache', async () => {
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/chat/conversations/conversation_2/messages', expect.objectContaining({ method: 'POST' })))
   expect(fetchMock.mock.calls.some(([input, init]) => String(input) === '/api/chat/conversations/conversation_1/messages' && (init as RequestInit | undefined)?.method === 'POST')).toBe(false)
 })
+
+it('treats a restart 502 as reconnectable transport loss when the durable turn appears', async () => {
+  let restarted = false
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input)
+    const ownerSurface = ownerSurfaceResponse(path)
+    if (ownerSurface) return ownerSurface
+    if (path === '/api/chat/conversations' && (!init?.method || init.method === 'GET')) return Response.json({ conversations: [conversation] })
+    if (path === '/api/chat/conversations/conversation_1' && (!init?.method || init.method === 'GET')) return Response.json({ conversation, turns: restarted ? [
+      { turn_id: 'u1', conversation_id: 'conversation_1', role: 'user', content: 'Hello Atlas', metadata: {} },
+      { turn_id: 'a1', conversation_id: 'conversation_1', role: 'assistant', content: 'Hello there', metadata: {} },
+      { turn_id: 'u2', conversation_id: 'conversation_1', role: 'user', content: 'Restart yourself', metadata: {} },
+      { turn_id: 'a2', conversation_id: 'conversation_1', role: 'assistant', content: 'Recovered after restart', metadata: {} },
+    ] : [
+      { turn_id: 'u1', conversation_id: 'conversation_1', role: 'user', content: 'Hello Atlas', metadata: {} },
+      { turn_id: 'a1', conversation_id: 'conversation_1', role: 'assistant', content: 'Hello there', metadata: {} },
+    ] })
+    if (path === '/api/chat/conversations/conversation_1/messages' && init?.method === 'POST') {
+      restarted = true
+      return new Response('', { status: 502 })
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  render(<QueryClientProvider client={client}><MemoryRouter><Chat /></MemoryRouter></QueryClientProvider>)
+  await screen.findByText('Hello there')
+  const box = screen.getByRole('textbox', { name: 'Message' })
+  fireEvent.change(box, { target: { value: 'Restart yourself' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+  expect(await screen.findByText('Recovered after restart')).toBeInTheDocument()
+  expect(screen.queryByText('HTTP 502')).toBeNull()
+  await waitFor(() => expect(box).toHaveValue(''))
+})

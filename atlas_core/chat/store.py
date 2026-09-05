@@ -45,6 +45,9 @@ class ChatStore:
             );
             CREATE INDEX IF NOT EXISTS chat_turns_conversation
                 ON chat_turns(conversation_id,created_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS chat_work_completion_unique
+                ON chat_turns(json_extract(metadata_json,'$.work_completion_key'))
+                WHERE json_extract(metadata_json,'$.work_completion_key') IS NOT NULL;
             """)
 
     def create_conversation(self, title: str = "New conversation") -> dict[str, Any]:
@@ -86,6 +89,31 @@ class ChatStore:
             )
             db.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE conversation_id=?", (cid,))
         return {"turn_id": tid, "conversation_id": cid, "role": role, "content": content, "metadata": metadata or {}}
+
+    def append_work_completion(self, cid: str, content: str, metadata: dict[str, Any]) -> dict[str, Any]:
+        key = str(metadata.get("work_completion_key") or "").strip()
+        if not key:
+            raise ValueError("work completion key is required")
+        tid = f"turn_{uuid4().hex}"
+        encoded = json.dumps(metadata, sort_keys=True, separators=(",", ":"), default=str)
+        with self._db() as db:
+            inserted = db.execute(
+                "INSERT OR IGNORE INTO chat_turns(turn_id,conversation_id,role,content,metadata_json) VALUES (?,?,?,?,?)",
+                (tid, cid, "assistant", content, encoded),
+            ).rowcount
+            if inserted:
+                db.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE conversation_id=?", (cid,))
+            row = db.execute(
+                "SELECT * FROM chat_turns WHERE json_extract(metadata_json,'$.work_completion_key')=? LIMIT 1",
+                (key,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("work completion turn was not persisted")
+        return {
+            "turn_id": row["turn_id"], "conversation_id": row["conversation_id"], "role": row["role"],
+            "content": row["content"], "metadata": json.loads(row["metadata_json"] or "{}"),
+            "created_at": row["created_at"],
+        }
 
     def owner_grounding_matches(self, source_ref: str, excerpt: str) -> bool:
         parts = str(source_ref or "").split(":", 2)

@@ -43,9 +43,10 @@ class ActionStore:
         oid = f"action_{uuid4().hex}"
         encoded = json.dumps(request.payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
         digest = payload_sha256(request.payload)
+        initial_receipt = json.dumps(request.initial_receipt or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
         with self._db() as db:
-            db.execute("""INSERT INTO action_occurrences(occurrence_id,capability_id,operation,scope,payload_json,payload_sha256,principal_id,principal_kind,surface,policy_decision,policy_revision,policy_event_id,status,work_id,step_id,summary) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (oid, request.capability_id, request.operation, request.scope, encoded, digest, request.provenance.principal_id, request.provenance.principal_kind, request.provenance.surface, decision, revision, event_id, status, request.work_id, request.step_id, request.summary))
+            db.execute("""INSERT INTO action_occurrences(occurrence_id,capability_id,operation,scope,payload_json,payload_sha256,principal_id,principal_kind,surface,policy_decision,policy_revision,policy_event_id,status,work_id,step_id,summary,receipt_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (oid, request.capability_id, request.operation, request.scope, encoded, digest, request.provenance.principal_id, request.provenance.principal_kind, request.provenance.surface, decision, revision, event_id, status, request.work_id, request.step_id, request.summary, initial_receipt))
         return self.get(oid)
 
     def get(self, occurrence_id: str) -> ActionOccurrence:
@@ -60,6 +61,37 @@ class ActionStore:
         else:
             sql = "SELECT * FROM action_occurrences ORDER BY created_at DESC LIMIT ?"; args=(limit,)
         with self._db() as db: rows = db.execute(sql, args).fetchall()
+        return tuple(_occurrence(row) for row in rows)
+
+
+    def for_work_step(self, work_id: str, step_id: str) -> tuple[ActionOccurrence, ...]:
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT * FROM action_occurrences WHERE work_id=? AND step_id=? ORDER BY created_at,occurrence_id",
+                (work_id, step_id),
+            ).fetchall()
+        return tuple(_occurrence(row) for row in rows)
+
+    def attach_to_work(self, occurrence_id: str, *, work_id: str, step_id: str) -> ActionOccurrence:
+        with self._db() as db:
+            changed = db.execute(
+                """UPDATE action_occurrences SET work_id=?,step_id=?
+                   WHERE occurrence_id=? AND status='uncertain' AND work_id IS NULL AND step_id IS NULL""",
+                (work_id, step_id, occurrence_id),
+            ).rowcount
+        if changed != 1:
+            raise ValueError("action occurrence cannot be adopted into Work")
+        return self.get(occurrence_id)
+
+    def unresolved(self, *, capability_id: str | None = None, scope: str | None = None) -> tuple[ActionOccurrence, ...]:
+        clauses = ["status IN ('executing','uncertain')"]; args: list[Any] = []
+        if capability_id is not None:
+            clauses.append("capability_id=?"); args.append(capability_id)
+        if scope is not None:
+            clauses.append("scope=?"); args.append(scope)
+        sql = "SELECT * FROM action_occurrences WHERE " + " AND ".join(clauses) + " ORDER BY created_at,occurrence_id"
+        with self._db() as db:
+            rows = db.execute(sql, args).fetchall()
         return tuple(_occurrence(row) for row in rows)
 
     def transition(self, occurrence_id: str, *, from_status: tuple[str, ...], to_status: str, **fields: Any) -> ActionOccurrence:
@@ -77,14 +109,29 @@ class ActionStore:
 
 
     def recover_executing(self) -> int:
-        """On process start, convert abandoned in-flight occurrences to uncertain.
+        """On process start, preserve pre-dispatch evidence and mark abandoned actions uncertain.
 
         Atlas cannot know whether an external side effect happened after the old
         process disappeared, so restart recovery must never silently retry it.
         """
-        receipt=json.dumps({"ok":False,"recovery_required":True,"reason":"runtime restarted while action was executing"},sort_keys=True,separators=(",",":"))
+        changed = 0
         with self._db() as db:
-            changed=db.execute("UPDATE action_occurrences SET status='uncertain',receipt_json=?,error_code='runtime_restart_uncertain',error='runtime restarted while action outcome was unresolved' WHERE status='executing'",(receipt,)).rowcount
+            rows = db.execute("SELECT occurrence_id,receipt_json FROM action_occurrences WHERE status='executing'").fetchall()
+            for row in rows:
+                receipt = _load(row["receipt_json"], {})
+                if not isinstance(receipt, dict): receipt = {}
+                receipt = {
+                    **receipt,
+                    "recovery_required": True,
+                    "recovery_reason": "runtime restarted while action was executing",
+                }
+                changed += db.execute(
+                    """UPDATE action_occurrences
+                       SET status='uncertain',receipt_json=?,error_code='runtime_restart_uncertain',
+                           error='runtime restarted while action outcome was unresolved'
+                       WHERE occurrence_id=? AND status='executing'""",
+                    (json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str), row["occurrence_id"]),
+                ).rowcount
         return int(changed)
 
     def memory_occurrence_rows(self, db: sqlite3.Connection, *, principal_id: str) -> tuple[dict[str, Any], ...]:

@@ -1,6 +1,9 @@
 from __future__ import annotations
+import hashlib
+import json
 from typing import Any, Callable
 from atlas_core.actions import ActionStore
+from atlas_core.actions.models import payload_sha256
 from atlas_core.capabilities import CapabilityRuntime
 from atlas_core.provenance import InvocationProvenance
 from .store import WorkStore
@@ -28,10 +31,36 @@ class WorkRuntime:
 
     def create(self, objective: str, steps: list[dict[str, Any]], *, owner_principal_id: str,
                metadata: dict[str, Any] | None = None, artifact_class: str | None = None,
-               workflow_class: str | None = None):
+               workflow_class: str | None = None, adopt_occurrence_id: str | None = None):
         self.validate_steps(steps)
-        return self.store.create(objective, owner_principal_id, steps, metadata=metadata,
+        meta = dict(metadata or {})
+        origin_key = str((meta.get("chat_origin") or {}).get("work_key") or "") if isinstance(meta.get("chat_origin"), dict) else ""
+        if origin_key:
+            existing = self.store.find_by_origin_key(origin_key)
+            if existing is not None:
+                return existing
+        adopted = None
+        if adopt_occurrence_id:
+            adopted = self.actions.get(adopt_occurrence_id)
+            if adopted.status != "uncertain" or adopted.work_id or adopted.step_id:
+                raise ValueError("only an unowned uncertain occurrence can be adopted into Work")
+            if adopted.principal_id != owner_principal_id:
+                raise ValueError("adopted occurrence owner does not match Work owner")
+            first = steps[0]
+            if str(first.get("capability_id") or "") != adopted.capability_id:
+                raise ValueError("adopted occurrence must match the first Work capability")
+            registration = self.capabilities.registry.get(adopted.capability_id)
+            resolved = registration.resolve_scope(dict(first.get("input") or {}))
+            if resolved.scope != adopted.scope or payload_sha256(dict(resolved.payload)) != adopted.payload_sha256:
+                raise ValueError("adopted occurrence must match the first Work scope and payload")
+        work = self.store.create(objective, owner_principal_id, steps, metadata=meta,
                                  artifact_class=artifact_class, workflow_class=workflow_class)
+        if adopted is not None:
+            first_step = self.store.steps(work.work_id)[0]
+            self.actions.attach_to_work(adopted.occurrence_id, work_id=work.work_id, step_id=first_step.step_id)
+            self.store.bind_occurrence(first_step.step_id, adopted.occurrence_id, status="waiting")
+            self.store.set_work_status(work.work_id, "waiting")
+        return work
 
     def detail(self, work_id: str) -> dict[str, Any]:
         return {**self.store.get(work_id).as_dict(), "steps": [s.as_dict() for s in self.store.steps(work_id)], "adaptations": list(self.store.adaptations(work_id))}
@@ -66,36 +95,80 @@ class WorkRuntime:
             return _json_pointer(source.output, str(ref.get("output") or ""))
         return {key: self._resolve_input(work_id, ordinal, item) for key, item in value.items()}
 
-    def recover_incomplete(self) -> dict[str, int]:
-        """Reconcile durable running steps after a runtime restart.
+    def recover_incomplete(self) -> dict[str, Any]:
+        """Reconcile durable Work against canonical Action state after a runtime restart.
 
-        A claimed step without an occurrence never reached the canonical action
-        gate and may be queued safely. An uncertain occurrence is never replayed.
+        Action rows are authoritative. If a process died after Action creation but before
+        the step stored its occurrence id, recover the binding from work_id/step_id rather
+        than replaying the capability.
         """
-        recovered={"queued":0,"completed":0,"waiting":0,"failed":0}
+        recovered: dict[str, Any] = {"queued": 0, "completed": 0, "waiting": 0, "failed": 0, "touched_work_ids": []}
+        touched: set[str] = set()
         for work in self.store.list(limit=10000):
-            changed=False
+            if work.status in {"completed", "cancelled"}:
+                continue
+            changed = False; pause_work = False
             for step in self.store.steps(work.work_id):
-                if step.status != "running": continue
-                if not step.occurrence_id:
-                    self.store.set_step(step.step_id,status="queued",error="recovered after runtime restart before action submission")
-                    recovered["queued"]+=1;changed=True;continue
-                occurrence=self.actions.get(step.occurrence_id)
-                if occurrence.status=="succeeded":
-                    self.store.set_step(step.step_id,status="completed",occurrence_id=occurrence.occurrence_id,output=occurrence.result)
-                    recovered["completed"]+=1;changed=True
-                elif occurrence.status in {"uncertain","executing"}:
-                    self.store.set_step(step.step_id,status="waiting",occurrence_id=occurrence.occurrence_id,error="action outcome is uncertain after runtime restart; reconcile before retry")
-                    self.store.set_work_status(work.work_id,"waiting");recovered["waiting"]+=1;changed=True
-                elif occurrence.status in {"blocked","failed"}:
-                    state="waiting" if self._retryable(occurrence) else "failed"
-                    self.store.set_step(step.step_id,status=state,occurrence_id=occurrence.occurrence_id,error=occurrence.error or occurrence.error_code)
-                    self.store.set_work_status(work.work_id,"paused" if state=="waiting" else "failed");recovered[state]+=1;changed=True
+                if step.status in {"completed", "cancelled", "failed"}:
+                    continue
+                occurrence = None
+                if step.occurrence_id:
+                    occurrence = self.actions.get(step.occurrence_id)
+                else:
+                    rows = self.actions.for_work_step(work.work_id, step.step_id)
+                    if rows:
+                        occurrence = rows[-1]
+                        self.store.bind_occurrence(step.step_id, occurrence.occurrence_id)
+                        changed = True
+                if occurrence is None:
+                    if step.status == "running":
+                        self.store.set_step(step.step_id, status="queued", error="recovered after runtime restart before action submission")
+                        recovered["queued"] += 1; changed = True
+                    continue
+                if occurrence.status == "succeeded":
+                    self.store.set_step(step.step_id, status="completed", occurrence_id=occurrence.occurrence_id, output=occurrence.result)
+                    recovered["completed"] += 1; changed = True
+                elif occurrence.status in {"uncertain", "executing"}:
+                    self.store.set_step(step.step_id, status="waiting", occurrence_id=occurrence.occurrence_id, error="action outcome is unresolved; reconcile before retry")
+                    recovered["waiting"] += 1; changed = True
+                elif occurrence.status in {"blocked", "failed"}:
+                    state = "waiting" if self._retryable(occurrence) else "failed"
+                    self.store.set_step(step.step_id, status=state, occurrence_id=occurrence.occurrence_id, error=occurrence.error or occurrence.error_code)
+                    pause_work = pause_work or state == "waiting"
+                    recovered[state] += 1; changed = True
             if changed:
-                current=self.store.steps(work.work_id)
-                if current and all(step.status=="completed" for step in current): self.store.set_work_status(work.work_id,"completed")
-                elif any(step.status=="queued" for step in current) and not any(step.status in {"waiting","failed","running"} for step in current): self.store.set_work_status(work.work_id,"queued")
+                touched.add(work.work_id)
+                if pause_work:self.store.set_work_status(work.work_id, "paused")
+                else:self._recompute_work_status(work.work_id)
+        recovered["touched_work_ids"] = sorted(touched)
         return recovered
+
+    def _recompute_work_status(self, work_id: str) -> str:
+        steps = self.store.steps(work_id)
+        if steps and all(step.status == "completed" for step in steps):
+            status = "completed"
+        elif any(step.status == "failed" for step in steps):
+            status = "failed"
+        elif any(step.status == "waiting" for step in steps):
+            status = "waiting"
+        elif any(step.status == "running" for step in steps):
+            status = "active"
+        else:
+            status = "queued"
+        self.store.set_work_status(work_id, status)
+        return status
+
+    def resume_recovered(self, work_ids: list[str] | tuple[str, ...]) -> tuple[dict[str, Any], ...]:
+        """Resume only recovery-touched Work that explicitly opted into automatic continuation."""
+        results = []
+        for work_id in dict.fromkeys(work_ids):
+            work = self.store.get(work_id)
+            if work.status in {"completed", "failed", "cancelled"}:
+                results.append(self.detail(work_id)); continue
+            if work.status != "queued" or not bool(work.metadata.get("auto_resume_on_recovery")):
+                continue
+            results.append(self.run(work_id))
+        return tuple(results)
 
     def _retryable(self, occurrence) -> bool:
         return (
@@ -106,7 +179,7 @@ class WorkRuntime:
 
     @staticmethod
     def _retryable_exception(exc: Exception) -> bool:
-        return isinstance(exc, RuntimeError) and str(exc).startswith("capability unavailable:")
+        return isinstance(exc, KeyError) or (isinstance(exc, RuntimeError) and str(exc).startswith("capability unavailable:"))
 
     def _record_execution_failure(self, work_id: str, step, occurrence) -> dict[str, Any]:
         error = occurrence.error or occurrence.error_code or occurrence.status
@@ -148,6 +221,7 @@ class WorkRuntime:
                     step.capability_id, resolved_input,
                     provenance=InvocationProvenance(work.owner_principal_id, "human", "work"),
                     work_id=work_id, step_id=step.step_id,
+                    on_occurrence_created=lambda item, sid=step.step_id: self.store.bind_occurrence(sid, item.occurrence_id),
                 )
             except Exception as exc:
                 if self._retryable_exception(exc):
@@ -192,7 +266,8 @@ def register_work_capabilities(registry, runtime:WorkRuntime)->None:
     from atlas_core.actions import ActionResult
     from atlas_core.capabilities import CapabilityDefinition,CapabilityRegistration,ScopeResolution
     step_schema={"type":"object","required":["capability_id","input"],"properties":{"capability_id":{"type":"string","minLength":1},"description":{"type":"string","minLength":1},"input":{"type":"object"}},"additionalProperties":False}
-    schema={"type":"object","required":["objective","steps"],"properties":{"objective":{"type":"string","minLength":1},"steps":{"type":"array","minItems":1,"items":step_schema},"run":{"type":"boolean"}},"additionalProperties":False}
+    origin_schema={"type":"object","required":["conversation_id","owner_turn_id"],"properties":{"conversation_id":{"type":"string","minLength":1},"owner_turn_id":{"type":"string","minLength":1}},"additionalProperties":False}
+    schema={"type":"object","required":["objective","steps"],"properties":{"objective":{"type":"string","minLength":1},"steps":{"type":"array","minItems":1,"items":step_schema},"run":{"type":"boolean"},"origin":origin_schema,"adopt_occurrence_id":{"type":"string","minLength":1}},"additionalProperties":False}
     exact={"type":"object","required":["work_id"],"properties":{"work_id":{"type":"string","minLength":1}},"additionalProperties":False}
     revise_schema={"type":"object","required":["work_id","base_revision","from_ordinal","change_intent","reason","unchanged_goal","expected_impact","replacement_steps"],"properties":{
         "work_id":{"type":"string","minLength":1},"base_revision":{"type":"integer","minimum":1},"from_ordinal":{"type":"integer","minimum":1},
@@ -204,11 +279,19 @@ def register_work_capabilities(registry, runtime:WorkRuntime)->None:
     def owner(payload):
         value=payload.pop("__owner_principal_id",None);payload.pop("__invocation_surface",None);return value
     def create_execute(payload):
-        principal=owner(payload)
+        surface=str(payload.get("__invocation_surface") or "");principal=owner(payload)
         if not principal:return ActionResult(False,error_code="owner_context_missing",error="owner principal unavailable")
         try:
-            work=runtime.create(payload["objective"],payload["steps"],owner_principal_id=principal)
-            result=runtime.run(work.work_id) if payload.get("run",True) else runtime.detail(work.work_id)
+            run=bool(payload.get("run",True));origin=payload.get("origin") if surface=="chat" and isinstance(payload.get("origin"),dict) else None
+            adopt=payload.get("adopt_occurrence_id") if surface=="chat" else None
+            metadata={"auto_resume_on_recovery":run}
+            if origin:
+                owner_turn_id=str(origin["owner_turn_id"]);conversation_id=str(origin["conversation_id"])
+                signature=json.dumps({"objective":payload["objective"],"steps":payload["steps"]},sort_keys=True,separators=(",",":"),ensure_ascii=False,default=str)
+                work_key=hashlib.sha256(f"{owner_turn_id}\n{signature}".encode("utf-8")).hexdigest()
+                metadata["chat_origin"]={"conversation_id":conversation_id,"owner_turn_id":owner_turn_id,"work_key":work_key}
+            work=runtime.create(payload["objective"],payload["steps"],owner_principal_id=principal,metadata=metadata,adopt_occurrence_id=adopt)
+            result=runtime.run(work.work_id) if run else runtime.detail(work.work_id)
             return ActionResult(True,result,{"ok":True,"operation":"work.create","work_id":work.work_id})
         except Exception as exc:return ActionResult(False,error_code="work_create_failed",error=str(exc),receipt={"ok":False,"operation":"work.create"})
     def control_execute(operation):

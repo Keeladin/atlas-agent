@@ -31,6 +31,10 @@ class WorkStore:
             db.execute("CREATE INDEX IF NOT EXISTS work_adaptations_work ON work_adaptations(work_id,new_revision)")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS work_display_ref_unique ON work_items(display_ref) WHERE display_ref IS NOT NULL")
             db.execute("CREATE INDEX IF NOT EXISTS work_source_cadence_id_idx ON work_items(source_cadence_id) WHERE source_cadence_id IS NOT NULL")
+            db.execute("DROP INDEX IF EXISTS work_chat_origin_turn_unique")
+            db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS work_chat_origin_key_unique
+                        ON work_items(json_extract(metadata_json,'$.chat_origin.work_key'))
+                        WHERE json_extract(metadata_json,'$.chat_origin.work_key') IS NOT NULL""")
             # Cadence-created Work has always recorded the relationship in metadata; promote
             # existing rows so run history covers Work created before the column existed.
             db.execute("UPDATE work_items SET source_cadence_id=json_extract(metadata_json,'$.cadence_id') WHERE source_cadence_id IS NULL AND json_extract(metadata_json,'$.cadence_id') IS NOT NULL")
@@ -55,6 +59,11 @@ class WorkStore:
         with self._db() as db:r=db.execute("SELECT * FROM work_items WHERE work_id=?",(work_id,)).fetchone()
         if r is None:raise KeyError(work_id)
         return WorkItem(r["work_id"],r["objective"],r["status"],r["owner_principal_id"],r["created_at"],r["updated_at"],json.loads(r["metadata_json"] or "{}"),r["display_ref"],r["artifact_class"],r["workflow_class"],r["source_cadence_id"],int(r["revision"] if "revision" in r.keys() else 1))
+    def find_by_origin_key(self,work_key:str)->WorkItem|None:
+        with self._db() as db:
+            row=db.execute("SELECT work_id FROM work_items WHERE json_extract(metadata_json,'$.chat_origin.work_key')=? LIMIT 1",(work_key,)).fetchone()
+        return self.get(row["work_id"]) if row is not None else None
+
     def list(self,*,limit:int=200,cadence_id:str|None=None)->tuple[WorkItem,...]:
         with self._db() as db:
             if cadence_id:rows=db.execute("SELECT work_id FROM work_items WHERE source_cadence_id=? ORDER BY created_at DESC LIMIT ?",(cadence_id,limit)).fetchall()
@@ -67,6 +76,15 @@ class WorkStore:
         with self._db() as db:r=db.execute("SELECT * FROM work_steps WHERE step_id=?",(step_id,)).fetchone()
         if r is None:raise KeyError(step_id)
         return _step(r)
+    def bind_occurrence(self,step_id:str,occurrence_id:str,*,status:str|None=None)->WorkStep:
+        with self._db() as db:
+            if status is None:
+                changed=db.execute("UPDATE work_steps SET occurrence_id=?,updated_at=CURRENT_TIMESTAMP WHERE step_id=? AND status!='completed' AND (occurrence_id IS NULL OR occurrence_id=?)",(occurrence_id,step_id,occurrence_id)).rowcount
+            else:
+                changed=db.execute("UPDATE work_steps SET occurrence_id=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE step_id=? AND status!='completed' AND (occurrence_id IS NULL OR occurrence_id=?)",(occurrence_id,status,step_id,occurrence_id)).rowcount
+        if changed!=1:raise ValueError("work step occurrence binding changed or is not eligible")
+        return self.step(step_id)
+
     def set_work_status(self,work_id:str,status:str)->WorkItem:
         with self._db() as db:
             db.execute(

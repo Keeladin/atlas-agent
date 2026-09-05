@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 from atlas_api.auth import (
     AuthService, client_key, forbidden, require_mutation_auth, require_session, unauthorized,
 )
+from atlas_core.capabilities import RuntimeContinuityRequired
+from atlas_core.provenance import InvocationProvenance
 
 
 def _runtime(request: Request):
@@ -117,13 +119,17 @@ async def capability_invoke(request: Request) -> JSONResponse:
     try:
         body = await _body(request)
         owner = _owner(request, gate)
-        from atlas_core.provenance import InvocationProvenance
         occurrence = await run_in_threadpool(
             _runtime(request).capabilities.invoke, request.path_params["capability_id"],
             body.get("input") if isinstance(body.get("input"), dict) else {},
             provenance=InvocationProvenance(owner.principal_id, "human", "control"),
         )
         return JSONResponse({"action": occurrence.public()})
+    except RuntimeContinuityRequired as exc:
+        return JSONResponse({
+            "error": str(exc), "code": "runtime_continuity_required",
+            "capability_id": exc.capability_id, "scope": exc.scope,
+        }, status_code=409)
     except Exception as exc:
         return _error(exc)
 

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api, uploadArtifact } from '../api/client'
+import { ApiError, api, uploadArtifact } from '../api/client'
 import type { ActionOccurrence, Cadence, ChatFocus, ChatTurn, Conversation, WorkItem } from '../api/types'
 import { ArtifactObject } from '../ui/ArtifactObject'
 import { StatusLamp } from '../ui/OperationsPrimitives'
@@ -14,8 +14,14 @@ import { readFocus, workflowVariant } from '../ui/workflowPresentation'
 type ConversationList = { conversations: Conversation[] }
 type Health = { ok: boolean; service: string; version: string }
 type Attachment = { artifact_id: string; display_name: string; media_type?: string | null; created_at?: string | null }
-type SendRequest = { conversationId: string; text: string; focus?: ChatFocus | null; attachments: Attachment[] }
+type SendRequest = { conversationId: string; text: string; focus?: ChatFocus | null; attachments: Attachment[]; baselineTurnId?: string | null }
+type RecoveringSend = { conversationId: string; text: string; baselineTurnId: string | null; startedAt: number }
 type UploadResponse = { artifact: Attachment }
+
+function shouldRecoverSend(error: unknown) {
+  if (error instanceof ApiError) return [502, 503, 504].includes(error.status)
+  return error instanceof TypeError
+}
 
 function when(value?: string | null) {
   if (!value) return '—'
@@ -72,6 +78,7 @@ export function Chat() {
   const [runtimeOpen, setRuntimeOpen] = useState(false)
   const [conversationFilter, setConversationFilter] = useState('')
   const [traceTurn, setTraceTurn] = useState<string | null>(null)
+  const [recoveringSend, setRecoveringSend] = useState<RecoveringSend | null>(null)
   const threadEndRef = useRef<HTMLDivElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [searchParams, setSearchParams] = useSearchParams()
@@ -127,19 +134,30 @@ export function Chat() {
     queryKey: ['conversation', selected],
     queryFn: () => api<{ conversation: Conversation; turns: ChatTurn[] }>(`/api/chat/conversations/${selected}`),
     enabled: selectedValid,
+    refetchInterval: recoveringSend && recoveringSend.conversationId === selected ? 1500 : false,
   })
   const send = useMutation({
     mutationFn: ({ conversationId, text, focus, attachments: attached }: SendRequest) => api<{ turn: ChatTurn }>(`/api/chat/conversations/${conversationId}/messages`, {
       method: 'POST',
       body: JSON.stringify({ message: text, ...(focus ? { focus } : {}), ...(attached.length ? { attachments: attached.map(item => item.artifact_id) } : {}) }),
-    }),    onSuccess: async (_data, variables) => {
-      setMessage(''); setPendingFocus(null); setAttachments([]); setUploadError(null)
+    }),
+    onSuccess: async (_data, variables) => {
+      setRecoveringSend(null); setMessage(''); setPendingFocus(null); setAttachments([]); setUploadError(null)
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['conversation', variables.conversationId] }),
         qc.invalidateQueries({ queryKey: ['conversations'] }),
         qc.invalidateQueries({ queryKey: ['work'] }),
         qc.invalidateQueries({ queryKey: ['cadence'] }),
       ])
+    },
+    onError: (error, variables) => {
+      if (!shouldRecoverSend(error)) return
+      setRecoveringSend({
+        conversationId: variables.conversationId, text: variables.text,
+        baselineTurnId: variables.baselineTurnId ?? null, startedAt: Date.now(),
+      })
+      void qc.invalidateQueries({ queryKey: ['conversation', variables.conversationId] })
+      void qc.invalidateQueries({ queryKey: ['health'] })
     },
   })
 
@@ -160,6 +178,28 @@ export function Chat() {
   }
 
   const turns = useMemo(() => detail.data?.turns ?? [], [detail.data?.turns])
+  useEffect(() => {
+    if (!recoveringSend || recoveringSend.conversationId !== selected) return
+    const baseline = recoveringSend.baselineTurnId
+    const baselineIndex = baseline ? turns.findIndex(turn => turn.turn_id === baseline) : -1
+    const candidateTurns = baselineIndex >= 0 ? turns.slice(baselineIndex + 1) : turns
+    const ownerIndex = candidateTurns.findIndex(turn => turn.role === 'user' && turn.content === recoveringSend.text)
+    if (ownerIndex < 0) return
+    setMessage(''); setPendingFocus(null); setAttachments([]); setUploadError(null)
+    const completed = candidateTurns.slice(ownerIndex + 1).some(turn => turn.role === 'assistant')
+    if (!completed) return
+    setRecoveringSend(null); send.reset()
+    void qc.invalidateQueries({ queryKey: ['conversations'] })
+    void qc.invalidateQueries({ queryKey: ['work'] })
+    void qc.invalidateQueries({ queryKey: ['cadence'] })
+  }, [recoveringSend, selected, turns, send, qc])
+
+  useEffect(() => {
+    if (!recoveringSend) return
+    const timeout = window.setTimeout(() => setRecoveringSend(null), 30000)
+    return () => window.clearTimeout(timeout)
+  }, [recoveringSend])
+
   const workRows = work.data?.work ?? []
   const activeWork = workRows.filter(item => ['active', 'queued', 'waiting', 'paused'].includes(item.status)).slice(0, 6)
   const attentionWork = workRows.filter(item => ['failed', 'paused', 'waiting'].includes(item.status))
@@ -176,8 +216,8 @@ export function Chat() {
   function submit(event?: FormEvent) {
     event?.preventDefault()
     const text = message.trim()
-    if ((text || attachments.length) && selected && selectedValid && !send.isPending && !uploading) {
-      send.mutate({ conversationId: selected, text, focus: pendingFocus, attachments })
+    if ((text || attachments.length) && selected && selectedValid && !send.isPending && !recoveringSend && !uploading) {
+      send.mutate({ conversationId: selected, text, focus: pendingFocus, attachments, baselineTurnId: turns.at(-1)?.turn_id ?? null })
     }
   }
   function submitFromKeyboard(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -195,7 +235,7 @@ export function Chat() {
   return <div className="owner-canvas">
     <header className="owner-canvas-head">
       <div className="owner-canvas-title">
-        <span className="owner-canvas-kicker"><StatusLamp tone={send.isPending ? 'amber' : runtimeTone} />{send.isPending ? 'Working' : health.data?.ok ? 'Ready' : 'Runtime'}</span>
+        <span className="owner-canvas-kicker"><StatusLamp tone={send.isPending || recoveringSend ? 'amber' : runtimeTone} />{recoveringSend ? 'Reconnecting' : send.isPending ? 'Working' : health.data?.ok ? 'Ready' : 'Runtime'}</span>
         <h1>{currentConversation?.title || 'Atlas'}</h1>
       </div>
       <div className="owner-canvas-actions">
@@ -244,8 +284,8 @@ export function Chat() {
             </div>
           </article>
         })}
-        {send.isPending ? <div className="owner-working"><StatusLamp tone="amber" /><span>Atlas is working</span></div> : null}
-        {detail.isError ? <p className="owner-error">{detail.error.message}</p> : null}
+        {send.isPending || recoveringSend ? <div className="owner-working"><StatusLamp tone="amber" /><span>{recoveringSend ? 'Atlas is reconnecting to durable state' : 'Atlas is working'}</span></div> : null}
+        {detail.isError && !recoveringSend ? <p className="owner-error">{detail.error.message}</p> : null}
         <div ref={threadEndRef} aria-hidden />
       </div>
     </main>
@@ -261,10 +301,10 @@ export function Chat() {
             <button type="button" className="attach-button" disabled={uploading || attachments.length >= 8} onClick={() => fileInputRef.current?.click()}>{uploading ? 'Adding…' : '+ Attach'}</button>
             <small>Drop files here · max 30 MB each</small>
           </span>
-          <button className="send-button" type="submit" aria-label="Send" disabled={send.isPending || uploading || (!message.trim() && !attachments.length) || !selectedValid}>{send.isPending ? 'Working…' : 'Send ↗'}</button>
+          <button className="send-button" type="submit" aria-label="Send" disabled={send.isPending || Boolean(recoveringSend) || uploading || (!message.trim() && !attachments.length) || !selectedValid}>{recoveringSend ? 'Reconnecting…' : send.isPending ? 'Working…' : 'Send ↗'}</button>
         </div>
         {uploadError ? <p className="owner-error">{uploadError}</p> : null}
-        {send.isError ? <p className="owner-error">{send.error.message}</p> : null}
+        {send.isError && !recoveringSend ? <p className="owner-error">{send.error.message}</p> : null}
       </form>
     </footer>
   </div>

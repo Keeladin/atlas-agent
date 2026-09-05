@@ -35,9 +35,10 @@ def _run(args:list[str],*,timeout:float=20)->subprocess.CompletedProcess[str]:
 
 class HostRuntime:
     """Deterministic host observation and user-systemd administration."""
-    def __init__(self,registry:CapabilityRegistry,actions:ActionStore,*,protected_paths:tuple[Path,...]=())->None:
+    def __init__(self,registry:CapabilityRegistry,actions:ActionStore,*,protected_paths:tuple[Path,...]=(),self_service_unit:str|None=None)->None:
         self.registry=registry;self.actions=actions
         self.protected_paths=tuple(path.expanduser().resolve(strict=False) for path in protected_paths)
+        self.self_service_unit=_unit(self_service_unit) if self_service_unit else None
         self._register()
     def _register(self)->None:
         empty={"type":"object","properties":{},"additionalProperties":False}
@@ -106,7 +107,18 @@ class HostRuntime:
     def _service_scope(self,payload:dict[str,Any],op:str)->ScopeResolution:
         unit=_unit(payload.get("unit"));clean={"unit":unit}
         if "lines" in payload:clean["lines"]=int(payload["lines"])
-        return ScopeResolution(f"host/service/{unit}",clean,f"{op.title()} user service {unit}")
+        self_restart=bool(op=="restart" and self.self_service_unit and unit==self.self_service_unit)
+        receipt={}
+        if self_restart:
+            predecessor=os.environ.get("INVOCATION_ID")
+            if predecessor:receipt["predecessor_invocation_id"]=predecessor
+            receipt["continuity_kind"]="self_restart"
+        return ScopeResolution(
+            f"host/service/{unit}",clean,f"{op.title()} user service {unit}",
+            requires_durable_work=self_restart,
+            continuity_reason="restarting the service hosting this Atlas runtime requires durable Work" if self_restart else None,
+            pre_execution_receipt=receipt,
+        )
     def service_status(self,payload:dict[str,Any])->ActionResult:
         unit=_unit(payload["unit"]);proc=_run(["systemctl","--user","show",unit,"--property=Id,LoadState,ActiveState,SubState,MainPID,InvocationID,ExecMainStatus","--no-pager"]);data={}
         for line in proc.stdout.splitlines():
@@ -115,11 +127,28 @@ class HostRuntime:
     def service_logs(self,payload:dict[str,Any])->ActionResult:
         unit=_unit(payload["unit"]);lines=int(payload.get("lines") or 100);proc=_run(["journalctl","--user-unit",unit,"-n",str(lines),"--no-pager","--output=short-iso"],timeout=30);ok=proc.returncode==0;return ActionResult(ok,{"unit":unit,"logs":proc.stdout},{"ok":ok,"operation":"logs","unit":unit,"returncode":proc.returncode,"observed_at":_iso()},None if ok else "journal_failed",None if ok else proc.stderr.strip())
     def service_mutate(self,op:str,payload:dict[str,Any])->ActionResult:
-        unit=_unit(payload["unit"]);before_invocation=os.environ.get("INVOCATION_ID") if unit=="atlas-api.service" else None
+        unit=_unit(payload["unit"])
+        if op=="restart" and self.self_service_unit and unit==self.self_service_unit and not os.environ.get("INVOCATION_ID"):
+            return ActionResult(False,{"unit":unit,"dispatched":False},{"ok":False,"operation":op,"unit":unit},"self_restart_identity_unavailable","Atlas cannot self-restart without a current systemd invocation identity")
+        if op=="restart" and self.self_service_unit and unit==self.self_service_unit and self._self_restart_rate_limited(unit):
+            return ActionResult(False,{"unit":unit,"dispatched":False},{"ok":False,"operation":op,"unit":unit,"retryable":True},"self_restart_rate_limited","Atlas self-restart rate limit is active")
         args=["systemctl","--user",op,unit,"--no-block"] if op in {"restart","stop","start"} else []
         proc=_run(args);ok=proc.returncode==0;receipt={"ok":ok,"operation":op,"unit":unit,"returncode":proc.returncode,"dispatched_at":_iso()}
-        if ok and op=="restart" and unit=="atlas-api.service":receipt.update({"verification_pending":True,"predecessor_invocation_id":before_invocation})
+        if ok and op=="restart" and self.self_service_unit and unit==self.self_service_unit:receipt["verification_pending"]=True
         return ActionResult(ok,{"unit":unit,"dispatched":ok},receipt,None if ok else "systemd_mutation_failed",None if ok else proc.stderr.strip())
+    def _self_restart_rate_limited(self,unit:str,*,minimum_interval_seconds:float=20.0)->bool:
+        now=datetime.now(timezone.utc)
+        scope=f"host/service/{unit}"
+        for occurrence in self.actions.recent(limit=50):
+            if occurrence.capability_id!="host.service.restart" or occurrence.scope!=scope:continue
+            stamp=str((occurrence.receipt or {}).get("dispatched_at") or "")
+            if not stamp:continue
+            try:when=datetime.fromisoformat(stamp.replace("Z","+00:00"))
+            except ValueError:continue
+            if when.tzinfo is None:when=when.replace(tzinfo=timezone.utc)
+            if 0 <= (now-when).total_seconds() < minimum_interval_seconds:return True
+        return False
+
     def _system_service_scope(self,payload:dict[str,Any],op:str)->ScopeResolution:
         unit=_unit(payload.get("unit"));clean={"unit":unit}
         if "lines" in payload:clean["lines"]=int(payload["lines"])
@@ -177,11 +206,12 @@ class HostRuntime:
         return ActionResult(False,payload,receipt,"host_package_operation_failed",detail)
     def reconcile_self_restart(self)->tuple[dict[str,Any],...]:
         current=os.environ.get("INVOCATION_ID")
-        if not current:return ()
-        changed=[]
-        for occurrence in self.actions.recent(limit=100):
-            if occurrence.status!="uncertain" or occurrence.capability_id!="host.service.restart" or occurrence.scope!="host/service/atlas-api.service":continue
+        if not current or not self.self_service_unit:return ()
+        changed=[];scope=f"host/service/{self.self_service_unit}"
+        for occurrence in self.actions.unresolved(capability_id="host.service.restart",scope=scope):
+            if occurrence.status!="uncertain":continue
             predecessor=str(occurrence.receipt.get("predecessor_invocation_id") or "")
             if predecessor and predecessor!=current:
-                result=self.actions.transition(occurrence.occurrence_id,from_status=("uncertain",),to_status="succeeded",receipt_json=json.dumps({**occurrence.receipt,"verified":True,"successor_invocation_id":current,"verified_at":_iso()}),completed_at=_iso());changed.append(result.public())
+                receipt={**occurrence.receipt,"restart_observed":True,"successor_invocation_id":current,"restart_observed_at":_iso()}
+                result=self.actions.transition(occurrence.occurrence_id,from_status=("uncertain",),to_status="succeeded",receipt_json=json.dumps(receipt,sort_keys=True,separators=(",",":")),completed_at=_iso());changed.append(result.public())
         return tuple(changed)

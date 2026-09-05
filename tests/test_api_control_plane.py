@@ -172,3 +172,18 @@ def test_source_file_view_streams_governed_binary_content(tmp_path, monkeypatch)
         assert response.content == payload
         assert response.headers["content-type"].startswith("application/pdf")
         assert response.headers["content-disposition"] == "inline"
+
+
+def test_control_surface_gets_structured_continuity_refusal_for_self_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("ATLAS_SERVICE_UNIT", "atlas-api.service")
+    monkeypatch.setenv("INVOCATION_ID", "test-invocation")
+    with _client(tmp_path, monkeypatch) as client:
+        csrf = _login(client); headers = {"X-CSRF-Token": csrf}
+        response = client.post(
+            "/api/capabilities/host.service.restart/invoke",
+            json={"input":{"unit":"atlas-api.service"}}, headers=headers,
+        )
+        assert response.status_code == 409
+        assert response.json()["code"] == "runtime_continuity_required"
+        assert response.json()["scope"] == "host/service/atlas-api.service"
+        assert client.app.state.runtime.actions_store.recent(limit=10) == ()

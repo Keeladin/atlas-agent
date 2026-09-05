@@ -26,6 +26,9 @@ class ScopeResolution:
     scope:str
     payload:dict[str,Any]
     summary:str|None=None
+    requires_durable_work:bool=False
+    continuity_reason:str|None=None
+    pre_execution_receipt:dict[str,Any]=field(default_factory=dict)
 
 @dataclass(frozen=True)
 class CapabilitySnapshot:

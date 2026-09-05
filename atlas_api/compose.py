@@ -220,6 +220,7 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     chat = ChatRuntime(chat_store, providers, registry, capabilities, knowledge, memory_store, identities,
                        source_roots=source_roots, artifacts=artifact_store, work_store=work_store,
                        capability_retriever=CapabilityRetriever(embedding_provider, core_signposts=CORE_SIGNPOST_IDS))
+    work.set_completion_hook(chat.record_work_completion)
 
     runtime = AtlasRuntime(
         root, identities, policy_store, policy, work_database, actions_store, evidence, registry,
@@ -236,7 +237,6 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     actions_store.recover_executing()
     host.reconcile_self_restart()
     recovery = work.recover_incomplete()
-    recovered_results = work.resume_recovered(recovery.get("touched_work_ids", []))
-    for detail in recovered_results:
-        runtime.chat.record_recovered_work_completion(detail)
+    work.resume_recovered(recovery.get("touched_work_ids", []))
+    work.reconcile_orchestration_actions()
     return runtime

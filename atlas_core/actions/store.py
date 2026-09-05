@@ -94,6 +94,24 @@ class ActionStore:
             rows = db.execute(sql, args).fetchall()
         return tuple(_occurrence(row) for row in rows)
 
+    def has_recent_receipt(self, *, capability_id: str, scope: str, receipt_key: str, within_seconds: float) -> bool:
+        if not receipt_key or not all(ch.isalnum() or ch == "_" for ch in receipt_key):
+            raise ValueError("receipt key must be a simple identifier")
+        if within_seconds <= 0:
+            return False
+        json_path = f"$.{receipt_key}"
+        modifier = f"-{float(within_seconds):.6f} seconds"
+        with self._db() as db:
+            row = db.execute(
+                """SELECT 1 FROM action_occurrences
+                   WHERE capability_id=? AND scope=?
+                     AND json_extract(receipt_json,?) IS NOT NULL
+                     AND julianday(json_extract(receipt_json,?)) >= julianday('now', ?)
+                   LIMIT 1""",
+                (capability_id, scope, json_path, json_path, modifier),
+            ).fetchone()
+        return row is not None
+
     def transition(self, occurrence_id: str, *, from_status: tuple[str, ...], to_status: str, **fields: Any) -> ActionOccurrence:
         allowed = {"policy_decision","policy_revision","policy_event_id","result_json","receipt_json","error_code","error","executed_at","completed_at"}
         bad=set(fields)-allowed

@@ -12,6 +12,7 @@ def _completed(args, stdout="", stderr="", code=0):
 
 
 def test_host_service_uses_user_manager_and_principal_policy(tmp_path, monkeypatch):
+    monkeypatch.setattr(host_module, "_current_service_unit", lambda: "atlas-api.service")
     rt = build_runtime(tmp_path / "instance")
     owner = rt.identities.current_owner().principal_id
     calls: list[list[str]] = []

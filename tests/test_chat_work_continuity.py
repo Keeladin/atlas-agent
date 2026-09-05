@@ -307,3 +307,193 @@ def test_runtime_service_identity_can_be_derived_from_systemd_cgroup():
     from atlas_core.host import _service_unit_from_cgroup
     cgroup = "0::/user.slice/user-995.slice/user@995.service/app.slice/atlas-api.service\n"
     assert _service_unit_from_cgroup(cgroup) == "atlas-api.service"
+
+
+def test_restart_fails_closed_when_runtime_service_identity_is_unknown(tmp_path, monkeypatch):
+    monkeypatch.delenv("ATLAS_SERVICE_UNIT", raising=False)
+    monkeypatch.setattr(host_module, "_current_service_unit", lambda: None)
+    calls = []
+    monkeypatch.setattr(host_module, "_run", lambda args, timeout=20: (calls.append(list(args)) or _fake_systemd(args, timeout)))
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner().principal_id
+    with pytest.raises(RuntimeError, match="service identity is unresolved"):
+        rt.capabilities.invoke(
+            "host.service.restart", {"unit":"demo.service"},
+            provenance=InvocationProvenance(owner, "human", "chat"),
+        )
+    assert not [row for row in calls if row[:3] == ["systemctl", "--user", "restart"]]
+    assert not [row for row in rt.actions_store.recent(limit=20) if row.capability_id == "host.service.restart"]
+
+
+def test_configured_service_identity_must_match_cgroup_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("ATLAS_SERVICE_UNIT", "configured.service")
+    monkeypatch.setattr(host_module, "_current_service_unit", lambda: "detected.service")
+    with pytest.raises(RuntimeError, match="service identity mismatch"):
+        build_runtime(tmp_path / "instance")
+
+
+def test_cgroup_identity_never_falls_back_to_user_manager_service():
+    from atlas_core.host import _service_unit_from_cgroup
+    assert _service_unit_from_cgroup("0::/user.slice/user-995.slice/user@995.service/app.slice\n") is None
+    assert _service_unit_from_cgroup("0::/user.slice/user-995.slice/user@995.service\n") is None
+
+
+def test_chat_refuses_identical_replay_of_uncertain_action(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner()
+    calls = []
+    rt.capabilities_registry.register(CapabilityRegistration(
+        CapabilityDefinition("test.async.replay", "Async replay test", "start", "external",
+                             {"type":"object","required":["target"],"properties":{"target":{"type":"string"}},"additionalProperties":False}),
+        lambda payload: ScopeResolution("test/async/" + payload["target"], dict(payload), "Async replay test"),
+        lambda payload: (calls.append(dict(payload)) or ActionResult(True, {"accepted":True}, {"ok":True,"verification_pending":True})),
+    ))
+    rt.policy_store.set(principal_id=owner.principal_id, scope="test/async/job", operation="start", decision="YES")
+    cid = rt.chat_store.create_conversation("Replay")['conversation_id']
+    rt.chat.provider = SequenceProvider(
+        '{"kind":"capability","capability_id":"test.async.replay","input":{"target":"job"}}',
+        '{"kind":"capability","capability_id":"test.async.replay","input":{"target":"job"}}',
+        '{"kind":"reply","reply":"The existing dispatch remains unresolved; I did not replay it."}',
+    )
+    result = rt.chat.send(cid, "Start it once", principal_id=owner.principal_id, defer_capture=True)
+    assert calls == [{"target":"job"}]
+    assert result["turn"]["content"].startswith("The existing dispatch")
+    second_prompt = json.loads(rt.chat.provider.requests[2].input)
+    assert any(item.get("status") == "replay_refused" for item in second_prompt["tool_results"])
+
+
+def test_normal_work_completion_posts_exactly_one_chat_turn(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner()
+    cid = rt.chat_store.create_conversation("Normal completion")['conversation_id']
+    owner_turn = rt.chat_store.append(cid, "user", "Search durable memory")
+    work = rt.work.create(
+        "Search durable memory", [{"capability_id":"memory.search","input":{"query":"nothing"}}],
+        owner_principal_id=owner.principal_id,
+        metadata={"chat_origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"]}},
+    )
+    assert rt.work.run(work.work_id)["status"] == "completed"
+    completions = [t for t in rt.chat_store.turns(cid) if t["metadata"].get("work_completion")]
+    assert len(completions) == 1
+    rt.work.run(work.work_id)
+    assert len([t for t in rt.chat_store.turns(cid) if t["metadata"].get("work_completion")]) == 1
+
+
+def test_restart_rate_limit_is_not_row_bounded(tmp_path, monkeypatch):
+    monkeypatch.setenv("ATLAS_SERVICE_UNIT", "atlas-api.service")
+    monkeypatch.setenv("INVOCATION_ID", "old-invocation")
+    monkeypatch.setattr(host_module, "_run", _fake_systemd)
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner().principal_id
+    provenance = InvocationProvenance(owner, "human", "work")
+    first = rt.capabilities.invoke(
+        "host.service.restart", {"unit":"atlas-api.service"}, provenance=provenance,
+        work_id="work-first", step_id="step-first",
+    )
+    assert first.status == "uncertain"
+    for index in range(60):
+        row = rt.capabilities.invoke("memory.search", {"query":f"noise-{index}"}, provenance=provenance)
+        assert row.status == "succeeded"
+    second = rt.capabilities.invoke(
+        "host.service.restart", {"unit":"atlas-api.service"}, provenance=provenance,
+        work_id="work-second", step_id="step-second",
+    )
+    assert second.status == "failed"
+    assert second.error_code == "self_restart_rate_limited"
+
+
+def test_registry_drift_pauses_work_without_treating_arbitrary_keyerror_as_retryable(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner().principal_id
+    rt.capabilities_registry.register(CapabilityRegistration(
+        CapabilityDefinition("test.temp.read", "Temporary capability", "read", "none", {"type":"object","properties":{},"additionalProperties":False}),
+        lambda payload: ScopeResolution("test/temp", {}, "Temporary read"),
+        lambda payload: ActionResult(True, {"ok":True}, {"ok":True}),
+    ))
+    rt.policy_store.set(principal_id=owner, scope="test/temp", operation="read", decision="YES")
+    work = rt.work.create("Temporary work", [{"capability_id":"test.temp.read","input":{}}], owner_principal_id=owner)
+    rt.capabilities_registry.unregister_prefix("test.temp")
+    detail = rt.work.run(work.work_id)
+    assert detail["status"] == "paused"
+    assert detail["steps"][0]["status"] == "waiting"
+    assert "capability unavailable: test.temp.read" in detail["steps"][0]["error"]
+
+
+def test_repeated_durable_required_call_is_refused_without_second_gate_attempt(tmp_path, monkeypatch):
+    monkeypatch.setenv("ATLAS_SERVICE_UNIT", "atlas-api.service")
+    monkeypatch.setenv("INVOCATION_ID", "old-invocation")
+    monkeypatch.setattr(host_module, "_run", _fake_systemd)
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner()
+    cid = rt.chat_store.create_conversation("Repeated refusal")['conversation_id']
+    rt.chat.provider = SequenceProvider(
+        '{"kind":"capability","capability_id":"host.service.restart","input":{"unit":"atlas-api.service"}}',
+        '{"kind":"capability","capability_id":"host.service.restart","input":{"unit":"atlas-api.service"}}',
+        '{"kind":"reply","reply":"I will not replay the refused restart outside durable Work."}',
+    )
+    result = rt.chat.send(cid, "Restart your API", principal_id=owner.principal_id, defer_capture=True)
+    assert result["turn"]["content"].startswith("I will not replay")
+    assert not [row for row in rt.actions_store.recent(limit=20) if row.capability_id == "host.service.restart"]
+    prompt = json.loads(rt.chat.provider.requests[2].input)
+    assert any(item.get("status") == "replay_refused" for item in prompt["tool_results"])
+
+
+def test_host_status_surfaces_resolved_service_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("ATLAS_SERVICE_UNIT", "atlas-api.service")
+    monkeypatch.setattr(host_module, "_current_service_unit", lambda: "atlas-api.service")
+    rt = build_runtime(tmp_path / "instance")
+    status = rt.host.status().output
+    assert status["service_unit"] == "atlas-api.service"
+    assert status["service_identity_source"] == "configured"
+
+
+def test_interrupted_work_create_occurrence_reconciles_from_durable_work(tmp_path):
+    from atlas_core.actions import ActionRequest
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner().principal_id
+    cid = rt.chat_store.create_conversation("Orchestration")['conversation_id']
+    owner_turn = rt.chat_store.append(cid, "user", "Create durable work")
+    payload = {
+        "objective":"Search durable memory", "run":True,
+        "origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"]},
+        "steps":[{"capability_id":"memory.search","input":{"query":"x"}}],
+    }
+    created = rt.capabilities.invoke("work.create", payload, provenance=InvocationProvenance(owner, "human", "chat"))
+    work_id = created.result["work_id"]
+    request = ActionRequest(
+        "work.create", "create", "atlas/work", payload,
+        InvocationProvenance(owner, "human", "chat"), summary="Create Work",
+    )
+    orphan = rt.actions_store.create(request, decision="YES", revision=rt.policy_store.revision(), event_id=None, status="executing")
+    rt.actions_store.recover_executing()
+    assert rt.actions_store.get(orphan.occurrence_id).status == "uncertain"
+    assert orphan.occurrence_id in rt.work.reconcile_orchestration_actions()
+    resolved = rt.actions_store.get(orphan.occurrence_id)
+    assert resolved.status == "succeeded"
+    assert resolved.result["work_id"] == work_id
+
+
+def test_interrupted_work_create_resumes_queued_created_work_before_reconciling(tmp_path):
+    from atlas_core.actions import ActionRequest
+    from atlas_core.work.runtime import _chat_work_key
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner().principal_id
+    cid = rt.chat_store.create_conversation("Queued create")['conversation_id']
+    owner_turn = rt.chat_store.append(cid, "user", "Create and run durable work")
+    steps = [{"capability_id":"memory.search","input":{"query":"x"}}]
+    objective = "Search durable memory"
+    origin = {"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"]}
+    work = rt.work.create(
+        objective, steps, owner_principal_id=owner,
+        metadata={"auto_resume_on_recovery":True,"chat_origin":{**origin,"work_key":_chat_work_key(owner_turn["turn_id"], objective, steps)}},
+    )
+    payload = {"objective":objective,"steps":steps,"run":True,"origin":origin}
+    orphan = rt.actions_store.create(
+        ActionRequest("work.create","create","atlas/work",payload,InvocationProvenance(owner,"human","chat")),
+        decision="YES",revision=rt.policy_store.revision(),event_id=None,status="executing",
+    )
+    rt.actions_store.recover_executing()
+    assert rt.work.detail(work.work_id)["status"] == "queued"
+    assert orphan.occurrence_id in rt.work.reconcile_orchestration_actions()
+    assert rt.work.detail(work.work_id)["status"] == "completed"
+    assert rt.actions_store.get(orphan.occurrence_id).status == "succeeded"

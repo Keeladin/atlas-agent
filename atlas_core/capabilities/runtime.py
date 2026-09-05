@@ -25,7 +25,10 @@ class RuntimeContinuityRequired(RuntimeError):
 class CapabilityRuntime:
     def __init__(self,registry:CapabilityRegistry,actions:ActionRuntime,policy:OwnerPolicy)->None:self.registry=registry;self.actions=actions;self.policy=policy
     def invoke(self,capability_id:str,payload:dict[str,Any],*,provenance:InvocationProvenance,work_id:str|None=None,step_id:str|None=None,on_occurrence_created=None):
-        registration=self.registry.get(capability_id)
+        try:
+            registration=self.registry.get(capability_id)
+        except KeyError as exc:
+            raise RuntimeError(f"capability unavailable: {capability_id}") from exc
         available,reason=registration.availability()
         if not available:raise RuntimeError(f"capability unavailable: {reason}")
         try:validate_json(payload,registration.definition.input_schema or {},path="$.invocation")

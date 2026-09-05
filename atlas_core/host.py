@@ -34,27 +34,42 @@ def _run(args:list[str],*,timeout:float=20)->subprocess.CompletedProcess[str]:
     return subprocess.run(args,text=True,capture_output=True,timeout=timeout,check=False)
 
 def _service_unit_from_cgroup(text:str)->str|None:
+    """Resolve only a leaf service cgroup, never an ancestor user@.service."""
     for line in text.splitlines():
-        path=line.rsplit(":",1)[-1]
-        for part in reversed(path.split("/")):
-            if _UNIT.fullmatch(part):return part
+        path=line.rsplit(":",1)[-1].rstrip("/")
+        leaf=path.rsplit("/",1)[-1]
+        if _UNIT.fullmatch(leaf) and not leaf.startswith("user@"):
+            return leaf
     return None
 
 def _current_service_unit()->str|None:
-    """Resolve the user-systemd service that owns this process from its cgroup."""
+    """Resolve this process's own user-systemd unit, not an inherited parent cgroup."""
     try:
         text=Path("/proc/self/cgroup").read_text(encoding="utf-8",errors="replace")
     except OSError:
         return None
-    return _service_unit_from_cgroup(text)
+    candidate=_service_unit_from_cgroup(text)
+    if not candidate:
+        return None
+    proc=_run(["systemctl","--user","show",candidate,"--property=MainPID","--value","--no-pager"])
+    if proc.returncode != 0:
+        return None
+    value=proc.stdout.strip()
+    if "MainPID=" in value:
+        value=next((line.split("=",1)[1].strip() for line in value.splitlines() if line.startswith("MainPID=")), "")
+    return candidate if value == str(os.getpid()) else None
 
 class HostRuntime:
     """Deterministic host observation and user-systemd administration."""
     def __init__(self,registry:CapabilityRegistry,actions:ActionStore,*,protected_paths:tuple[Path,...]=(),self_service_unit:str|None=None)->None:
         self.registry=registry;self.actions=actions
         self.protected_paths=tuple(path.expanduser().resolve(strict=False) for path in protected_paths)
-        resolved_self_unit=self_service_unit or _current_service_unit()
-        self.self_service_unit=_unit(resolved_self_unit) if resolved_self_unit else None
+        configured=_unit(self_service_unit) if self_service_unit else None
+        detected=_current_service_unit()
+        if configured and detected and configured != detected:
+            raise RuntimeError(f"Atlas service identity mismatch: configured={configured}, detected={detected}")
+        self.self_service_unit=configured or detected
+        self.self_service_identity_source="configured" if configured else ("cgroup" if detected else "unresolved")
         self._register()
     def _register(self)->None:
         empty={"type":"object","properties":{},"additionalProperties":False}
@@ -78,7 +93,7 @@ class HostRuntime:
             self.registry.register(CapabilityRegistration(CapabilityDefinition(f"host.package.{op}",f"{op.title()} an exact Debian package from configured APT sources.",op,effect,package_schema,source="host",tags=("host","package","mutation")),lambda p,_op=op:self._package_scope(p,_op),lambda p,_op=op:self.package_mutate(_op,p),availability=_trusted_package_broker,metadata={"scope_hint":"host/package"}),replace=True)
         self.registry.register(CapabilityRegistration(CapabilityDefinition("host.package.refresh","Refresh configured APT package metadata.","refresh","external",empty,source="host",tags=("host","package","mutation")),lambda p:ScopeResolution("host/package/index",{},"Refresh APT package metadata"),lambda p:self.package_refresh(),availability=_trusted_package_broker,metadata={"scope_hint":"host/package/index"}),replace=True)
     def status(self)->ActionResult:
-        out={"hostname":os.uname().nodename,"kernel":os.uname().release,"pid":os.getpid(),"uid":os.getuid(),"invocation_id":os.environ.get("INVOCATION_ID"),"timestamp":_iso()};return ActionResult(True,out,{"ok":True,"observed_at":out["timestamp"]})
+        out={"hostname":os.uname().nodename,"kernel":os.uname().release,"pid":os.getpid(),"uid":os.getuid(),"invocation_id":os.environ.get("INVOCATION_ID"),"service_unit":self.self_service_unit,"service_identity_source":self.self_service_identity_source,"timestamp":_iso()};return ActionResult(True,out,{"ok":True,"observed_at":out["timestamp"]})
     def resources(self)->ActionResult:
         mem={}
         try:
@@ -122,6 +137,8 @@ class HostRuntime:
         except Exception as exc:return ActionResult(False,receipt={"ok":False,"operation":op},error_code="host_filesystem_error",error=str(exc))
     def _service_scope(self,payload:dict[str,Any],op:str)->ScopeResolution:
         unit=_unit(payload.get("unit"));clean={"unit":unit}
+        if op=="restart" and not self.self_service_unit:
+            raise RuntimeError("Atlas service identity is unresolved; refusing user-service restart because self-disruption cannot be ruled out")
         if "lines" in payload:clean["lines"]=int(payload["lines"])
         self_restart=bool(op=="restart" and self.self_service_unit and unit==self.self_service_unit)
         receipt={}
@@ -152,18 +169,12 @@ class HostRuntime:
         proc=_run(args);ok=proc.returncode==0;receipt={"ok":ok,"operation":op,"unit":unit,"returncode":proc.returncode,"dispatched_at":_iso()}
         if ok and op=="restart" and self.self_service_unit and unit==self.self_service_unit:receipt["verification_pending"]=True
         return ActionResult(ok,{"unit":unit,"dispatched":ok},receipt,None if ok else "systemd_mutation_failed",None if ok else proc.stderr.strip())
-    def _self_restart_rate_limited(self,unit:str,*,minimum_interval_seconds:float=20.0)->bool:
-        now=datetime.now(timezone.utc)
-        scope=f"host/service/{unit}"
-        for occurrence in self.actions.recent(limit=50):
-            if occurrence.capability_id!="host.service.restart" or occurrence.scope!=scope:continue
-            stamp=str((occurrence.receipt or {}).get("dispatched_at") or "")
-            if not stamp:continue
-            try:when=datetime.fromisoformat(stamp.replace("Z","+00:00"))
-            except ValueError:continue
-            if when.tzinfo is None:when=when.replace(tzinfo=timezone.utc)
-            if 0 <= (now-when).total_seconds() < minimum_interval_seconds:return True
-        return False
+    def _self_restart_rate_limited(self,unit:str,*,minimum_interval_seconds:float=31.0)->bool:
+        query={"capability_id":"host.service.restart","scope":f"host/service/{unit}","within_seconds":minimum_interval_seconds}
+        return (
+            self.actions.has_recent_receipt(receipt_key="dispatched_at", **query)
+            or self.actions.has_recent_receipt(receipt_key="restart_observed_at", **query)
+        )
 
     def _system_service_scope(self,payload:dict[str,Any],op:str)->ScopeResolution:
         unit=_unit(payload.get("unit"));clean={"unit":unit}

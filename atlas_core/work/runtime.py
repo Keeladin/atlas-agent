@@ -9,6 +9,10 @@ from atlas_core.provenance import InvocationProvenance
 from .store import WorkStore
 from .validation import validate_workflow_steps
 
+def _chat_work_key(owner_turn_id: str, objective: str, steps: list[dict[str, Any]]) -> str:
+    signature=json.dumps({"objective":objective,"steps":steps},sort_keys=True,separators=(",",":"),ensure_ascii=False,default=str)
+    return hashlib.sha256(f"{owner_turn_id}\n{signature}".encode("utf-8")).hexdigest()
+
 class WorkRuntime:
     """Durable responsibility. Current owner policy is resolved at every actual step execution."""
 
@@ -25,6 +29,15 @@ class WorkRuntime:
         self.capabilities = capabilities
         self.actions = actions
         self.cancel_hook = cancel_hook
+        self.completion_hook: Callable[[dict[str, Any]], None] | None = None
+
+    def set_completion_hook(self, hook: Callable[[dict[str, Any]], None] | None) -> None:
+        self.completion_hook = hook
+
+    def _notify_terminal(self, detail: dict[str, Any]) -> dict[str, Any]:
+        if detail.get("status") in {"completed", "failed", "cancelled"} and self.completion_hook is not None:
+            self.completion_hook(detail)
+        return detail
 
     def validate_steps(self, steps: list[dict[str, Any]]) -> None:
         validate_workflow_steps(self.capabilities.registry, steps)
@@ -164,7 +177,7 @@ class WorkRuntime:
         for work_id in dict.fromkeys(work_ids):
             work = self.store.get(work_id)
             if work.status in {"completed", "failed", "cancelled"}:
-                results.append(self.detail(work_id)); continue
+                results.append(self._notify_terminal(self.detail(work_id))); continue
             if work.status != "queued" or not bool(work.metadata.get("auto_resume_on_recovery")):
                 continue
             results.append(self.run(work_id))
@@ -179,17 +192,17 @@ class WorkRuntime:
 
     @staticmethod
     def _retryable_exception(exc: Exception) -> bool:
-        return isinstance(exc, KeyError) or (isinstance(exc, RuntimeError) and str(exc).startswith("capability unavailable:"))
+        return isinstance(exc, RuntimeError) and str(exc).startswith("capability unavailable:")
 
     def _record_execution_failure(self, work_id: str, step, occurrence) -> dict[str, Any]:
         error = occurrence.error or occurrence.error_code or occurrence.status
         if self._retryable(occurrence):
             self.store.set_step(step.step_id, status="waiting", occurrence_id=occurrence.occurrence_id, error=error)
             self.store.set_work_status(work_id, "paused")
-        else:
-            self.store.set_step(step.step_id, status="failed", occurrence_id=occurrence.occurrence_id, error=error)
-            self.store.set_work_status(work_id, "failed")
-        return self.detail(work_id)
+            return self.detail(work_id)
+        self.store.set_step(step.step_id, status="failed", occurrence_id=occurrence.occurrence_id, error=error)
+        self.store.set_work_status(work_id, "failed")
+        return self._notify_terminal(self.detail(work_id))
 
     def run(self, work_id: str) -> dict[str, Any]:
         work = self.store.get(work_id)
@@ -230,6 +243,7 @@ class WorkRuntime:
                 else:
                     self.store.set_step(step.step_id, status="failed", error=str(exc))
                     self.store.set_work_status(work_id, "failed")
+                    return self._notify_terminal(self.detail(work_id))
                 return self.detail(work_id)
             if occurrence.status == "succeeded":
                 self.store.set_step(step.step_id, status="completed", occurrence_id=occurrence.occurrence_id, output=occurrence.result)
@@ -240,7 +254,35 @@ class WorkRuntime:
                 return self.detail(work_id)
             return self._record_execution_failure(work_id, step, occurrence)
         self.store.set_work_status(work_id, "completed")
-        return self.detail(work_id)
+        return self._notify_terminal(self.detail(work_id))
+
+    def reconcile_orchestration_actions(self) -> tuple[str, ...]:
+        """Resolve interrupted work.create occurrences from the Work they durably created."""
+        changed=[]
+        for occurrence in self.actions.unresolved(capability_id="work.create", scope="atlas/work"):
+            if occurrence.status != "uncertain":
+                continue
+            payload = occurrence.payload or {}
+            origin = payload.get("origin") if isinstance(payload.get("origin"), dict) else {}
+            owner_turn_id = str(origin.get("owner_turn_id") or "")
+            steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+            objective = str(payload.get("objective") or "")
+            if not owner_turn_id or not objective or not steps:
+                continue
+            item = self.store.find_by_origin_key(_chat_work_key(owner_turn_id, objective, steps))
+            if item is None:
+                continue
+            detail = self.detail(item.work_id)
+            if bool(payload.get("run", True)) and detail.get("status") == "queued" and bool(item.metadata.get("auto_resume_on_recovery")):
+                detail = self.run(item.work_id)
+            receipt = {**(occurrence.receipt or {}), "reconciled_from_work": item.work_id}
+            self.actions.transition(
+                occurrence.occurrence_id, from_status=("uncertain",), to_status="succeeded",
+                result_json=json.dumps(detail,default=str,ensure_ascii=False),
+                receipt_json=json.dumps(receipt,sort_keys=True,separators=(",",":"),default=str,ensure_ascii=False),
+            )
+            changed.append(occurrence.occurrence_id)
+        return tuple(changed)
 
     def pause(self, work_id: str):
         return self.store.set_work_status(work_id, "paused")
@@ -259,7 +301,8 @@ class WorkRuntime:
         work = self.store.get(work_id)
         if self.cancel_hook is not None:
             self.cancel_hook(work)
-        return self.store.cancel(work_id)
+        self.store.cancel(work_id)
+        return self._notify_terminal(self.detail(work_id))
 
 
 def register_work_capabilities(registry, runtime:WorkRuntime)->None:
@@ -287,8 +330,7 @@ def register_work_capabilities(registry, runtime:WorkRuntime)->None:
             metadata={"auto_resume_on_recovery":run}
             if origin:
                 owner_turn_id=str(origin["owner_turn_id"]);conversation_id=str(origin["conversation_id"])
-                signature=json.dumps({"objective":payload["objective"],"steps":payload["steps"]},sort_keys=True,separators=(",",":"),ensure_ascii=False,default=str)
-                work_key=hashlib.sha256(f"{owner_turn_id}\n{signature}".encode("utf-8")).hexdigest()
+                work_key=_chat_work_key(owner_turn_id,payload["objective"],payload["steps"])
                 metadata["chat_origin"]={"conversation_id":conversation_id,"owner_turn_id":owner_turn_id,"work_key":work_key}
             work=runtime.create(payload["objective"],payload["steps"],owner_principal_id=principal,metadata=metadata,adopt_occurrence_id=adopt)
             result=runtime.run(work.work_id) if run else runtime.detail(work.work_id)

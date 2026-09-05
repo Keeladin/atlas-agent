@@ -122,4 +122,4 @@ def test_registry_drift_pauses_work_instead_of_failing_objective(tmp_path):
     detail = rt.work.run(work.work_id)
     assert detail["status"] == "paused"
     assert detail["steps"][0]["status"] == "waiting"
-    assert "unknown capability" in (detail["steps"][0]["error"] or "")
+    assert "capability unavailable: test.temp" in (detail["steps"][0]["error"] or "")

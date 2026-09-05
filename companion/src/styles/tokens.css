@@ -3797,6 +3797,7 @@ body::before {
 .shell-runtime.failed { color: var(--signal-red); }
 .shell-runtime.failed i { background: var(--signal-red); }
 .shell-runtime b { color: var(--faint); margin-left: .25rem; font-weight: 500; }
+.runtime-revision-mismatch { display:inline-flex; align-items:center; min-height:28px; padding:0 .55rem; border:1px solid rgba(255,184,77,.32); border-radius:5px; color:var(--signal-amber); background:rgba(255,184,77,.06); font-family:var(--mono); font-size:.58rem; white-space:nowrap; }
 .atlas-shell-v4 .topbar-control { min-height: 30px; display: inline-flex; align-items: center; padding: 0 .72rem; border: 1px solid rgba(130,195,245,.15); border-radius: 6px; color: #a9b7ca; font-size: .64rem; }
 .atlas-shell-v4 .signout { font-size: .58rem; letter-spacing: .08em; }
 .shell-body { flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }

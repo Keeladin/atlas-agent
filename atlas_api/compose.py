@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,7 @@ from atlas_providers.web_configured import ConfiguredWebProvider
 @dataclass
 class AtlasRuntime:
     instance_root: Path
+    runtime_revision: str
     identities: IdentityStore
     policy_store: PolicyStore
     policy: OwnerPolicy
@@ -90,7 +92,8 @@ class AtlasRuntime:
     def public_state(self) -> dict[str, Any]:
         owner = self.identities.current_owner()
         return {
-            "version": "3.5.0",
+            "version": self.runtime_revision,
+            "runtime_revision": self.runtime_revision,
             "owner": owner.as_dict(),
             "policy_revision": self.policy_store.revision(),
             "providers": list(self.providers.public_state()),
@@ -128,7 +131,25 @@ class AtlasRuntime:
 
 
 
+def _runtime_revision() -> str:
+    """Resolve the source revision once at runtime construction."""
+    explicit = str(os.environ.get("ATLAS_RUNTIME_REVISION") or "").strip()
+    if explicit:
+        return explicit
+    root = Path(__file__).resolve().parents[1]
+    try:
+        proc = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], text=True, capture_output=True, timeout=2, check=False)
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return "unknown"
+        revision = proc.stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"], text=True, capture_output=True, timeout=2, check=False)
+        return revision + ("-dirty" if dirty.returncode == 0 and dirty.stdout.strip() else "")
+    except Exception:
+        return "unknown"
+
+
 def build_runtime(instance_root: str | Path) -> AtlasRuntime:
+    runtime_revision = _runtime_revision()
     root = Path(instance_root)
     root.mkdir(parents=True, exist_ok=True)
     identity_db = root / "atlas-identity.db"
@@ -188,7 +209,7 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
         sensitive_host.extend((owner_home / ".ssh", owner_home / ".gnupg"))
     host = HostRuntime(
         registry, actions_store, protected_paths=tuple(sensitive_host),
-        self_service_unit=os.environ.get("ATLAS_SERVICE_UNIT") or None,
+        self_service_unit=os.environ.get("ATLAS_SERVICE_UNIT") or None, runtime_revision=runtime_revision,
     )
     knowledge_store = KnowledgeStore(work_database); knowledge_store.initialize()
     passages = PassageStore(work_database); passages.initialize()
@@ -223,7 +244,7 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     work.set_completion_hook(chat.record_work_completion)
 
     runtime = AtlasRuntime(
-        root, identities, policy_store, policy, work_database, actions_store, evidence, registry,
+        root, runtime_revision, identities, policy_store, policy, work_database, actions_store, evidence, registry,
         actions, capabilities, credentials, provider_settings, providers,
         mcp_store, mcp, source_roots, sources, web_provider_settings, web_providers, web, host, knowledge_store, knowledge, library_store, library,
         passages, generations, indexing, artifact_store, artifacts, managed_intake, artifact_intake_store, artifact_intake, uploads, model_inference, representations, memory_store, memory,

@@ -9,6 +9,7 @@ def _client(tmp_path, monkeypatch):
     monkeypatch.setenv("ATLAS_COMPANION_PASSWORD", "secret")
     monkeypatch.setenv("ATLAS_SESSION_SECRET", "test-session-secret")
     monkeypatch.setenv("ATLAS_ENV", "development")
+    monkeypatch.setenv("ATLAS_RUNTIME_REVISION", "test-revision")
     app = create_app(instance_root=tmp_path / "instance", static_dir=tmp_path / "missing")
     return TestClient(app)
 
@@ -26,7 +27,12 @@ def test_owner_control_routes_are_authenticated_and_policy_is_live(tmp_path, mon
         headers = {"X-CSRF-Token": csrf}
         state = client.get("/api/system")
         assert state.status_code == 200
-        assert state.json()["version"] == "3.5.0"
+        assert state.json()["version"] == "test-revision"
+        assert state.json()["runtime_revision"] == "test-revision"
+        health = client.get("/api/health").json()
+        assert health["version"] == "test-revision"
+        assert health["runtime_revision"] == "test-revision"
+        assert state.json()["host"]["status"]["runtime_revision"] == "test-revision"
 
         update = client.post(
             "/api/policy",

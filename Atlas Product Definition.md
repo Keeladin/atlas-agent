@@ -38,6 +38,8 @@ Chat authors and interprets ordinary Work and recurring `work_template` Cadence 
 
 The model proposes when an objective deserves durable ownership, but it is not the sole continuity boundary. After resource resolution, `CapabilityRuntime` refuses an action that cannot safely remain owned by an ephemeral caller unless a real `work_id` is present. Self-restart is the canonical example: Atlas may discuss or inspect it in Chat, but the restart itself must belong to Work before dispatch. Runtime service identity must itself be grounded: configured and cgroup/MainPID-derived identity may agree, otherwise Atlas fails closed. An already-dispatched `uncertain` action is never replayed; identical in-turn retries are deterministically refused, and if an obligation remains, Work may adopt that exact occurrence after deterministic identity checks. Terminal Chat-origin Work reports through one deduplicated completion path whether completion occurred normally or during recovery.
 
+Ordered obligations inherit durability across that boundary: once one step requires durable ownership, any still-unsatisfied composable suffix remains part of the same responsibility instead of being forgotten when the runtime restarts. Planner failure itself is observable state: Atlas retries one unusable `chat.turn` result, records compact provider diagnostics on the turn, and reports `planner_unavailable` rather than fabricating a normal reply.
+
 ### Done means
 
 A policy change made after Work was created still governs the eventual side effect, and the evidence records the resulting action state.

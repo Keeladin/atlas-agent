@@ -61,8 +61,8 @@ def _current_service_unit()->str|None:
 
 class HostRuntime:
     """Deterministic host observation and user-systemd administration."""
-    def __init__(self,registry:CapabilityRegistry,actions:ActionStore,*,protected_paths:tuple[Path,...]=(),self_service_unit:str|None=None)->None:
-        self.registry=registry;self.actions=actions
+    def __init__(self,registry:CapabilityRegistry,actions:ActionStore,*,protected_paths:tuple[Path,...]=(),self_service_unit:str|None=None,runtime_revision:str="unknown")->None:
+        self.registry=registry;self.actions=actions;self.runtime_revision=runtime_revision
         self.protected_paths=tuple(path.expanduser().resolve(strict=False) for path in protected_paths)
         configured=_unit(self_service_unit) if self_service_unit else None
         detected=_current_service_unit()
@@ -93,7 +93,7 @@ class HostRuntime:
             self.registry.register(CapabilityRegistration(CapabilityDefinition(f"host.package.{op}",f"{op.title()} an exact Debian package from configured APT sources.",op,effect,package_schema,source="host",tags=("host","package","mutation")),lambda p,_op=op:self._package_scope(p,_op),lambda p,_op=op:self.package_mutate(_op,p),availability=_trusted_package_broker,metadata={"scope_hint":"host/package"}),replace=True)
         self.registry.register(CapabilityRegistration(CapabilityDefinition("host.package.refresh","Refresh configured APT package metadata.","refresh","external",empty,source="host",tags=("host","package","mutation")),lambda p:ScopeResolution("host/package/index",{},"Refresh APT package metadata"),lambda p:self.package_refresh(),availability=_trusted_package_broker,metadata={"scope_hint":"host/package/index"}),replace=True)
     def status(self)->ActionResult:
-        out={"hostname":os.uname().nodename,"kernel":os.uname().release,"pid":os.getpid(),"uid":os.getuid(),"invocation_id":os.environ.get("INVOCATION_ID"),"service_unit":self.self_service_unit,"service_identity_source":self.self_service_identity_source,"timestamp":_iso()};return ActionResult(True,out,{"ok":True,"observed_at":out["timestamp"]})
+        out={"hostname":os.uname().nodename,"kernel":os.uname().release,"pid":os.getpid(),"uid":os.getuid(),"invocation_id":os.environ.get("INVOCATION_ID"),"service_unit":self.self_service_unit,"service_identity_source":self.self_service_identity_source,"runtime_revision":self.runtime_revision,"timestamp":_iso()};return ActionResult(True,out,{"ok":True,"observed_at":out["timestamp"]})
     def resources(self)->ActionResult:
         mem={}
         try:

@@ -44,6 +44,9 @@ function QuickCommand() {
   return <form className="shell-command" onSubmit={submit}><span aria-hidden>✦</span><input aria-label="Quick command" value={value} onChange={event => setValue(event.target.value)} placeholder="Quick command…" /><kbd>⌘ K</kbd></form>
 }
 
+const BUILD_REVISION = import.meta.env.VITE_ATLAS_BUILD_SHA || 'unknown'
+const shortRevision = (value?: string | null) => value && value !== 'unknown' ? value.replace(/-dirty$/, '').slice(0, 12) + (value.endsWith('-dirty') ? '-dirty' : '') : 'unknown'
+
 const NAV_ITEMS: Array<{ to: string; label: string; icon: NavIcon; end?: boolean }> = [
   { to: '/', label: 'Home', icon: 'home', end: true },
   { to: '/work', label: 'Work', icon: 'work' },
@@ -53,12 +56,14 @@ const NAV_ITEMS: Array<{ to: string; label: string; icon: NavIcon; end?: boolean
 ]
 
 export function Shell({ onLogout }: { onLogout: () => void }) {
-  const health = useQuery({ queryKey: ['health'], queryFn: () => api<{ ok: boolean; version: string }>('/api/health'), refetchInterval: 20000 })
+  const health = useQuery({ queryKey: ['health'], queryFn: () => api<{ ok: boolean; version: string; runtime_revision?: string }>('/api/health'), refetchInterval: 20000 })
+  const runtimeRevision = health.data?.runtime_revision || health.data?.version
+  const revisionMismatch = Boolean(runtimeRevision && BUILD_REVISION !== 'unknown' && runtimeRevision !== BUILD_REVISION)
   return <div className="app-shell atlas-shell-v4">
     <header className="topbar">
       <Link className="brand" to="/" aria-label="Atlas surface"><AtlasMark /><strong>Atlas</strong><span className="brand-subtitle">owner surface</span></Link>
       <QuickCommand />
-      <div className="topbar-actions"><span className={`shell-runtime ${health.data?.ok ? 'ready' : health.isError ? 'failed' : ''}`}><i />{health.data?.ok ? 'Runtime Ready' : health.isError ? 'Runtime Offline' : 'Checking'}{health.data?.version ? <b>v{health.data.version}</b> : null}</span><InstallAtlas /><Attention /><Link className="topbar-control" to="/atlas">Control Center</Link><button type="button" className="signout" onClick={onLogout}>Sign out</button></div>
+      <div className="topbar-actions">{revisionMismatch ? <Link className="runtime-revision-mismatch" to="/atlas" title={`Companion ${BUILD_REVISION} · runtime ${runtimeRevision}`}>Build {shortRevision(BUILD_REVISION)} ≠ runtime {shortRevision(runtimeRevision)}</Link> : null}<span className={`shell-runtime ${health.data?.ok ? 'ready' : health.isError ? 'failed' : ''}`}><i />{health.data?.ok ? 'Runtime Ready' : health.isError ? 'Runtime Offline' : 'Checking'}{runtimeRevision ? <b>{shortRevision(runtimeRevision)}</b> : null}</span><InstallAtlas /><Attention /><Link className="topbar-control" to="/atlas">Control Center</Link><button type="button" className="signout" onClick={onLogout}>Sign out</button></div>
     </header>
     <div className="shell-body">
       <nav className="primary-rail" aria-label="Primary">{NAV_ITEMS.map(item => <NavLink key={item.to} to={item.to} end={item.end} aria-label={item.label}><ShellIcon name={item.icon} /><span>{item.label}</span></NavLink>)}</nav>

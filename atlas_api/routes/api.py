@@ -45,7 +45,8 @@ def _error(exc: Exception, status: int = 400) -> JSONResponse:
 
 
 async def health(request: Request) -> JSONResponse:
-    return JSONResponse({"ok": True, "service": "atlas-api", "version": "3.5.0"})
+    revision = _runtime(request).runtime_revision
+    return JSONResponse({"ok": True, "service": "atlas-api", "version": revision, "runtime_revision": revision})
 
 
 async def auth_session(request: Request) -> JSONResponse:

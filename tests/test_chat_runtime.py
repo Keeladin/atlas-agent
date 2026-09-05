@@ -48,9 +48,10 @@ def test_chat_system_prompt_preserves_atlas_conversational_identity(tmp_path):
     owner = identities.current_owner()
     runtime = ChatRuntime(store, provider, None, None, None, None, identities)
 
-    decision = runtime._decision(cid, "hi atlas", [], [], [], owner.principal_id)
+    decision, attempts = runtime._decision(cid, "hi atlas", [], [], [], owner.principal_id)
 
     assert decision == {"kind": "reply", "reply": "Hey"}
+    assert len(attempts) == 1 and attempts[0]["error_code"] is None
     assert len(provider.requests) == 1
     system = provider.requests[0].system
     assert "active, engaged, and persistent operational companion" in system
@@ -198,7 +199,8 @@ def test_post_reply_auto_capture_yes_does_not_hijack_turn(tmp_path):
     runtime, cid, owner, action_store = _chat_with_memory(tmp_path, "YES")
     result = runtime.send(cid, "I prefer metric units", principal_id=owner.principal_id)
     assert result["turn"]["content"] == "Got it."
-    assert result["turn"]["metadata"] == {"tools_used": []}
+    assert result["turn"]["metadata"]["tools_used"] == []
+    assert result["turn"]["metadata"]["planner"]["status"] == "ok"
     rows = [row for row in action_store.recent(limit=20) if row.capability_id == "memory.remember"]
     assert len(rows) == 1 and rows[0].status == "succeeded"
 
@@ -207,7 +209,8 @@ def test_post_reply_auto_capture_no_still_creates_blocked_evidence(tmp_path):
     runtime, cid, owner, action_store = _chat_with_memory(tmp_path, "NO")
     result = runtime.send(cid, "I prefer metric units", principal_id=owner.principal_id)
     assert result["turn"]["content"] == "Got it."
-    assert result["turn"]["metadata"] == {"tools_used": []}
+    assert result["turn"]["metadata"]["tools_used"] == []
+    assert result["turn"]["metadata"]["planner"]["status"] == "ok"
     rows = [row for row in action_store.recent(limit=20) if row.capability_id == "memory.remember"]
     assert len(rows) == 1
     assert rows[0].status == "blocked"
@@ -628,3 +631,57 @@ def test_unrelated_capability_query_keeps_core_signposts_available(tmp_path):
     assert "work.create" in ids
     assert "knowledge.ingest" in ids
     assert "artifacts.list" in ids
+
+class PlannerSequenceProvider:
+    def __init__(self, *responses: ModelResponse) -> None:
+        self.responses = list(responses)
+        self.requests = []
+
+    def generate(self, request):
+        self.requests.append(request)
+        return self.responses.pop(0)
+
+
+def test_planner_retries_one_unusable_response_and_records_evidence(tmp_path):
+    runtime = build_runtime(tmp_path / "instance")
+    owner = runtime.identities.current_owner()
+    conversation_id = runtime.chat_store.create_conversation("Planner retry")["conversation_id"]
+    runtime.chat.provider = PlannerSequenceProvider(
+        ModelResponse(text="", provider_key="test-a", model="planner-a", raw={"choices": [{"finish_reason": "stop"}]}, metrics={"input_tokens": 10}),
+        ModelResponse(text='{"kind":"reply","reply":"Recovered planner response."}', provider_key="test-b", model="planner-b", raw={"choices": [{"finish_reason": "stop"}]}, metrics={"output_tokens": 7}),
+    )
+
+    result = runtime.chat.send(conversation_id, "Say something", principal_id=owner.principal_id, defer_capture=True)
+
+    assert result["turn"]["content"] == "Recovered planner response."
+    planner = result["turn"]["metadata"]["planner"]
+    assert planner["status"] == "ok"
+    assert planner["attempt_count"] == 2
+    assert planner["attempts"][0]["error_code"] == "planner_empty_response"
+    assert planner["attempts"][0]["provider"] == "test-a"
+    assert planner["attempts"][0]["finish_reason"] == "stop"
+    assert planner["attempts"][0]["metrics"]["input_tokens"] == 10
+    assert planner["attempts"][1]["error_code"] is None
+    assert planner["attempts"][1]["model"] == "planner-b"
+    assert planner["attempts"][1]["salvage_path"] is False
+
+
+def test_planner_failure_is_typed_evidenced_and_does_not_execute(tmp_path):
+    runtime = build_runtime(tmp_path / "instance")
+    owner = runtime.identities.current_owner()
+    conversation_id = runtime.chat_store.create_conversation("Planner unavailable")["conversation_id"]
+    runtime.chat.provider = PlannerSequenceProvider(
+        ModelResponse(text="not json", provider_key="test", model="planner", raw={}, metrics={}),
+        ModelResponse(text="", provider_key="test", model="planner", raw={}, metrics={}),
+    )
+
+    result = runtime.chat.send(conversation_id, "Do a thing", principal_id=owner.principal_id, defer_capture=True)
+
+    assert result["turn"]["content"] == "The planning model didn't return a usable route; nothing was executed."
+    assert result["turn"]["metadata"]["error"] == "planner_unavailable"
+    planner = result["turn"]["metadata"]["planner"]
+    assert planner["status"] == "unavailable"
+    assert planner["attempt_count"] == 2
+    assert [row["error_code"] for row in planner["attempts"]] == ["planner_unparseable_response", "planner_empty_response"]
+    assert runtime.work_store.list() == ()
+    assert runtime.actions_store.recent(limit=10) == ()

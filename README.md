@@ -81,6 +81,8 @@ The conversational model selects capabilities and arguments. It does not decide 
 
 Chat may execute ordinary in-turn reads, retrieval chains and bounded actions directly, while Work owns responsibilities that must survive the turn. That boundary has a runtime floor: after scope resolution a capability can require durable Work, and `CapabilityRuntime` refuses the ephemeral invocation before dispatch. The self-restart path derives Atlas's user-systemd identity from configured state and a cgroup/MainPID check, fails on disagreement, and refuses user-service restart when identity is unknown. Exact unresolved/refused actions are non-replayable within one Chat turn; Chat may observe an uncertain occurrence or adopt that same occurrence into Work when a residual obligation remains. Work step/action binding is persisted before executor dispatch, restart evidence survives recovery, restart throttling is timestamp-based rather than row-bounded, and terminal Chat-origin Work posts through one deduplicated completion path in both ordinary execution and restart recovery.
 
+The API and Companion expose deployment truth directly: the running API reports the Git revision it loaded, the frontend is stamped with its build revision, and a mismatch is surfaced in the owner UI. `chat.turn` planner calls retain compact provider/latency/finish/usage/parse diagnostics; one unusable result is retried once and a second failure is reported as `planner_unavailable` without executing a guessed route.
+
 ## Persistence
 
 Production state is separate from the code checkout. The deployed instance root is:

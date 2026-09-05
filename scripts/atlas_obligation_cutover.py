@@ -7,7 +7,12 @@ import subprocess
 from pathlib import Path
 from typing import Iterable
 
-DB_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
+ATLAS_STATE_DATABASES = (
+    "atlas-identity.db",
+    "atlas-work.db",
+    "atlas-chat.db",
+    "atlas-cadence.db",
+)
 
 def _service(command: str, unit: str) -> None:
     proc = subprocess.run(["systemctl", "--user", command, unit], text=True, capture_output=True, check=False)
@@ -19,11 +24,14 @@ def _service_is_stopped(unit: str) -> bool:
     return proc.stdout.strip() in {"inactive", "failed", "unknown"}
 
 def _sqlite_state(root: Path) -> tuple[Path, ...]:
-    rows = []
-    for path in root.rglob("*"):
-        if path.is_file() and (path.suffix.casefold() in DB_SUFFIXES or path.name.endswith(("-wal", "-shm"))):
-            rows.append(path)
-    return tuple(sorted(rows))
+    """Return only canonical Atlas runtime databases and their SQLite sidecars."""
+    rows: list[Path] = []
+    for name in ATLAS_STATE_DATABASES:
+        main = root / name
+        for path in (main, Path(str(main) + "-wal"), Path(str(main) + "-shm")):
+            if path.is_file():
+                rows.append(path)
+    return tuple(rows)
 
 def _verify_sqlite(path: Path) -> None:
     uri = f"file:{path.resolve()}?mode=ro"
@@ -59,7 +67,7 @@ def perform_cutover(instance_root: Path, *, service_unit: str | None = None, ass
         if violations:
             raise RuntimeError("fresh cutover schema failed invariants: " + "; ".join(f"{x.code}:{x.reference}" for x in violations))
         for path in _sqlite_state(instance_root):
-            if path.suffix.casefold() in DB_SUFFIXES:
+            if path.name in ATLAS_STATE_DATABASES:
                 _verify_sqlite(path)
         success = True
         return {"ok": True, "instance_root": str(instance_root), "removed_sqlite_files": list(removed), "runtime_revision": runtime.runtime_revision}

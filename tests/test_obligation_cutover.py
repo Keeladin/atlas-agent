@@ -15,11 +15,23 @@ def test_cutover_destroys_sqlite_state_and_preserves_non_sqlite_files(tmp_path):
     payload.parent.mkdir(parents=True, exist_ok=True); payload.write_text("keep payload")
     secret = root / "secrets" / "keep.secret"
     secret.parent.mkdir(parents=True, exist_ok=True); secret.write_text("keep secret")
+    thumbnail_cache = root / "library-clean" / "manual" / "Thumbs.db"
+    thumbnail_cache.parent.mkdir(parents=True, exist_ok=True); thumbnail_cache.write_bytes(b"thumbnail cache")
+    credentials_db = root / "secrets" / "credentials.db"
+    with sqlite3.connect(credentials_db) as db:
+        db.execute("CREATE TABLE custody_marker(value TEXT NOT NULL)")
+        db.execute("INSERT INTO custody_marker(value) VALUES ('preserve-me')")
 
     result = perform_cutover(root, assume_stopped=True)
     assert "rollback" not in result
     assert payload.read_text() == "keep payload"
     assert secret.read_text() == "keep secret"
+    assert thumbnail_cache.read_bytes() == b"thumbnail cache"
+    with sqlite3.connect(credentials_db) as db:
+        assert db.execute("SELECT value FROM custody_marker").fetchone()[0] == "preserve-me"
+    assert set(result["removed_sqlite_files"]) == {
+        "atlas-identity.db", "atlas-work.db", "atlas-chat.db", "atlas-cadence.db",
+    }
     fresh = build_runtime(root)
     assert fresh.chat_store.conversations() == ()
     assert fresh.obligation_store.list_open() == ()

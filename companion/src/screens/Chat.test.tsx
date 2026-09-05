@@ -147,3 +147,57 @@ it('treats a restart 502 as reconnectable transport loss when the durable turn a
   expect(screen.queryByText('HTTP 502')).toBeNull()
   await waitFor(() => expect(box).toHaveValue(''))
 })
+
+it('keeps following durable Work after a restart transport loss until the completion turn arrives', async () => {
+  let restarted = false
+  let postRestartReads = 0
+  const durableWork = {
+    work_id: 'work_restart', objective: 'Restart Atlas and verify health', status: 'waiting', owner_principal_id: 'owner',
+    created_at: '2026-09-05 02:27:13', updated_at: '2026-09-05 02:27:19', revision: 1,
+    metadata: { chat_origin: { conversation_id: 'conversation_1', owner_turn_id: 'u2' } },
+  }
+  const baseTurns = [
+    { turn_id: 'u1', conversation_id: 'conversation_1', role: 'user', content: 'Hello Atlas', metadata: {} },
+    { turn_id: 'a1', conversation_id: 'conversation_1', role: 'assistant', content: 'Hello there', metadata: {} },
+  ]
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input)
+    if (path === '/api/work') return Response.json({ work: restarted ? [durableWork] : [] })
+    if (path === '/api/cadence') return Response.json({ cadences: [] })
+    if (path === '/api/health') return Response.json({ ok: true, service: 'atlas-api', version: '4' })
+    if (path === '/api/chat/conversations' && (!init?.method || init.method === 'GET')) return Response.json({ conversations: [conversation] })
+    if (path === '/api/chat/conversations/conversation_1' && (!init?.method || init.method === 'GET')) {
+      if (!restarted) return Response.json({ conversation, turns: baseTurns })
+      postRestartReads += 1
+      const turns = [
+        ...baseTurns,
+        { turn_id: 'u2', conversation_id: 'conversation_1', role: 'user', content: 'Restart and verify', metadata: {} },
+        { turn_id: 'a2', conversation_id: 'conversation_1', role: 'assistant', content: 'Restart dispatched as durable Work', metadata: { objects: [{ kind: 'work', id: 'work_restart' }] } },
+      ]
+      if (postRestartReads >= 2) turns.push({
+        turn_id: 'a3', conversation_id: 'conversation_1', role: 'assistant', content: 'Completed: Atlas is active/running.',
+        metadata: { work_completion: { work_id: 'work_restart', terminal_status: 'completed' }, objects: [{ kind: 'work', id: 'work_restart' }] },
+      })
+      return Response.json({ conversation, turns })
+    }
+    if (path === '/api/chat/conversations/conversation_1/messages' && init?.method === 'POST') {
+      restarted = true
+      return new Response('', { status: 502 })
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  render(<QueryClientProvider client={client}><MemoryRouter><Chat /></MemoryRouter></QueryClientProvider>)
+  await screen.findByText('Hello there')
+  const box = screen.getByRole('textbox', { name: 'Message' })
+  fireEvent.change(box, { target: { value: 'Restart and verify' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+  expect(await screen.findByText('Restart dispatched as durable Work')).toBeInTheDocument()
+  expect(screen.queryByText('HTTP 502')).toBeNull()
+  expect(await screen.findByText('Atlas is continuing durable Work')).toBeInTheDocument()
+  expect(await screen.findByText('Completed: Atlas is active/running.', {}, { timeout: 4000 })).toBeInTheDocument()
+  expect(screen.queryByText('HTTP 502')).toBeNull()
+  await waitFor(() => expect(screen.queryByText('Atlas is continuing durable Work')).toBeNull(), { timeout: 4000 })
+})

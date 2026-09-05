@@ -131,6 +131,7 @@ Owner-turn auto-capture runs only after the conversational reply is already prod
 ## Companion
 
 Companion now opens on one owner surface rather than a permanent four-item product nav. The `/chat` surface combines the current conversation with an operational-awareness strip for Active Work, Cadence, Needs you and Control, plus a live right margin for active Work, scheduled duties and deeper plumbing links. Work, Cadence, Sources, Memory and Control remain real routes and deep operational views, but they are subordinate to the owner surface rather than competing top-level products.
+Chat transport recovery follows durable state rather than HTTP status: after a recoverable disconnect, Companion refetches the owner turn and any Chat-origin Work, clears the transient request error once durable ownership is found, and continues following the conversation until the Work completion turn arrives.
 
 `/atlas` is the technical Control surface. It shows and edits the live runtime configuration: policy, providers, MCP/n8n servers, external account bindings, source roots, host state and capability inventory. The Capabilities view is runtime-driven: newly discovered tools appear without a frontend code change, and their advertised schemas drive the generic input form and execution controls.
 

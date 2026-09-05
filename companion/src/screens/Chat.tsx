@@ -16,6 +16,7 @@ type Health = { ok: boolean; service: string; version: string }
 type Attachment = { artifact_id: string; display_name: string; media_type?: string | null; created_at?: string | null }
 type SendRequest = { conversationId: string; text: string; focus?: ChatFocus | null; attachments: Attachment[]; baselineTurnId?: string | null }
 type RecoveringSend = { conversationId: string; text: string; baselineTurnId: string | null; startedAt: number }
+type CompletionWatch = { conversationId: string; ownerTurnId: string; workIds: string[]; startedAt: number }
 type UploadResponse = { artifact: Attachment }
 
 function shouldRecoverSend(error: unknown) {
@@ -46,6 +47,23 @@ function objectsForTurn(turn: ChatTurn): RuntimeObjectDescriptor[] {
     const id = typeof row.id === 'string' ? row.id : ''
     return id && (kind === 'work' || kind === 'artifact' || kind === 'cadence') ? [{ kind, id } as RuntimeObjectDescriptor] : []
   })
+}
+
+
+function workOrigin(item: WorkItem) {
+  const raw = item.metadata?.chat_origin
+  if (!raw || typeof raw !== 'object') return null
+  const row = raw as Record<string, unknown>
+  const conversationId = typeof row.conversation_id === 'string' ? row.conversation_id : ''
+  const ownerTurnId = typeof row.owner_turn_id === 'string' ? row.owner_turn_id : ''
+  return conversationId && ownerTurnId ? { conversationId, ownerTurnId } : null
+}
+
+function completionWorkId(turn: ChatTurn) {
+  const raw = turn.metadata?.work_completion
+  if (!raw || typeof raw !== 'object') return ''
+  const value = (raw as Record<string, unknown>).work_id
+  return typeof value === 'string' ? value : ''
 }
 
 function attachmentsForTurn(turn: ChatTurn): Attachment[] {
@@ -79,6 +97,7 @@ export function Chat() {
   const [conversationFilter, setConversationFilter] = useState('')
   const [traceTurn, setTraceTurn] = useState<string | null>(null)
   const [recoveringSend, setRecoveringSend] = useState<RecoveringSend | null>(null)
+  const [completionWatch, setCompletionWatch] = useState<CompletionWatch | null>(null)
   const threadEndRef = useRef<HTMLDivElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [searchParams, setSearchParams] = useSearchParams()
@@ -134,7 +153,7 @@ export function Chat() {
     queryKey: ['conversation', selected],
     queryFn: () => api<{ conversation: Conversation; turns: ChatTurn[] }>(`/api/chat/conversations/${selected}`),
     enabled: selectedValid,
-    refetchInterval: recoveringSend && recoveringSend.conversationId === selected ? 1500 : false,
+    refetchInterval: (recoveringSend && recoveringSend.conversationId === selected) || (completionWatch && completionWatch.conversationId === selected) ? 1500 : false,
   })
   const send = useMutation({
     mutationFn: ({ conversationId, text, focus, attachments: attached }: SendRequest) => api<{ turn: ChatTurn }>(`/api/chat/conversations/${conversationId}/messages`, {
@@ -158,6 +177,7 @@ export function Chat() {
       })
       void qc.invalidateQueries({ queryKey: ['conversation', variables.conversationId] })
       void qc.invalidateQueries({ queryKey: ['health'] })
+      void qc.invalidateQueries({ queryKey: ['work'] })
     },
   })
 
@@ -178,6 +198,7 @@ export function Chat() {
   }
 
   const turns = useMemo(() => detail.data?.turns ?? [], [detail.data?.turns])
+  const workRows = useMemo(() => work.data?.work ?? [], [work.data?.work])
   useEffect(() => {
     if (!recoveringSend || recoveringSend.conversationId !== selected) return
     const baseline = recoveringSend.baselineTurnId
@@ -185,22 +206,52 @@ export function Chat() {
     const candidateTurns = baselineIndex >= 0 ? turns.slice(baselineIndex + 1) : turns
     const ownerIndex = candidateTurns.findIndex(turn => turn.role === 'user' && turn.content === recoveringSend.text)
     if (ownerIndex < 0) return
+    const ownerTurn = candidateTurns[ownerIndex]
+    const afterOwner = candidateTurns.slice(ownerIndex + 1)
     setMessage(''); setPendingFocus(null); setAttachments([]); setUploadError(null)
-    const completed = candidateTurns.slice(ownerIndex + 1).some(turn => turn.role === 'assistant')
-    if (!completed) return
-    setRecoveringSend(null); send.reset()
+
+    const relatedWork = workRows.filter(item => {
+      const origin = workOrigin(item)
+      return origin?.conversationId === recoveringSend.conversationId && origin.ownerTurnId === ownerTurn.turn_id
+    })
+    const completedWorkIds = new Set(afterOwner.map(completionWorkId).filter(Boolean))
+    if (relatedWork.length && relatedWork.every(item => completedWorkIds.has(item.work_id))) {
+      setRecoveringSend(null); setCompletionWatch(null); send.reset()
+    } else if (relatedWork.length) {
+      setCompletionWatch({ conversationId: recoveringSend.conversationId, ownerTurnId: ownerTurn.turn_id, workIds: relatedWork.map(item => item.work_id), startedAt: Date.now() })
+      setRecoveringSend(null); send.reset()
+    } else if (afterOwner.some(turn => turn.role === 'assistant')) {
+      setRecoveringSend(null); send.reset()
+    } else {
+      return
+    }
     void qc.invalidateQueries({ queryKey: ['conversations'] })
     void qc.invalidateQueries({ queryKey: ['work'] })
     void qc.invalidateQueries({ queryKey: ['cadence'] })
-  }, [recoveringSend, selected, turns, send, qc])
+  }, [recoveringSend, selected, turns, workRows, send, qc])
+
+  useEffect(() => {
+    if (!completionWatch || completionWatch.conversationId !== selected) return
+    const completed = new Set(turns.map(completionWorkId).filter(Boolean))
+    if (!completionWatch.workIds.every(workId => completed.has(workId))) return
+    setCompletionWatch(null)
+    void qc.invalidateQueries({ queryKey: ['conversations'] })
+    void qc.invalidateQueries({ queryKey: ['work'] })
+    void qc.invalidateQueries({ queryKey: ['cadence'] })
+  }, [completionWatch, selected, turns, qc])
 
   useEffect(() => {
     if (!recoveringSend) return
-    const timeout = window.setTimeout(() => setRecoveringSend(null), 30000)
+    const timeout = window.setTimeout(() => setRecoveringSend(null), 60000)
     return () => window.clearTimeout(timeout)
   }, [recoveringSend])
 
-  const workRows = work.data?.work ?? []
+  useEffect(() => {
+    if (!completionWatch) return
+    const timeout = window.setTimeout(() => setCompletionWatch(null), 15 * 60 * 1000)
+    return () => window.clearTimeout(timeout)
+  }, [completionWatch])
+
   const activeWork = workRows.filter(item => ['active', 'queued', 'waiting', 'paused'].includes(item.status)).slice(0, 6)
   const attentionWork = workRows.filter(item => ['failed', 'paused', 'waiting'].includes(item.status))
   const enabledCadence = (cadence.data?.cadences ?? []).filter(item => item.enabled).slice(0, 5)
@@ -235,7 +286,7 @@ export function Chat() {
   return <div className="owner-canvas">
     <header className="owner-canvas-head">
       <div className="owner-canvas-title">
-        <span className="owner-canvas-kicker"><StatusLamp tone={send.isPending || recoveringSend ? 'amber' : runtimeTone} />{recoveringSend ? 'Reconnecting' : send.isPending ? 'Working' : health.data?.ok ? 'Ready' : 'Runtime'}</span>
+        <span className="owner-canvas-kicker"><StatusLamp tone={send.isPending || recoveringSend || completionWatch ? 'amber' : runtimeTone} />{recoveringSend ? 'Reconnecting' : send.isPending ? 'Working' : completionWatch ? 'Continuing' : health.data?.ok ? 'Ready' : 'Runtime'}</span>
         <h1>{currentConversation?.title || 'Atlas'}</h1>
       </div>
       <div className="owner-canvas-actions">
@@ -284,7 +335,7 @@ export function Chat() {
             </div>
           </article>
         })}
-        {send.isPending || recoveringSend ? <div className="owner-working"><StatusLamp tone="amber" /><span>{recoveringSend ? 'Atlas is reconnecting to durable state' : 'Atlas is working'}</span></div> : null}
+        {send.isPending || recoveringSend || completionWatch ? <div className="owner-working"><StatusLamp tone="amber" /><span>{recoveringSend ? 'Atlas is reconnecting to durable state' : send.isPending ? 'Atlas is working' : 'Atlas is continuing durable Work'}</span></div> : null}
         {detail.isError && !recoveringSend ? <p className="owner-error">{detail.error.message}</p> : null}
         <div ref={threadEndRef} aria-hidden />
       </div>

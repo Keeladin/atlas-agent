@@ -96,7 +96,7 @@ class GenerationStore:
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(generations)")}
             if "build_owner_work_id" not in columns:
-                db.execute("ALTER TABLE generations ADD COLUMN build_owner_work_id TEXT")
+                raise RuntimeError("atlas-work.db requires development schema reset for generation ownership")
             # A generation stays exclusively owned from first passage through activation.
             # This prevents one intake from verifying/activating another intake's partial work.
             db.execute(

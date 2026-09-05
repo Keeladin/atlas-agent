@@ -32,17 +32,10 @@ class IdentityStore:
             """)
             owner=db.execute("SELECT value FROM identity_settings WHERE key='current_principal_id'").fetchone()
             if owner is None:
-                legacy=db.execute("SELECT value FROM identity_settings WHERE key='current_human_principal_id'").fetchone()
-                if legacy is not None:
-                    oid=str(legacy["value"])
-                    row=db.execute("SELECT principal_kind FROM principals WHERE principal_id=?",(oid,)).fetchone()
-                    if row is None or row["principal_kind"]!="human":raise IdentityError("legacy_owner_invalid")
-                else:
-                    existing=db.execute("SELECT principal_id FROM principals WHERE principal_kind='human' ORDER BY created_at,principal_id LIMIT 1").fetchone()
-                    oid=str(existing["principal_id"]) if existing is not None else f"principal_{uuid4().hex}"
-                    if existing is None:db.execute("INSERT INTO principals(principal_id,principal_kind,display_name,status) VALUES (?,?,?,'active')",(oid,"human",owner_display_name))
+                existing=db.execute("SELECT principal_id FROM principals WHERE principal_kind='human' ORDER BY created_at,principal_id LIMIT 1").fetchone()
+                oid=str(existing["principal_id"]) if existing is not None else f"principal_{uuid4().hex}"
+                if existing is None:db.execute("INSERT INTO principals(principal_id,principal_kind,display_name,status) VALUES (?,?,?,'active')",(oid,"human",owner_display_name))
                 db.execute("INSERT INTO identity_settings(key,value) VALUES ('current_principal_id',?)",(oid,))
-                db.execute("DELETE FROM identity_settings WHERE key='current_human_principal_id'")
     def principal(self,principal_id:str,*,require_active:bool=True)->Principal:
         with self._db() as db:row=db.execute("SELECT * FROM principals WHERE principal_id=?",(principal_id,)).fetchone()
         if row is None:raise IdentityError("principal_unknown")

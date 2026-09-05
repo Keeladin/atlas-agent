@@ -179,19 +179,10 @@ class IndexingRuntime:
                       if row["kind"] == "local_file" and (row["relative_path"] or "").startswith(DERIVED_MARKER)), None)
         if facet is None:
             raise PermissionError("extraction artifact has no managed derived-area representation")
-        rebased_from: str | None = None
         if generation_id:
             generation = self.generations.get(generation_id)
             if generation["state"] != "building":
-                # Durable resume compatibility: an older workflow may point at a generation
-                # that another intake activated while this work was paused. Rebase only if
-                # this source was already part of that generation; arbitrary writes to a
-                # closed generation remain forbidden.
-                if generation["state"] in {"active", "retired", "failed"} and self.contains_source(generation_id, source_artifact_id):
-                    rebased_from = generation_id
-                    generation = self.ensure_generation(source_artifact_id, occurrence_hint, owner_work_id)
-                else:
-                    raise ValueError("only a building generation accepts passages")
+                raise ValueError("only a building generation accepts passages")
             else:
                 owner = generation.get("build_owner_work_id")
                 if owner_work_id is None:
@@ -228,7 +219,6 @@ class IndexingRuntime:
                 passage_ids.append(passage_id)
         return {
             "generation_id": generation["generation_id"],
-            **({"rebased_from_generation_id": rebased_from} if rebased_from else {}),
             "source_artifact_id": source_artifact_id,
             "extraction_artifact_id": extraction_artifact_id,
             "passages": len(passage_ids), "new_contents": created, "shared_contents": shared,

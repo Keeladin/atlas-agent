@@ -25,11 +25,10 @@ class CadenceStore:
         finally:db.close()
     def initialize(self)->None:
         with self._db() as db:
-            db.execute("""CREATE TABLE IF NOT EXISTS cadences(cadence_id TEXT PRIMARY KEY,name TEXT NOT NULL,objective TEXT NOT NULL,schedule_json TEXT NOT NULL,steps_json TEXT NOT NULL,owner_principal_id TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,next_run_at TEXT,last_run_at TEXT,last_work_id TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS cadences(cadence_id TEXT PRIMARY KEY,name TEXT NOT NULL,objective TEXT NOT NULL,schedule_json TEXT NOT NULL,steps_json TEXT NOT NULL,owner_principal_id TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,next_run_at TEXT,last_run_at TEXT,last_work_id TEXT,kind TEXT NOT NULL DEFAULT 'work_template',intake_root_id TEXT,max_candidates INTEGER NOT NULL DEFAULT 25,last_result_json TEXT,run_token TEXT,run_claimed_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
             columns={row[1] for row in db.execute("PRAGMA table_info(cadences)")}
-            additions={"kind":"TEXT NOT NULL DEFAULT 'work_template'","intake_root_id":"TEXT","max_candidates":"INTEGER NOT NULL DEFAULT 25","last_result_json":"TEXT","run_token":"TEXT","run_claimed_at":"TEXT"}
-            for name,definition in additions.items():
-                if name not in columns: db.execute(f"ALTER TABLE cadences ADD COLUMN {name} {definition}")
+            required={"cadence_id","name","objective","schedule_json","steps_json","owner_principal_id","enabled","next_run_at","last_run_at","last_work_id","kind","intake_root_id","max_candidates","last_result_json","run_token","run_claimed_at","created_at","updated_at"}
+            if not required.issubset(columns): raise RuntimeError("atlas-cadence.db requires development schema reset")
     def create(self,*,name:str,objective:str,schedule:dict[str,Any],steps:list[dict[str,Any]],owner_principal_id:str,next_run_at:str|None,kind:str="work_template",intake_root_id:str|None=None,max_candidates:int=25)->Cadence:
         _validate({"name":name,"objective":objective,"schedule":schedule,"steps":steps,"kind":kind,"intake_root_id":intake_root_id,"max_candidates":max_candidates})
         cid=f"cadence_{uuid4().hex}"
@@ -77,6 +76,5 @@ class CadenceStore:
         with self._db() as db:db.execute("DELETE FROM cadences WHERE cadence_id=?",(cadence_id,))
 
 def _cadence(r:sqlite3.Row)->Cadence:
-    keys=set(r.keys())
-    result=json.loads(r["last_result_json"]) if "last_result_json" in keys and r["last_result_json"] else None
-    return Cadence(r["cadence_id"],r["name"],r["objective"],json.loads(r["schedule_json"]),json.loads(r["steps_json"]),r["owner_principal_id"],bool(r["enabled"]),r["next_run_at"],r["last_run_at"],r["last_work_id"],r["created_at"],r["updated_at"],r["kind"] if "kind" in keys else "work_template",r["intake_root_id"] if "intake_root_id" in keys else None,int(r["max_candidates"] if "max_candidates" in keys else 25),result)
+    result=json.loads(r["last_result_json"]) if r["last_result_json"] else None
+    return Cadence(r["cadence_id"],r["name"],r["objective"],json.loads(r["schedule_json"]),json.loads(r["steps_json"]),r["owner_principal_id"],bool(r["enabled"]),r["next_run_at"],r["last_run_at"],r["last_work_id"],r["created_at"],r["updated_at"],r["kind"],r["intake_root_id"],int(r["max_candidates"]),result)

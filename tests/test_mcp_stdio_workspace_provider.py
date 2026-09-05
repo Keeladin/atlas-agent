@@ -71,37 +71,21 @@ def test_stdio_mcp_is_discovered_and_policy_gates_invocation(tmp_path):
     assert result.result["structuredContent"]["value"] == "hello"
 
 
-def test_mcp_store_migrates_existing_http_only_schema(tmp_path):
+def test_mcp_store_refuses_pre_cutover_transport_schema(tmp_path):
     db_path = tmp_path / "identity.db"
     with sqlite3.connect(db_path) as db:
-        db.execute(
-            """CREATE TABLE mcp_servers(
-                server_id TEXT PRIMARY KEY,display_name TEXT NOT NULL,
-                kind TEXT NOT NULL CHECK(kind IN ('mcp','n8n')),
-                transport TEXT NOT NULL CHECK(transport IN ('streamable-http')),
-                url TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,
-                credential_ref TEXT,timeout_sec REAL NOT NULL DEFAULT 30,
-                read_timeout_sec REAL NOT NULL DEFAULT 300,last_error TEXT,
-                last_discovered_at TEXT,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )"""
-        )
-        db.execute(
-            "INSERT INTO mcp_servers(server_id,display_name,kind,transport,url) VALUES ('old','Old HTTP','mcp','streamable-http','http://127.0.0.1:9999/mcp')"
-        )
+        db.execute("""CREATE TABLE mcp_servers(
+            server_id TEXT PRIMARY KEY,display_name TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('mcp','n8n')),
+            transport TEXT NOT NULL CHECK(transport IN ('streamable-http')),
+            url TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,
+            credential_ref TEXT,timeout_sec REAL NOT NULL DEFAULT 30,
+            read_timeout_sec REAL NOT NULL DEFAULT 300,last_error TEXT,
+            last_discovered_at TEXT,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )""")
     store = MCPServerStore(db_path)
-    store.initialize()
-    assert store.get("old").url == "http://127.0.0.1:9999/mcp"
-    stdio = store.put(
-        server_id="local",
-        display_name="Local",
-        transport="stdio",
-        command="/usr/bin/python3",
-        args=["server.py"],
-    )
-    assert stdio.transport == "stdio"
-    assert stdio.command == "/usr/bin/python3"
-    assert stdio.args == ("server.py",)
-
+    with pytest.raises(RuntimeError, match="development schema reset"):
+        store.initialize()
 
 def test_workspace_provider_maps_google_discovery_methods_to_tools(tmp_path, monkeypatch):
     directory = {

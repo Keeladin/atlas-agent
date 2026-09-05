@@ -62,13 +62,8 @@ class ArtifactIntakeStore:
                 work_id TEXT, provider TEXT, model TEXT, inspection_occurrence_id TEXT, inspection_json TEXT, representation_needs_json TEXT NOT NULL DEFAULT '[]', event_fingerprint TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(artifact_intakes)")}
-            if "source_artifact_id" not in columns:
-                db.execute("ALTER TABLE artifact_intakes ADD COLUMN source_artifact_id TEXT")
-                db.execute("UPDATE artifact_intakes SET source_artifact_id=artifact_id WHERE source_artifact_id IS NULL")
-            if "inspection_occurrence_id" not in columns: db.execute("ALTER TABLE artifact_intakes ADD COLUMN inspection_occurrence_id TEXT")
-            if "inspection_json" not in columns: db.execute("ALTER TABLE artifact_intakes ADD COLUMN inspection_json TEXT")
-            if "event_fingerprint" not in columns: db.execute("ALTER TABLE artifact_intakes ADD COLUMN event_fingerprint TEXT")
-            if "representation_needs_json" not in columns: db.execute("ALTER TABLE artifact_intakes ADD COLUMN representation_needs_json TEXT NOT NULL DEFAULT '[]'")
+            required = {"intake_id","artifact_id","source_artifact_id","principal_id","source_event_kind","artifact_class","purpose","knowledge_disposition","relationship","workflow_class","workflow_intent","confidence","reason","status","work_id","provider","model","inspection_occurrence_id","inspection_json","representation_needs_json","event_fingerprint","created_at"}
+            if not required.issubset(columns): raise RuntimeError("atlas-work.db requires development schema reset for artifact intake")
             db.execute("CREATE INDEX IF NOT EXISTS artifact_intake_event ON artifact_intakes(principal_id,artifact_id,source_event_kind,event_fingerprint)")
             db.execute("""CREATE TABLE IF NOT EXISTS artifact_intake_pending(
                 event_fingerprint TEXT PRIMARY KEY, principal_id TEXT NOT NULL, artifact_id TEXT NOT NULL,
@@ -76,10 +71,8 @@ class ArtifactIntakeStore:
                 attempts INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending',
                 last_error TEXT, last_attempt_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
             pending_columns = {row[1] for row in db.execute("PRAGMA table_info(artifact_intake_pending)")}
-            if "attempts" not in pending_columns: db.execute("ALTER TABLE artifact_intake_pending ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
-            if "state" not in pending_columns: db.execute("ALTER TABLE artifact_intake_pending ADD COLUMN state TEXT NOT NULL DEFAULT 'pending'")
-            if "last_error" not in pending_columns: db.execute("ALTER TABLE artifact_intake_pending ADD COLUMN last_error TEXT")
-            if "last_attempt_at" not in pending_columns: db.execute("ALTER TABLE artifact_intake_pending ADD COLUMN last_attempt_at TEXT")
+            pending_required = {"event_fingerprint","principal_id","artifact_id","source_event_kind","candidate_json","attempts","state","last_error","last_attempt_at","created_at"}
+            if not pending_required.issubset(pending_columns): raise RuntimeError("atlas-work.db requires development schema reset for artifact intake pending queue")
             db.execute("CREATE INDEX IF NOT EXISTS artifact_intake_pending_state ON artifact_intake_pending(principal_id,state,created_at)")
     def record(self, *, artifact_id: str, source_artifact_id: str | None, principal_id: str, source_event_kind: str,
                decision: dict[str, Any], status: str, work_id: str | None, provider: str, model: str,

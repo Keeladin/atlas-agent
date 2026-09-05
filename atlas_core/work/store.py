@@ -15,7 +15,7 @@ class WorkStore:
     def initialize(self)->None:
         with self._db() as db:
             db.execute("PRAGMA journal_mode=WAL");db.executescript("""
-            CREATE TABLE IF NOT EXISTS work_items(work_id TEXT PRIMARY KEY,display_ref TEXT,artifact_class TEXT,workflow_class TEXT,objective TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('staged','runnable','queued','active','waiting','completed','failed','cancelled','paused')),owner_principal_id TEXT NOT NULL,metadata_json TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS work_items(work_id TEXT PRIMARY KEY,display_ref TEXT,artifact_class TEXT,workflow_class TEXT,objective TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('staged','runnable','queued','active','waiting','completed','failed','cancelled','paused')),owner_principal_id TEXT NOT NULL,metadata_json TEXT NOT NULL DEFAULT '{}',source_cadence_id TEXT,revision INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS work_route_sequences(route_code TEXT PRIMARY KEY,next_value INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS work_steps(step_id TEXT PRIMARY KEY,work_id TEXT NOT NULL,ordinal INTEGER NOT NULL,description TEXT NOT NULL,capability_id TEXT NOT NULL,input_json TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('queued','running','waiting','completed','failed','cancelled')),occurrence_id TEXT,output_json TEXT,error TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(work_id) REFERENCES work_items(work_id) ON DELETE CASCADE,UNIQUE(work_id,ordinal));
             CREATE TABLE IF NOT EXISTS obligation_bindings(
@@ -64,9 +64,9 @@ class WorkStore:
             if not required_binding_columns.issubset(binding_columns):
                 raise RuntimeError("atlas-work.db requires development schema reset for obligation bindings")
             columns={row[1] for row in db.execute("PRAGMA table_info(work_items)")}
-            for name in ("display_ref","artifact_class","workflow_class","source_cadence_id"):
-                if name not in columns:db.execute(f"ALTER TABLE work_items ADD COLUMN {name} TEXT")
-            if "revision" not in columns: db.execute("ALTER TABLE work_items ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+            required_work_columns={"work_id","display_ref","artifact_class","workflow_class","objective","status","owner_principal_id","metadata_json","source_cadence_id","revision","created_at","updated_at"}
+            if not required_work_columns.issubset(columns):
+                raise RuntimeError("atlas-work.db requires development schema reset for Work schema")
             db.execute("""CREATE TABLE IF NOT EXISTS work_adaptations(
                 adaptation_id TEXT PRIMARY KEY, work_id TEXT NOT NULL, base_revision INTEGER NOT NULL, new_revision INTEGER NOT NULL,
                 from_ordinal INTEGER NOT NULL, change_intent TEXT NOT NULL, reason TEXT NOT NULL, unchanged_goal TEXT NOT NULL,
@@ -75,13 +75,9 @@ class WorkStore:
             db.execute("CREATE INDEX IF NOT EXISTS work_adaptations_work ON work_adaptations(work_id,new_revision)")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS work_display_ref_unique ON work_items(display_ref) WHERE display_ref IS NOT NULL")
             db.execute("CREATE INDEX IF NOT EXISTS work_source_cadence_id_idx ON work_items(source_cadence_id) WHERE source_cadence_id IS NOT NULL")
-            db.execute("DROP INDEX IF EXISTS work_chat_origin_turn_unique")
             db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS work_chat_origin_key_unique
                         ON work_items(json_extract(metadata_json,'$.chat_origin.work_key'))
                         WHERE json_extract(metadata_json,'$.chat_origin.work_key') IS NOT NULL""")
-            # Cadence-created Work has always recorded the relationship in metadata; promote
-            # existing rows so run history covers Work created before the column existed.
-            db.execute("UPDATE work_items SET source_cadence_id=json_extract(metadata_json,'$.cadence_id') WHERE source_cadence_id IS NULL AND json_extract(metadata_json,'$.cadence_id') IS NOT NULL")
     def create(self,objective:str,owner_principal_id:str,steps:list[dict[str,Any]],*,metadata:dict[str,Any]|None=None,artifact_class:str|None=None,workflow_class:str|None=None,stage:bool=False)->WorkItem:
         if not objective.strip():raise ValueError("work objective is required")
         if not steps:raise ValueError("work requires at least one step")

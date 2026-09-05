@@ -197,18 +197,13 @@ def test_work_is_linked_to_its_cadence_for_run_history(tmp_path):
     assert other.work_id in {item.work_id for item in rt.work_store.list()}
 
 
-def test_existing_cadence_work_is_backfilled_into_the_indexed_column(tmp_path):
+def test_existing_cadence_work_is_not_backfilled_after_clean_schema_cutover(tmp_path):
     rt, owner, _ = _runtime(tmp_path)
-    work = rt.work.create("Legacy run", _steps(), owner_principal_id=owner, metadata={"cadence_id": "cadence_legacy"})
+    work = rt.work.create("Current run", _steps(), owner_principal_id=owner, metadata={"cadence_id": "cadence_current"})
     with rt.work_store._db() as db:
         db.execute("UPDATE work_items SET source_cadence_id=NULL WHERE work_id=?", (work.work_id,))
-    assert rt.work_store.get(work.work_id).source_cadence_id is None
-
     rt.work_store.initialize()
-
-    assert rt.work_store.get(work.work_id).source_cadence_id == "cadence_legacy"
-    assert [item.work_id for item in rt.work_store.list(cadence_id="cadence_legacy")] == [work.work_id]
-
+    assert rt.work_store.get(work.work_id).source_cadence_id is None
 
 def test_work_read_capabilities_expose_steps_and_recorded_output(tmp_path):
     rt, owner, _ = _runtime(tmp_path)

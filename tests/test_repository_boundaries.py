@@ -57,3 +57,17 @@ def test_companion_has_no_now_route():
     assert 'path="/now"' not in app
     assert "['/now'" not in shell
     assert 'to="/atlas">Control' in shell
+
+
+def test_section17_forbids_pre_cutover_runtime_compatibility_code():
+    text = _python_text()
+    for obsolete in (
+        "ALTER TABLE",
+        "current_human_principal_id",
+        "_migrate_transport_schema",
+        "rebased_from_generation_id",
+        "completion_report",
+        "work_completion",
+        "legacy_untracked",
+    ):
+        assert obsolete not in text

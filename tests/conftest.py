@@ -6,8 +6,8 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _legacy_chat_intake_stub(request, monkeypatch):
-    """Keep pre-ledger chat tests focused on their original responsibility."""
+def _chat_obligation_test_stub(request, monkeypatch):
+    """Keep chat-surface tests deterministic without depending on live model intake."""
     modules = {
         "tests.test_chat_memory_capture",
         "tests.test_chat_runtime",

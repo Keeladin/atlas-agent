@@ -377,9 +377,11 @@ The live reset recreates all Atlas SQLite databases, including `atlas-identity.d
 - **Actions, evidence, Work, Chat, policy/configuration rows, provider settings, source-root registrations, MCP configuration and other SQLite-backed runtime/configuration state:** discarded and recreated under the canonical schema.
 - **Source payloads, owner-uploaded/managed files that are intentionally retained, and encrypted secret material:** are file custody rather than database history and may survive physically. Their old database identities are not authoritative; they must be re-enrolled or reconfigured through current runtime contracts.
 
-### Rollback copy
+### Destructive reset boundary
 
-Before any destructive reset, Atlas must be quiesced and the entire instance/state directory copied to a timestamped rollback location. The copy includes SQLite databases and their WAL/SHM files, secrets, and managed payloads. The copy is rollback evidence only: the new runtime must not read it automatically or use it as a legacy compatibility source. The reset begins only after the copy is verified complete.
+Before the reset, Atlas must be quiesced so no process can write the instance. The cutover does not preserve or migrate pre-ledger SQLite state: database files and SQLite sidecars are deleted and recreated from the canonical schema. Non-SQLite file custody such as intentionally retained source payloads or secret material may remain physically present, but no legacy database identity or configuration row is authoritative after reset.
+
+The runtime must contain no code whose purpose is to migrate, backfill, repair, exempt, or otherwise interpret pre-cutover database shapes. Encountering a non-canonical retained SQLite schema is a reset-required startup failure, not a migration opportunity.
 
 Do not backfill obligations, introduce `legacy_untracked`, add cutover exemptions, or support mixed pre-ledger/post-ledger completeness semantics. The objective is one total completeness invariant, not preservation of disposable development rows.
 

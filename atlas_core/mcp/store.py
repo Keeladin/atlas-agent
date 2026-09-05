@@ -59,21 +59,7 @@ class MCPServerStore:
             sql = str(row["sql"] or "")
             columns = {item["name"] for item in db.execute("PRAGMA table_info(mcp_servers)")}
             if "command" not in columns or "args_json" not in columns or "'stdio'" not in sql:
-                self._migrate_transport_schema(db)
-
-    def _migrate_transport_schema(self, db: sqlite3.Connection) -> None:
-        db.execute("ALTER TABLE mcp_servers RENAME TO mcp_servers_legacy_transport")
-        db.execute(_SCHEMA)
-        db.execute(
-            """INSERT INTO mcp_servers(
-                server_id,display_name,kind,transport,url,enabled,credential_ref,
-                timeout_sec,read_timeout_sec,last_error,last_discovered_at,updated_at
-            )
-            SELECT server_id,display_name,kind,transport,url,enabled,credential_ref,
-                timeout_sec,read_timeout_sec,last_error,last_discovered_at,updated_at
-            FROM mcp_servers_legacy_transport"""
-        )
-        db.execute("DROP TABLE mcp_servers_legacy_transport")
+                raise RuntimeError("atlas-identity.db requires development schema reset for MCP transport schema")
 
     def put(
         self,

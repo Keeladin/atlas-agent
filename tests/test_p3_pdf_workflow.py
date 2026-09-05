@@ -6,6 +6,7 @@ import os
 import sqlite3
 
 import pymupdf
+import pytest
 
 from atlas_core.artifacts.intake import MAX_INTAKE_ATTEMPTS, ArtifactIntakeStore
 from atlas_core.cadence import CadenceRuntime, CadenceStore
@@ -234,19 +235,13 @@ def test_requeue_restores_a_dead_lettered_event(tmp_path):
     assert summary["processed"] == 1 and summary["work_created"] == 1
 
 
-def test_pending_queue_migrates_from_pre_attempt_schema(tmp_path):
+def test_pending_queue_refuses_pre_cutover_schema(tmp_path):
     path = tmp_path / "legacy.db"
     with sqlite3.connect(path) as db:
         db.execute("""CREATE TABLE artifact_intake_pending(
             event_fingerprint TEXT PRIMARY KEY, principal_id TEXT NOT NULL, artifact_id TEXT NOT NULL,
             source_event_kind TEXT NOT NULL, candidate_json TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
-        db.execute("INSERT INTO artifact_intake_pending(event_fingerprint,principal_id,artifact_id,source_event_kind,candidate_json) VALUES ('fp','owner','artifact_1','new','{}')")
-
     store = ArtifactIntakeStore(path)
-    store.initialize()
-    rows = store.pending_events("owner")
-    assert len(rows) == 1
-    assert rows[0]["attempts"] == 0 and rows[0]["state"] == "pending"
-    assert rows[0]["last_error"] is None and rows[0]["last_attempt_at"] is None
-    assert store.dead_letter_events("owner") == ()
+    with pytest.raises(RuntimeError, match="development schema reset"):
+        store.initialize()

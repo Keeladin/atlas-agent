@@ -15,9 +15,40 @@ class WorkStore:
     def initialize(self)->None:
         with self._db() as db:
             db.execute("PRAGMA journal_mode=WAL");db.executescript("""
-            CREATE TABLE IF NOT EXISTS work_items(work_id TEXT PRIMARY KEY,display_ref TEXT,artifact_class TEXT,workflow_class TEXT,objective TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('queued','active','waiting','completed','failed','cancelled','paused')),owner_principal_id TEXT NOT NULL,metadata_json TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS work_items(work_id TEXT PRIMARY KEY,display_ref TEXT,artifact_class TEXT,workflow_class TEXT,objective TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('staged','runnable','queued','active','waiting','completed','failed','cancelled','paused')),owner_principal_id TEXT NOT NULL,metadata_json TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS work_route_sequences(route_code TEXT PRIMARY KEY,next_value INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS work_steps(step_id TEXT PRIMARY KEY,work_id TEXT NOT NULL,ordinal INTEGER NOT NULL,description TEXT NOT NULL,capability_id TEXT NOT NULL,input_json TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('queued','running','waiting','completed','failed','cancelled')),occurrence_id TEXT,output_json TEXT,error TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(work_id) REFERENCES work_items(work_id) ON DELETE CASCADE,UNIQUE(work_id,ordinal));
+            CREATE TABLE IF NOT EXISTS obligation_bindings(
+                binding_id TEXT PRIMARY KEY,
+                obligation_id TEXT NOT NULL,
+                work_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(work_id) REFERENCES work_items(work_id) ON DELETE CASCADE,
+                UNIQUE(work_id,obligation_id)
+            );
+            CREATE INDEX IF NOT EXISTS obligation_bindings_work
+                ON obligation_bindings(work_id,created_at);
+            CREATE TRIGGER IF NOT EXISTS work_staged_requires_binding_insert
+            BEFORE INSERT ON work_items
+            WHEN NEW.status='staged'
+             AND NOT EXISTS(SELECT 1 FROM obligation_bindings b WHERE b.work_id=NEW.work_id)
+            BEGIN SELECT RAISE(ABORT,'staged work requires a backing obligation'); END;
+            CREATE TRIGGER IF NOT EXISTS work_staged_requires_binding_update
+            BEFORE UPDATE OF status ON work_items
+            WHEN NEW.status='staged'
+             AND NOT EXISTS(SELECT 1 FROM obligation_bindings b WHERE b.work_id=NEW.work_id)
+            BEGIN SELECT RAISE(ABORT,'staged work requires a backing obligation'); END;
+            CREATE TRIGGER IF NOT EXISTS binding_delete_preserves_staged_work
+            BEFORE DELETE ON obligation_bindings
+            WHEN EXISTS(SELECT 1 FROM work_items w WHERE w.work_id=OLD.work_id AND w.status='staged')
+             AND NOT EXISTS(SELECT 1 FROM obligation_bindings b WHERE b.work_id=OLD.work_id AND b.binding_id!=OLD.binding_id)
+            BEGIN SELECT RAISE(ABORT,'cannot remove final backing obligation from staged work'); END;
+            CREATE TRIGGER IF NOT EXISTS binding_move_preserves_staged_work
+            BEFORE UPDATE OF work_id ON obligation_bindings
+            WHEN NEW.work_id!=OLD.work_id
+             AND EXISTS(SELECT 1 FROM work_items w WHERE w.work_id=OLD.work_id AND w.status='staged')
+             AND NOT EXISTS(SELECT 1 FROM obligation_bindings b WHERE b.work_id=OLD.work_id AND b.binding_id!=OLD.binding_id)
+            BEGIN SELECT RAISE(ABORT,'cannot move final backing obligation from staged work'); END;
             """)
             columns={row[1] for row in db.execute("PRAGMA table_info(work_items)")}
             for name in ("display_ref","artifact_class","workflow_class","source_cadence_id"):
@@ -38,10 +69,12 @@ class WorkStore:
             # Cadence-created Work has always recorded the relationship in metadata; promote
             # existing rows so run history covers Work created before the column existed.
             db.execute("UPDATE work_items SET source_cadence_id=json_extract(metadata_json,'$.cadence_id') WHERE source_cadence_id IS NULL AND json_extract(metadata_json,'$.cadence_id') IS NOT NULL")
-    def create(self,objective:str,owner_principal_id:str,steps:list[dict[str,Any]],*,metadata:dict[str,Any]|None=None,artifact_class:str|None=None,workflow_class:str|None=None)->WorkItem:
+    def create(self,objective:str,owner_principal_id:str,steps:list[dict[str,Any]],*,metadata:dict[str,Any]|None=None,artifact_class:str|None=None,workflow_class:str|None=None,obligation_ids:list[str]|tuple[str,...]|None=None,stage:bool=False)->WorkItem:
         if not objective.strip():raise ValueError("work objective is required")
         if not steps:raise ValueError("work requires at least one step")
         wid=f"work_{uuid4().hex}"
+        backing=tuple(dict.fromkeys(str(item).strip() for item in (obligation_ids or ()) if str(item).strip()))
+        if stage and not backing:raise ValueError("staged Work requires at least one backing obligation")
         with self._db() as db:
             display_ref=None
             if artifact_class is not None or workflow_class is not None:
@@ -54,11 +87,37 @@ class WorkStore:
                 cid=str(s.get("capability_id") or "").strip();inp=s.get("input") or {};desc=str(s.get("description") or cid).strip()
                 if not cid or not isinstance(inp,dict):raise ValueError("each work step requires capability_id and object input")
                 db.execute("INSERT INTO work_steps(step_id,work_id,ordinal,description,capability_id,input_json,status) VALUES (?,?,?,?,?,?,'queued')",(f"step_{uuid4().hex}",wid,i,desc,cid,json.dumps(inp,sort_keys=True,separators=(",",":"),default=str)))
+            for obligation_id in backing:
+                db.execute("INSERT INTO obligation_bindings(binding_id,obligation_id,work_id) VALUES (?,?,?)",(f"binding_{uuid4().hex}",obligation_id,wid))
+            if stage:db.execute("UPDATE work_items SET status='staged',updated_at=CURRENT_TIMESTAMP WHERE work_id=?",(wid,))
         return self.get(wid)
     def get(self,work_id:str)->WorkItem:
         with self._db() as db:r=db.execute("SELECT * FROM work_items WHERE work_id=?",(work_id,)).fetchone()
         if r is None:raise KeyError(work_id)
         return WorkItem(r["work_id"],r["objective"],r["status"],r["owner_principal_id"],r["created_at"],r["updated_at"],json.loads(r["metadata_json"] or "{}"),r["display_ref"],r["artifact_class"],r["workflow_class"],r["source_cadence_id"],int(r["revision"] if "revision" in r.keys() else 1))
+    def bindings(self,work_id:str)->tuple[dict[str,Any],...]:
+        with self._db() as db:
+            rows=db.execute("SELECT * FROM obligation_bindings WHERE work_id=? ORDER BY created_at,rowid",(work_id,)).fetchall()
+        return tuple(dict(row) for row in rows)
+    def bind_obligation(self,work_id:str,obligation_id:str)->dict[str,Any]:
+        """Repair-safe servicing bind; it changes servicing truth only."""
+        bid=f"binding_{uuid4().hex}"
+        with self._db() as db:
+            work=db.execute("SELECT work_id FROM work_items WHERE work_id=?",(work_id,)).fetchone()
+            if work is None:raise KeyError(work_id)
+            db.execute("INSERT OR IGNORE INTO obligation_bindings(binding_id,obligation_id,work_id) VALUES (?,?,?)",(bid,obligation_id,work_id))
+            row=db.execute("SELECT * FROM obligation_bindings WHERE work_id=? AND obligation_id=?",(work_id,obligation_id)).fetchone()
+        return dict(row)
+    def staged_without_bindings(self)->tuple[str,...]:
+        with self._db() as db:
+            rows=db.execute("SELECT w.work_id FROM work_items w WHERE w.status='staged' AND NOT EXISTS(SELECT 1 FROM obligation_bindings b WHERE b.work_id=w.work_id)").fetchall()
+        return tuple(row["work_id"] for row in rows)
+
+    def servicing(self,obligation_id:str)->tuple[dict[str,Any],...]:
+        with self._db() as db:
+            rows=db.execute("SELECT b.*,w.status AS work_status FROM obligation_bindings b JOIN work_items w ON w.work_id=b.work_id WHERE b.obligation_id=? ORDER BY b.created_at,b.rowid",(obligation_id,)).fetchall()
+        return tuple(dict(row) for row in rows)
+
     def find_by_origin_key(self,work_key:str)->WorkItem|None:
         with self._db() as db:
             row=db.execute("SELECT work_id FROM work_items WHERE json_extract(metadata_json,'$.chat_origin.work_key')=? LIMIT 1",(work_key,)).fetchone()

@@ -41,7 +41,7 @@ def test_chat_system_prompt_preserves_atlas_conversational_identity(tmp_path):
     store.initialize()
     conversation = store.create_conversation("Chat")
     cid = conversation["conversation_id"]
-    store.append(cid, "user", "hi atlas")
+    store.append_owner(cid, "hi atlas", principal_id="owner-test")
     provider = CapturingProvider()
     identities = IdentityStore(tmp_path / "identity.db")
     identities.initialize(owner_display_name="Jaco")

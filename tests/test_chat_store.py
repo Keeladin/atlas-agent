@@ -11,9 +11,9 @@ def test_turns_returns_latest_limited_window_in_insertion_order(tmp_path):
     conversation = store.create_conversation("Chat")
     cid = conversation["conversation_id"]
 
-    store.append(cid, "user", "first")
+    store.append_owner(cid, "first", principal_id="owner-test")
     store.append(cid, "assistant", "second")
-    store.append(cid, "user", "third")
+    store.append_owner(cid, "third", principal_id="owner-test")
 
     # SQLite CURRENT_TIMESTAMP has one-second resolution. Force a timestamp tie
     # so the query must preserve row insertion order explicitly.
@@ -33,7 +33,7 @@ def test_delete_conversation_removes_its_turns(tmp_path):
     store.initialize()
     conversation = store.create_conversation("Disposable")
     cid = conversation["conversation_id"]
-    store.append(cid, "user", "temporary")
+    store.append_owner(cid, "temporary", principal_id="owner-test")
 
     store.delete_conversation(cid)
 

@@ -70,12 +70,6 @@ def _clean_focus(focus: Any) -> dict[str, Any] | None:
     return clean or None
 
 
-class CompletionReportError(RuntimeError):
-    def __init__(self, code: str) -> None:
-        self.code = code
-        super().__init__(code)
-
-
 class PlannerUnavailable(RuntimeError):
     code = "planner_unavailable"
 
@@ -143,7 +137,7 @@ class ChatRuntime:
                  capabilities: CapabilityRuntime, knowledge: KnowledgeRuntime,
                  memory: MemoryStore, identities: IdentityStore,
                  source_roots=None, artifacts=None, capability_retriever: CapabilityRetriever | None = None,
-                 work_store=None) -> None:
+                 work_store=None, obligation_intake=None, obligation_store=None) -> None:
         self.store = store
         self.provider = provider
         self.registry = registry
@@ -155,6 +149,13 @@ class ChatRuntime:
         self.artifacts = artifacts
         self.capability_retriever = capability_retriever
         self.work_store = work_store
+        if obligation_intake is None and store is not None and provider is not None:
+            from atlas_core.obligations import ObligationIntakeRuntime, ObligationStore
+            ledger = ObligationStore(store.path); ledger.initialize()
+            obligation_intake = ObligationIntakeRuntime(ledger, provider)
+            obligation_store = ledger
+        self.obligation_intake = obligation_intake
+        self.obligation_store = obligation_store or getattr(obligation_intake, "store", None)
 
     def send(self, conversation_id: str, message: str, *, principal_id: str, defer_capture: bool = False,
              focus: dict[str, Any] | None = None, attachments: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
@@ -166,7 +167,28 @@ class ChatRuntime:
         if attached_meta: metadata["attachments"] = attached_meta
         if not message.strip() and not attached_meta:
             raise ValueError("chat turn requires a message or attachment")
-        owner_turn = self.store.append(conversation_id, "user", message, metadata or None)
+        owner_turn = self.store.append_owner(
+            conversation_id, message, principal_id=principal_id, metadata=metadata or None
+        )
+        if self.obligation_intake is None:
+            raise RuntimeError("obligation intake runtime is required before owner-turn planning")
+        intake = self.obligation_intake.capture(
+            owner_turn, recent_context=self.store.turns(conversation_id, limit=8)
+        )
+        owner_turn = self.store.turn(owner_turn["turn_id"])
+        if intake.status != "complete":
+            if intake.status == "partial":
+                detail = "; ".join(intake.unmapped_spans[:4])
+                text = "I couldn't safely map every part of that request, so I didn't execute anything."
+                if detail:
+                    text += f" The unmatched part was: {detail}"
+            else:
+                text = "I couldn't reliably enumerate what you asked me to do, so I didn't execute anything."
+            return self._finish_turn(
+                conversation_id, message, principal_id, owner_turn, text,
+                {"intake": intake.as_dict(), "tools_used": []},
+                skip_capture=True, defer_capture=False,
+            )
         discovery_text = " ".join([message, *[str(item.get("display_name") or "") for item in attached_meta]]).strip()
         relevant = attached_context + self._relevant_context(principal_id, discovery_text or message)
         shortlist = self.search_capabilities(discovery_text or message, limit=36)
@@ -314,7 +336,15 @@ class ChatRuntime:
                     payload = self._ground_memory_payload(payload, message, owner_turn, capability_id=cid)
                 if cid == "work.create":
                     payload = dict(payload)
-                    payload["origin"] = {"conversation_id": conversation_id, "owner_turn_id": owner_turn["turn_id"]}
+                    backing = [
+                        item.obligation_id
+                        for item in self.obligation_intake.store.open_for_turn(owner_turn["turn_id"])
+                    ]
+                    payload["origin"] = {
+                        "conversation_id": conversation_id,
+                        "owner_turn_id": owner_turn["turn_id"],
+                        "obligation_ids": backing,
+                    }
                     if pending_adoption_id:
                         payload["adopt_occurrence_id"] = pending_adoption_id
                 candidate_key = None
@@ -489,10 +519,16 @@ class ChatRuntime:
                 metadata["action"] = recorded_action
             objects = self._rich_objects(tool_context, recorded_action)
             if objects: metadata["objects"] = objects
+            communication_revisions, communication_verification = self._verify_direct_communications(
+                owner_turn, reply, relevant, tool_context
+            )
+            if communication_verification is not None:
+                metadata["communication_delivery"] = communication_verification
             return self._finish_turn(
                 conversation_id, message, principal_id, owner_turn, reply,
                 metadata,
                 skip_capture=capture_done, defer_capture=defer_capture,
+                communication_revisions=communication_revisions,
             )
         metadata = {"error": "chat_tool_round_limit", "planner": {"status": "ok", "attempt_count": len(planner_events), "attempts": planner_events}}
         recorded_action = latest_workflow_action or latest_unresolved_action
@@ -505,6 +541,63 @@ class ChatRuntime:
             "I reached the capability-turn limit before a verified answer was ready.",
             metadata, skip_capture=capture_done, defer_capture=defer_capture,
         )
+
+    def _verify_direct_communications(
+        self, owner_turn: dict[str, Any], candidate: str,
+        relevant: list[dict[str, Any]], tool_context: list[dict[str, Any]],
+    ) -> tuple[dict[str, int], dict[str, Any] | None]:
+        if self.obligation_store is None:
+            return {}, None
+        open_rows = [
+            item for item in self.obligation_store.open_for_turn(owner_turn["turn_id"])
+            if item.kind == "communication"
+        ]
+        if not open_rows:
+            return {}, None
+        basis = {
+            "owner_message": owner_turn.get("content") or "",
+            "communication_obligations": [
+                {"obligation_id": item.obligation_id, "text": item.text, "revision": item.revision}
+                for item in open_rows
+            ],
+            "relevant_durable_context": _bounded(relevant, 9000),
+            "tool_results": _bounded(tool_context, 12000),
+            "candidate_reply": candidate,
+        }
+        try:
+            response = self.provider.generate(ModelRequest(
+                capability_id="chat.communication_delivery_verify",
+                system=(
+                    "Verify whether the candidate reply actually fulfils any listed communication obligations. "
+                    "Use only owner_message, supplied durable context, and supplied tool results as grounding. "
+                    "For creative or transformational requests, owner_message itself may be the grounding basis. "
+                    "Do not treat staged or unfinished Work as a completed result. Return JSON with grounded boolean, "
+                    "fulfilled_obligation_ids array, and unsupported_claims array."
+                ),
+                input=json.dumps(basis, ensure_ascii=False, default=str),
+                max_output_chars=1800, metadata={"response_format": {"type": "json_object"}},
+            ))
+            parsed = json.loads(str(response.text or "").strip())
+        except Exception:
+            logger.warning("direct communication verification failed", exc_info=True)
+            return {}, None
+        if not isinstance(parsed, dict):
+            return {}, None
+        grounded = parsed.get("grounded")
+        fulfilled = parsed.get("fulfilled_obligation_ids")
+        unsupported = parsed.get("unsupported_claims")
+        if not isinstance(grounded, bool) or not isinstance(fulfilled, list) or not isinstance(unsupported, list):
+            return {}, None
+        allowed = {item.obligation_id: item.revision for item in open_rows}
+        selected = {str(item): allowed[str(item)] for item in fulfilled if str(item) in allowed}
+        verification = {
+            "grounded": bool(grounded and not unsupported),
+            "fulfilled_obligation_ids": list(selected),
+            "unsupported_claims": [str(item) for item in unsupported[:20]],
+            "provider": getattr(response, "provider_key", None),
+            "model": getattr(response, "model", None),
+        }
+        return (selected if verification["grounded"] else {}), verification
 
     @staticmethod
     def _rich_objects(tool_context: list[dict[str, Any]], action: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -533,9 +626,18 @@ class ChatRuntime:
     def _finish_turn(self, conversation_id: str, message: str, principal_id: str,
                      owner_turn: dict[str, Any], text: str, metadata: dict[str, Any], *,
                      action: dict[str, Any] | None = None, skip_capture: bool = False,
-                     defer_capture: bool = False) -> dict[str, Any]:
-        turn = self.store.append(conversation_id, "assistant", text, metadata)
+                     defer_capture: bool = False,
+                     communication_revisions: dict[str, int] | None = None) -> dict[str, Any]:
+        if communication_revisions and self.obligation_store is not None:
+            turn = self.obligation_store.persist_communication_report(
+                conversation_id, text, obligation_revisions=communication_revisions, metadata=metadata
+            )
+        else:
+            turn = self.store.append(conversation_id, "assistant", text, metadata)
+        self.store.mark_turn_completed(owner_turn["turn_id"])
         result: dict[str, Any] = {"turn": turn}
+        if defer_capture:
+            result["_owner_turn_id"] = owner_turn["turn_id"]
         if not skip_capture:
             if defer_capture:
                 result["_post_turn_capture"] = {
@@ -553,237 +655,6 @@ class ChatRuntime:
         if action is not None:
             result["action"] = action
         return result
-
-    def record_work_completion(self, detail: dict[str, Any]) -> dict[str, Any] | None:
-        """Persist terminal Work truth immediately without any model/network dependency."""
-        metadata = detail.get("metadata") if isinstance(detail.get("metadata"), dict) else {}
-        origin = metadata.get("chat_origin") if isinstance(metadata.get("chat_origin"), dict) else {}
-        conversation_id = str(origin.get("conversation_id") or "")
-        status = str(detail.get("status") or "")
-        if not conversation_id or status not in {"completed", "failed", "cancelled"}:
-            return None
-        steps = detail.get("steps") if isinstance(detail.get("steps"), list) else []
-        terminal_occurrence_id = next((str(step.get("occurrence_id")) for step in reversed(steps) if isinstance(step, dict) and step.get("occurrence_id")), "")
-        terminal_identity = terminal_occurrence_id or str(detail.get("updated_at") or "")
-        key = f"{detail.get('work_id')}:{detail.get('revision')}:{status}:{terminal_identity}"
-        final_output = steps[-1].get("output") if steps and isinstance(steps[-1], dict) else None
-        text = self._deterministic_work_completion_text(detail)
-        report_meta = {"mode": "deterministic_pending", "attempts": 0} if status == "completed" else {"mode": "deterministic", "status": status}
-        turn_meta = {
-            "work_completion_key": key,
-            "work_completion": {
-                "work_id": detail.get("work_id"), "revision": detail.get("revision"),
-                "terminal_status": status, "updated_at": detail.get("updated_at"),
-                "terminal_occurrence_id": terminal_occurrence_id or None,
-                "final_output": _bounded(final_output, 4000) if final_output is not None else None,
-            },
-            "completion_report": report_meta,
-            "objects": [{"kind": "work", "id": detail.get("work_id")}],
-            "tools_used": [],
-        }
-        try:
-            self.store.conversation(conversation_id)
-            return self.store.append_work_completion(conversation_id, text, turn_meta)
-        except KeyError:
-            return None
-
-    def _record_completion_reporting_state(self, work_id: str, **state: Any) -> None:
-        if self.work_store is None or not work_id:
-            return
-        try:
-            self.work_store.merge_metadata(work_id, {
-                "completion_reporting": {**state, "observed_at": datetime.now(timezone.utc).isoformat()}
-            })
-        except Exception:
-            logger.warning("could not record completion reporting state for %s", work_id, exc_info=True)
-
-    def upgrade_pending_work_completion_reports(self, *, limit: int = 4, max_attempts: int = 3) -> tuple[str, ...]:
-        """Enrich durable completion turns after API startup; never blocks Work or boot."""
-        if self.work_store is None:
-            return ()
-        changed: list[str] = []
-        for turn in self.store.pending_work_completions(limit=limit):
-            meta = turn.get("metadata") if isinstance(turn.get("metadata"), dict) else {}
-            report_meta = meta.get("completion_report") if isinstance(meta.get("completion_report"), dict) else {}
-            attempts = int(report_meta.get("attempts") or 0)
-            key = str(meta.get("work_completion_key") or "")
-            completion = meta.get("work_completion") if isinstance(meta.get("work_completion"), dict) else {}
-            work_id = str(completion.get("work_id") or "")
-            if not key or not work_id:
-                continue
-            if attempts >= max_attempts:
-                error_code = str(report_meta.get("error_code") or "report_attempt_limit")
-                self.store.update_work_completion(key, metadata_patch={
-                    "completion_report": {**report_meta, "mode": "deterministic_fallback", "error_code": error_code}
-                })
-                self._record_completion_reporting_state(work_id, status="failed", mode="deterministic_fallback", error_code=error_code)
-                changed.append(key)
-                continue
-            try:
-                item = self.work_store.get(work_id)
-                detail = {
-                    **item.as_dict(),
-                    "steps": [step.as_dict() for step in self.work_store.steps(work_id)],
-                    "adaptations": list(self.work_store.adaptations(work_id)),
-                }
-                text, generated_meta, report_detail = self._generate_work_completion_report(detail)
-                verified, verifier_meta = self._verify_work_completion_report(report_detail, text)
-                if not verified:
-                    self.store.update_work_completion(key, metadata_patch={
-                        "completion_report": {
-                            "mode": "deterministic_fallback", "attempts": attempts + 1,
-                            "error_code": "completion_report_not_grounded",
-                            "generation": generated_meta, "verification": verifier_meta,
-                        }
-                    })
-                    self._record_completion_reporting_state(
-                        work_id, status="failed", mode="deterministic_fallback", error_code="completion_report_not_grounded"
-                    )
-                    changed.append(key)
-                    continue
-                self.store.update_work_completion(key, content=text, metadata_patch={
-                    "completion_report": {
-                        "mode": "grounded_model_verified", "attempts": attempts + 1,
-                        "generation": generated_meta, "verification": verifier_meta,
-                    }
-                })
-                self._record_completion_reporting_state(work_id, status="verified", mode="grounded_model_verified")
-                changed.append(key)
-            except Exception as exc:
-                logger.warning("work completion report upgrade failed for %s", work_id, exc_info=True)
-                next_attempts = attempts + 1
-                mode = "deterministic_fallback" if next_attempts >= max_attempts else "deterministic_pending"
-                error_code = str(getattr(exc, "code", type(exc).__name__))
-                self.store.update_work_completion(key, metadata_patch={
-                    "completion_report": {
-                        **report_meta, "mode": mode, "attempts": next_attempts,
-                        "error_code": error_code,
-                    }
-                })
-                self._record_completion_reporting_state(
-                    work_id, status="failed" if mode == "deterministic_fallback" else "retrying",
-                    mode=mode, error_code=error_code, attempts=next_attempts,
-                )
-                changed.append(key)
-        return tuple(changed)
-
-    def _completion_report_detail(self, detail: dict[str, Any]) -> dict[str, Any]:
-        steps = detail.get("steps") if isinstance(detail.get("steps"), list) else []
-        return {
-            "work_id": detail.get("work_id"),
-            "objective": str(detail.get("objective") or "Work"),
-            "status": str(detail.get("status") or ""),
-            "revision": detail.get("revision"),
-            "steps": [
-                {
-                    "ordinal": step.get("ordinal"),
-                    "description": step.get("description"),
-                    "capability_id": step.get("capability_id"),
-                    "status": step.get("status"),
-                    "output": _bounded(step.get("output"), 6000) if step.get("output") is not None else None,
-                    "error": step.get("error"),
-                }
-                for step in steps if isinstance(step, dict)
-            ],
-        }
-
-    def _generate_work_completion_report(self, detail: dict[str, Any]) -> tuple[str, dict[str, Any], dict[str, Any]]:
-        report_detail = self._completion_report_detail(detail)
-        response = self.provider.generate(ModelRequest(
-            capability_id="chat.work_completion_report",
-            system=(
-                "Report one terminal Atlas Work item from the supplied durable record. "
-                "This is reporting, not planning: do not propose steps, invoke capabilities, or infer facts beyond the recorded outputs. "
-                "Every factual claim must be directly supported by the supplied step outputs. "
-                "Include all material owner-requested results that are present in those outputs, not merely that the Work completed. "
-                "If an output is marked truncated, do not infer anything beyond its preview. "
-                "Return exactly one JSON object of the form {\"kind\":\"reply\",\"reply\":\"...\"}."
-            ),
-            input=json.dumps(report_detail, ensure_ascii=False, default=str),
-            max_output_chars=2200,
-            metadata={"response_format": {"type": "json_schema", "json_schema": {
-                "name": "work_completion_report", "strict": True,
-                "schema": {
-                    "type": "object", "required": ["kind", "reply"],
-                    "properties": {"kind": {"type": "string", "enum": ["reply"]}, "reply": {"type": "string", "minLength": 1}},
-                    "additionalProperties": False,
-                },
-            }}},
-        ))
-        decision, parse_mode, error_code = _planner_decision(response.text)
-        if decision is None or decision.get("kind") != "reply":
-            raise CompletionReportError(error_code or "completion_report_invalid_shape")
-        reply = str(decision.get("reply") or "").strip()
-        if not reply:
-            raise CompletionReportError("completion_report_empty")
-        return reply, {
-            "provider": response.provider_key, "model": response.model, "parse_mode": parse_mode,
-            "metrics": dict(response.metrics or {}),
-        }, report_detail
-
-    def _verify_work_completion_report(self, report_detail: dict[str, Any], candidate: str) -> tuple[bool, dict[str, Any]]:
-        """Closed semantic verifier for owner-facing completion prose.
-
-        The canonical tree has no reasoning.evidence_grounded capability, so this
-        verifier is kept as a non-planning model role over the same bounded evidence.
-        """
-        response = self.provider.generate(ModelRequest(
-            capability_id="chat.work_completion_verify",
-            system=(
-                "Verify whether every factual claim in candidate_report is directly supported by the supplied durable Work record. "
-                "Do not rewrite the report, plan actions, or use outside knowledge. Treat Work outputs as evidence only. "
-                "Return exactly one JSON object with keys grounded (boolean) and unsupported_claims (array of strings)."
-            ),
-            input=json.dumps({"work": report_detail, "candidate_report": candidate}, ensure_ascii=False, default=str),
-            max_output_chars=1600,
-            metadata={"response_format": {"type": "json_schema", "json_schema": {
-                "name": "work_completion_verification", "strict": True,
-                "schema": {
-                    "type": "object", "required": ["grounded", "unsupported_claims"],
-                    "properties": {
-                        "grounded": {"type": "boolean"},
-                        "unsupported_claims": {"type": "array", "items": {"type": "string"}},
-                    },
-                    "additionalProperties": False,
-                },
-            }}},
-        ))
-        raw = response.text.strip()
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise CompletionReportError("completion_report_verifier_unparseable") from exc
-        if not isinstance(parsed, dict) or set(parsed) != {"grounded", "unsupported_claims"}:
-            raise CompletionReportError("completion_report_verifier_invalid_shape")
-        grounded = parsed.get("grounded")
-        unsupported = parsed.get("unsupported_claims")
-        if not isinstance(grounded, bool) or not isinstance(unsupported, list) or not all(isinstance(item, str) for item in unsupported):
-            raise CompletionReportError("completion_report_verifier_invalid_shape")
-        return bool(grounded and not unsupported), {
-            "provider": response.provider_key, "model": response.model, "grounded": grounded,
-            "unsupported_claims": unsupported[:20], "metrics": dict(response.metrics or {}),
-        }
-
-    @staticmethod
-    def _deterministic_work_completion_text(detail: dict[str, Any]) -> str:
-        objective = str(detail.get("objective") or "Work")
-        status = str(detail.get("status") or "")
-        if status == "failed":
-            return f"Work failed: {objective}. Open the Work item for the recorded failure evidence."
-        if status == "cancelled":
-            return f"Work cancelled: {objective}."
-        steps = detail.get("steps") if isinstance(detail.get("steps"), list) else []
-        final = steps[-1] if steps else {}
-        output = final.get("output") if isinstance(final, dict) else None
-        if isinstance(output, dict):
-            properties = output.get("properties") if isinstance(output.get("properties"), dict) else {}
-            unit = str(output.get("unit") or "")
-            active = str(properties.get("ActiveState") or "")
-            sub = str(properties.get("SubState") or "")
-            if unit and active:
-                state = f"{active}/{sub}" if sub else active
-                return f"Completed: {objective}. {unit} is {state}."
-        return f"Completed: {objective}. Recorded step results are available in the Work item."
 
     def run_post_turn_capture(self, *, conversation_id: str, message: str, principal_id: str,
                               owner_turn: dict[str, Any]) -> None:

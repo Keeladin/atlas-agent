@@ -101,7 +101,7 @@ def test_chat_memory_write_requires_authenticated_owner_turn_grounding(tmp_path)
     MemoryRuntime(memory_store, registry, action_store, grounding_validator=chat_store.owner_grounding_matches)
     _set(policy_store, "remember", "YES")
     cid = chat_store.create_conversation("Memory")["conversation_id"]
-    turn = chat_store.append(cid, "user", "I prefer metric units")
+    turn = chat_store.append_owner(cid, "I prefer metric units", principal_id="principal_owner")
 
     ungrounded = capabilities.invoke(
         "memory.remember", {"content": "I prefer metric units"}, provenance=_prov(surface="chat"),
@@ -203,7 +203,7 @@ def test_chat_retract_requires_owner_turn_grounding(tmp_path):
     remembered = capabilities.invoke("memory.remember", {"content": "Old preference"}, provenance=_prov(surface="control"))
     item_id = remembered.result["item_id"]
     cid = chat_store.create_conversation("Retract")["conversation_id"]
-    turn = chat_store.append(cid, "user", "Please forget that old preference")
+    turn = chat_store.append_owner(cid, "Please forget that old preference", principal_id="principal_owner")
 
     ungrounded = capabilities.invoke("memory.retract", {"item_id": item_id}, provenance=_prov(surface="chat"))
     assert ungrounded.status == "failed"
@@ -227,7 +227,7 @@ def test_chat_memory_provenance_overwrites_forged_reserved_metadata(tmp_path):
     MemoryRuntime(memory_store, registry, action_store, grounding_validator=chat_store.owner_grounding_matches)
     _set(policy_store, "remember", "YES")
     cid = chat_store.create_conversation("Memory")["conversation_id"]
-    turn = chat_store.append(cid, "user", "I prefer metric units")
+    turn = chat_store.append_owner(cid, "I prefer metric units", principal_id="principal_owner")
     occurrence = capabilities.invoke(
         "memory.remember",
         {"content": "I prefer metric units", "grounding_excerpt": "I prefer metric units",

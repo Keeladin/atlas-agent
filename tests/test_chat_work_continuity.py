@@ -35,6 +35,16 @@ def _fake_systemd(args, timeout=20):
     return _completed(args)
 
 
+def _commit_test_obligation(rt, owner_turn):
+    attempts = rt.obligation_store.begin_attempt(owner_turn["turn_id"])
+    result = rt.obligation_store.commit_intake(
+        owner_turn["turn_id"],
+        [{"grounding_excerpt": owner_turn["content"], "text": owner_turn["content"], "kind": "state_change"}],
+        attempts=attempts, provider="test", model="test",
+    )
+    return result.obligation_ids[0]
+
+
 def test_self_restart_requires_work_before_dispatch(tmp_path, monkeypatch):
     monkeypatch.setenv("ATLAS_SERVICE_UNIT", "atlas-api.service")
     monkeypatch.setenv("INVOCATION_ID", "old-invocation")
@@ -66,7 +76,7 @@ def test_other_service_restart_remains_direct_chat_action(tmp_path, monkeypatch)
     assert rt.work_store.list() == ()
 
 
-def test_chat_promotes_self_restart_to_work_after_runtime_refusal(tmp_path, monkeypatch):
+def test_chat_promotes_self_restart_to_detached_work_after_handoff(tmp_path, monkeypatch):
     monkeypatch.setenv("ATLAS_SERVICE_UNIT", "atlas-api.service")
     monkeypatch.setenv("INVOCATION_ID", "old-invocation")
     monkeypatch.setattr(host_module, "_run", _fake_systemd)
@@ -86,17 +96,22 @@ def test_chat_promotes_self_restart_to_work_after_runtime_refusal(tmp_path, monk
     )
     result = rt.chat.send(cid, "Restart your API and verify it comes back healthy", principal_id=owner.principal_id, defer_capture=True)
     assert result["turn"]["content"].startswith("I moved that into durable Work")
-    rows = [row for row in rt.actions_store.recent(limit=30) if row.capability_id == "host.service.restart"]
-    assert len(rows) == 1 and rows[0].work_id
-    assert rows[0].status == "uncertain"
-    work = rt.work_store.get(rows[0].work_id)
-    assert work.status == "waiting"
+    assert not [row for row in rt.actions_store.recent(limit=30) if row.capability_id == "host.service.restart"]
+    work = rt.work_store.list(limit=10)[0]
+    assert work.status == "staged"
     assert work.metadata["chat_origin"]["conversation_id"] == cid
-    assert work.metadata["auto_resume_on_recovery"] is True
+    owner_turn = rt.chat_store.turn(result["_owner_turn_id"])
+    assert owner_turn["response_handed_off_at"] is None
+    rt.chat_store.mark_response_handed_off(owner_turn["turn_id"])
+    assert rt.work.promote_runnable() == (work.work_id,)
+    detail = rt.work.run_runnable()[0]
+    rows = [row for row in rt.actions_store.recent(limit=30) if row.capability_id == "host.service.restart"]
+    assert len(rows) == 1 and rows[0].work_id == work.work_id
+    assert rows[0].status == "uncertain"
+    assert detail["status"] == "waiting"
     prompt = json.loads(rt.chat.provider.requests[1].input)
     signal = prompt["tool_results"][0]
     assert signal["status"] == "durable_required"
-    assert signal["scope"] == "host/service/atlas-api.service"
 
 
 def test_uncertain_direct_action_is_adopted_not_replayed(tmp_path):
@@ -130,7 +145,7 @@ def test_uncertain_direct_action_is_adopted_not_replayed(tmp_path):
     assert detail["steps"][0]["occurrence_id"] == occurrence.occurrence_id
 
 
-def test_recovery_reconciles_restart_then_resumes_verification_and_reports_to_chat(tmp_path, monkeypatch):
+def test_recovery_reconciles_restart_but_detached_loop_resumes_verification(tmp_path, monkeypatch):
     monkeypatch.setenv("ATLAS_SERVICE_UNIT", "atlas-api.service")
     monkeypatch.setenv("INVOCATION_ID", "old-invocation")
     monkeypatch.setattr(host_module, "_run", _fake_systemd)
@@ -138,7 +153,13 @@ def test_recovery_reconciles_restart_then_resumes_verification_and_reports_to_ch
     rt = build_runtime(root)
     owner = rt.identities.current_owner()
     cid = rt.chat_store.create_conversation("Restart")['conversation_id']
-    owner_turn = rt.chat_store.append(cid, "user", "Restart your API and verify it comes back healthy")
+    message = "Restart your API and verify it comes back healthy"
+    owner_turn = rt.chat_store.append_owner(cid, message, principal_id=owner.principal_id)
+    attempt = rt.obligation_store.begin_attempt(owner_turn["turn_id"])
+    obligation_id = rt.obligation_store.commit_intake(
+        owner_turn["turn_id"], [{"grounding_excerpt":message,"text":message,"kind":"state_change"}],
+        attempts=attempt, provider="test", model="test",
+    ).obligation_ids[0]
     work = rt.work.create(
         "Restart the Atlas API and verify it is running",
         [
@@ -147,11 +168,15 @@ def test_recovery_reconciles_restart_then_resumes_verification_and_reports_to_ch
         ],
         owner_principal_id=owner.principal_id,
         metadata={"auto_resume_on_recovery":True,"chat_origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"]}},
+        obligation_ids=[obligation_id], stage=True,
     )
-    waiting = rt.work.run(work.work_id)
+    rt.chat_store.append(cid, "assistant", "The restart is staged for detached execution.")
+    rt.chat_store.mark_turn_completed(owner_turn["turn_id"])
+    rt.chat_store.mark_response_handed_off(owner_turn["turn_id"])
+    assert rt.work.promote_runnable() == (work.work_id,)
+    waiting = rt.work.run_runnable()[0]
     assert waiting["status"] == "waiting"
-    restart_step = waiting["steps"][0]
-    restart_occurrence = rt.actions_store.get(restart_step["occurrence_id"])
+    restart_occurrence = rt.actions_store.get(waiting["steps"][0]["occurrence_id"])
     assert restart_occurrence.receipt["predecessor_invocation_id"] == "old-invocation"
 
     monkeypatch.setenv("INVOCATION_ID", "new-invocation")
@@ -160,15 +185,15 @@ def test_recovery_reconciles_restart_then_resumes_verification_and_reports_to_ch
     monkeypatch.setattr(ProviderRuntime, "generate", provider_must_not_run_during_boot)
     rt2 = build_runtime(root)
     detail = rt2.work.detail(work.work_id)
+    assert detail["status"] == "queued"
+    assert [step["status"] for step in detail["steps"]] == ["completed", "queued"]
+    assert rt2.work.promote_runnable() == (work.work_id,)
+    detail = rt2.work.run_runnable()[0]
     assert detail["status"] == "completed"
     assert [step["status"] for step in detail["steps"]] == ["completed", "completed"]
-    turns = rt2.chat_store.turns(cid)
-    completions = [turn for turn in turns if turn["metadata"].get("work_completion")]
-    assert len(completions) == 1
-    assert "atlas-api.service is active/running" in completions[0]["content"]
-    rt3 = build_runtime(root)
-    completions_again = [turn for turn in rt3.chat_store.turns(cid) if turn["metadata"].get("work_completion")]
-    assert len(completions_again) == 1
+    assert not [turn for turn in rt2.chat_store.turns(cid) if turn["metadata"].get("work_completion")]
+    assert rt2.obligation_reconciler.reconcile_noncommunication() == (obligation_id,)
+    assert rt2.obligation_store.get(obligation_id).status == "resolved"
 
 
 def test_recover_executing_preserves_pre_dispatch_restart_identity(tmp_path, monkeypatch):
@@ -224,11 +249,12 @@ def test_identical_work_composition_from_same_owner_turn_is_idempotent(tmp_path)
     rt = build_runtime(tmp_path / "instance")
     owner = rt.identities.current_owner().principal_id
     cid = rt.chat_store.create_conversation("Duplicate")['conversation_id']
-    owner_turn = rt.chat_store.append(cid, "user", "Do the durable thing")
+    owner_turn = rt.chat_store.append_owner(cid, "Do the durable thing", principal_id=owner)
+    obligation_id = _commit_test_obligation(rt, owner_turn)
     provenance = InvocationProvenance(owner, "human", "chat")
     payload = {
         "objective":"Original objective", "run":False,
-        "origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"]},
+        "origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"],"obligation_ids":[obligation_id]},
         "steps":[{"capability_id":"memory.search","description":"Search once","input":{"query":"x"}}],
     }
 
@@ -242,9 +268,10 @@ def test_one_owner_turn_may_create_distinct_work_items(tmp_path):
     rt = build_runtime(tmp_path / "instance")
     owner = rt.identities.current_owner().principal_id
     cid = rt.chat_store.create_conversation("Two jobs")['conversation_id']
-    owner_turn = rt.chat_store.append(cid, "user", "Create two different responsibilities")
+    owner_turn = rt.chat_store.append_owner(cid, "Create two different responsibilities", principal_id=owner)
+    obligation_id = _commit_test_obligation(rt, owner_turn)
     provenance = InvocationProvenance(owner, "human", "chat")
-    base = {"run":False,"origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"]}}
+    base = {"run":False,"origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"],"obligation_ids":[obligation_id]}}
     a = rt.capabilities.invoke("work.create", {**base,"objective":"Job A","steps":[{"capability_id":"memory.search","input":{"query":"a"}}]}, provenance=provenance)
     b = rt.capabilities.invoke("work.create", {**base,"objective":"Job B","steps":[{"capability_id":"memory.search","input":{"query":"b"}}]}, provenance=provenance)
     assert a.result["work_id"] != b.result["work_id"]
@@ -371,138 +398,17 @@ def test_chat_refuses_identical_replay_of_uncertain_action(tmp_path):
     assert any(item.get("status") == "replay_refused" for item in second_prompt["tool_results"])
 
 
-def test_normal_work_completion_posts_exactly_one_chat_turn(tmp_path):
+def test_work_completion_no_longer_creates_owner_chat_report(tmp_path):
     rt = build_runtime(tmp_path / "instance")
-    owner = rt.identities.current_owner()
-    cid = rt.chat_store.create_conversation("Normal completion")['conversation_id']
-    owner_turn = rt.chat_store.append(cid, "user", "Search durable memory")
+    owner = rt.identities.current_owner().principal_id
+    cid = rt.chat_store.create_conversation("Execution truth only")["conversation_id"]
     work = rt.work.create(
         "Search durable memory", [{"capability_id":"memory.search","input":{"query":"nothing"}}],
-        owner_principal_id=owner.principal_id,
-        metadata={"chat_origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"]}},
-    )
-    assert rt.work.run(work.work_id)["status"] == "completed"
-    completions = [t for t in rt.chat_store.turns(cid) if t["metadata"].get("work_completion")]
-    assert len(completions) == 1
-    rt.work.run(work.work_id)
-    assert len([t for t in rt.chat_store.turns(cid) if t["metadata"].get("work_completion")]) == 1
-
-
-def test_work_completion_is_durable_before_model_reporting_and_upgrades_in_place(tmp_path):
-    rt = build_runtime(tmp_path / "instance")
-    owner = rt.identities.current_owner().principal_id
-    cid = rt.chat_store.create_conversation("Completion report")["conversation_id"]
-    owner_turn = rt.chat_store.append(cid, "user", "Restart, verify, then report weather")
-    work = rt.work_store.create(
-        "Restart the API, verify health, and report the Cullinan weather", owner,
-        [
-            {"capability_id": "host.service.restart", "description": "Restart", "input": {"unit": "atlas-api.service"}},
-            {"capability_id": "host.service.status", "description": "Verify", "input": {"unit": "atlas-api.service"}},
-            {"capability_id": "web.fetch", "description": "Weather", "input": {"url": "https://wttr.in/Cullinan?format=3"}},
-        ],
-        metadata={"chat_origin": {"conversation_id": cid, "owner_turn_id": owner_turn["turn_id"]}},
-    )
-    steps = rt.work_store.steps(work.work_id)
-    rt.work_store.set_step(steps[0].step_id, status="completed", occurrence_id="action_restart", output={"unit": "atlas-api.service", "dispatched": True})
-    rt.work_store.set_step(steps[1].step_id, status="completed", occurrence_id="action_status", output={"unit": "atlas-api.service", "properties": {"ActiveState": "active", "SubState": "running"}})
-    rt.work_store.set_step(steps[2].step_id, status="completed", occurrence_id="action_weather", output={"payload": {"text": "Cullinan: 24°C, clear"}})
-    rt.work_store.set_work_status(work.work_id, "completed")
-    detail = rt.work.detail(work.work_id)
-    rt.chat.provider = SequenceProvider(
-        '{"kind":"reply","reply":"The API restarted and verified healthy. Cullinan weather: 24°C and clear."}',
-        '{"grounded":true,"unsupported_claims":[]}',
-    )
-
-    initial = rt.chat.record_work_completion(detail)
-    assert initial is not None
-    assert initial["metadata"]["completion_report"]["mode"] == "deterministic_pending"
-    assert "24°C" not in initial["content"]
-    assert rt.chat.provider.requests == []
-
-    changed = rt.chat.upgrade_pending_work_completion_reports()
-    assert len(changed) == 1
-    completions = [t for t in rt.chat_store.turns(cid) if t["metadata"].get("work_completion")]
-    assert len(completions) == 1
-    upgraded = completions[0]
-    assert upgraded["turn_id"] == initial["turn_id"]
-    assert "24°C and clear" in upgraded["content"]
-    assert upgraded["metadata"]["completion_report"]["mode"] == "grounded_model_verified"
-    assert upgraded["metadata"]["work_completion"]["final_output"] == {"payload": {"text": "Cullinan: 24°C, clear"}}
-    assert rt.chat.provider.requests[0].capability_id == "chat.work_completion_report"
-    assert rt.chat.provider.requests[1].capability_id == "chat.work_completion_verify"
-
-
-def test_completion_persistence_never_calls_model_and_fallback_does_not_leak_raw_output(tmp_path):
-    rt = build_runtime(tmp_path / "instance")
-    cid = rt.chat_store.create_conversation("No network at boot")["conversation_id"]
-
-    class BrokenProvider:
-        def generate(self, _request):
-            raise AssertionError("model provider must not run while completion truth is being persisted")
-
-    rt.chat.provider = BrokenProvider()
-    detail = {
-        "work_id": "work_boot_safe", "objective": "Finish a recovered responsibility", "status": "completed",
-        "revision": 1, "updated_at": "2026-09-05T05:00:00+00:00",
-        "metadata": {"chat_origin": {"conversation_id": cid, "owner_turn_id": "turn_owner"}},
-        "steps": [{
-            "ordinal": 1, "description": "Opaque final step", "capability_id": "test.internal", "status": "completed",
-            "output": {"transport_internal": "SECRET STACK TRACE SHOULD NOT BE SHOWN", "code": 500},
-            "occurrence_id": "action_final",
-        }],
-    }
-    turn = rt.chat.record_work_completion(detail)
-    assert turn is not None
-    assert "SECRET STACK TRACE" not in turn["content"]
-    assert "Recorded step results are available in the Work item" in turn["content"]
-    assert turn["metadata"]["completion_report"]["mode"] == "deterministic_pending"
-
-
-def test_unverified_completion_report_never_replaces_deterministic_turn(tmp_path):
-    rt = build_runtime(tmp_path / "instance")
-    owner = rt.identities.current_owner().principal_id
-    cid = rt.chat_store.create_conversation("Rejected report")["conversation_id"]
-    owner_turn = rt.chat_store.append(cid, "user", "Do the durable thing")
-    work = rt.work_store.create(
-        "Do the durable thing", owner,
-        [{"capability_id": "memory.search", "description": "Search", "input": {"query": "x"}}],
-        metadata={"chat_origin": {"conversation_id": cid, "owner_turn_id": owner_turn["turn_id"]}},
-    )
-    step = rt.work_store.steps(work.work_id)[0]
-    rt.work_store.set_step(step.step_id, status="completed", occurrence_id="action_search", output={"items": []})
-    rt.work_store.set_work_status(work.work_id, "completed")
-    initial = rt.chat.record_work_completion(rt.work.detail(work.work_id))
-    rt.chat.provider = SequenceProvider(
-        '{"kind":"reply","reply":"I also proved an unrelated fact that is not in evidence."}',
-        '{"grounded":false,"unsupported_claims":["unrelated fact"]}',
-    )
-    rt.chat.upgrade_pending_work_completion_reports()
-    final = [t for t in rt.chat_store.turns(cid) if t["metadata"].get("work_completion")][0]
-    assert final["turn_id"] == initial["turn_id"]
-    assert final["content"] == initial["content"]
-    assert final["metadata"]["completion_report"]["mode"] == "deterministic_fallback"
-    assert final["metadata"]["completion_report"]["verification"]["grounded"] is False
-
-
-def test_completion_reporting_failure_never_flips_completed_work(tmp_path):
-    rt = build_runtime(tmp_path / "instance")
-    owner = rt.identities.current_owner().principal_id
-    work = rt.work.create(
-        "Search durable memory", [{"capability_id": "memory.search", "input": {"query": "nothing"}}],
         owner_principal_id=owner,
     )
+    assert rt.work.run(work.work_id)["status"] == "completed"
+    assert rt.chat_store.turns(cid) == ()
 
-    def broken_reporter(_detail):
-        raise RuntimeError("report persistence unavailable")
-
-    rt.work.set_completion_hook(broken_reporter)
-    detail = rt.work.run(work.work_id)
-    assert detail["status"] == "completed"
-    assert detail["steps"][0]["status"] == "completed"
-    reporting = detail["metadata"]["completion_reporting"]
-    assert reporting["status"] == "failed"
-    assert reporting["error_type"] == "RuntimeError"
-    assert "report persistence unavailable" in reporting["error"]
 
 
 def test_restart_rate_limit_is_not_row_bounded(tmp_path, monkeypatch):
@@ -578,10 +484,11 @@ def test_interrupted_work_create_occurrence_reconciles_from_durable_work(tmp_pat
     rt = build_runtime(tmp_path / "instance")
     owner = rt.identities.current_owner().principal_id
     cid = rt.chat_store.create_conversation("Orchestration")['conversation_id']
-    owner_turn = rt.chat_store.append(cid, "user", "Create durable work")
+    owner_turn = rt.chat_store.append_owner(cid, "Create durable work", principal_id=owner)
+    obligation_id = _commit_test_obligation(rt, owner_turn)
     payload = {
         "objective":"Search durable memory", "run":True,
-        "origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"]},
+        "origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"],"obligation_ids":[obligation_id]},
         "steps":[{"capability_id":"memory.search","input":{"query":"x"}}],
     }
     created = rt.capabilities.invoke("work.create", payload, provenance=InvocationProvenance(owner, "human", "chat"))
@@ -599,19 +506,21 @@ def test_interrupted_work_create_occurrence_reconciles_from_durable_work(tmp_pat
     assert resolved.result["work_id"] == work_id
 
 
-def test_interrupted_work_create_resumes_queued_created_work_before_reconciling(tmp_path):
+def test_interrupted_work_create_reconciles_without_pre_handoff_execution(tmp_path):
     from atlas_core.actions import ActionRequest
     from atlas_core.work.runtime import _chat_work_key
     rt = build_runtime(tmp_path / "instance")
     owner = rt.identities.current_owner().principal_id
-    cid = rt.chat_store.create_conversation("Queued create")['conversation_id']
-    owner_turn = rt.chat_store.append(cid, "user", "Create and run durable work")
+    cid = rt.chat_store.create_conversation("Staged create")['conversation_id']
+    owner_turn = rt.chat_store.append_owner(cid, "Create and run durable work", principal_id=owner)
+    obligation_id = _commit_test_obligation(rt, owner_turn)
     steps = [{"capability_id":"memory.search","input":{"query":"x"}}]
     objective = "Search durable memory"
-    origin = {"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"]}
+    origin = {"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"],"obligation_ids":[obligation_id]}
     work = rt.work.create(
         objective, steps, owner_principal_id=owner,
-        metadata={"auto_resume_on_recovery":True,"chat_origin":{**origin,"work_key":_chat_work_key(owner_turn["turn_id"], objective, steps)}},
+        metadata={"auto_resume_on_recovery":True,"chat_origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"],"work_key":_chat_work_key(owner_turn["turn_id"], objective, steps)}},
+        obligation_ids=[obligation_id], stage=True,
     )
     payload = {"objective":objective,"steps":steps,"run":True,"origin":origin}
     orphan = rt.actions_store.create(
@@ -619,7 +528,13 @@ def test_interrupted_work_create_resumes_queued_created_work_before_reconciling(
         decision="YES",revision=rt.policy_store.revision(),event_id=None,status="executing",
     )
     rt.actions_store.recover_executing()
-    assert rt.work.detail(work.work_id)["status"] == "queued"
+    assert rt.work.detail(work.work_id)["status"] == "staged"
     assert orphan.occurrence_id in rt.work.reconcile_orchestration_actions()
-    assert rt.work.detail(work.work_id)["status"] == "completed"
+    assert rt.work.detail(work.work_id)["status"] == "staged"
     assert rt.actions_store.get(orphan.occurrence_id).status == "succeeded"
+    assert not rt.actions_store.for_work_step(work.work_id, rt.work_store.steps(work.work_id)[0].step_id)
+    rt.chat_store.append(cid, "assistant", "Staged.")
+    rt.chat_store.mark_turn_completed(owner_turn["turn_id"])
+    rt.chat_store.mark_response_handed_off(owner_turn["turn_id"])
+    assert rt.work.promote_runnable() == (work.work_id,)
+    assert rt.work.run_runnable()[0]["status"] == "completed"

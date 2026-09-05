@@ -6,9 +6,12 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.routing import Mount, Route
 
 from atlas_api.auth import auth_from_env
+from atlas_api.handoff import ResponseHandoffMiddleware
+from atlas_api.quarantine import QuarantineMiddleware
 from atlas_api.compose import build_runtime
 from atlas_api.routes import api
 from atlas_api.spa import CompanionStaticFiles
@@ -19,6 +22,9 @@ logger = logging.getLogger(__name__)
 async def _cadence_loop(app: Starlette) -> None:
     while True:
         try:
+            if bool(app.state.runtime.operational.state().get("quarantined")):
+                await asyncio.sleep(1)
+                continue
             await asyncio.to_thread(app.state.runtime.cadence.tick)
         except asyncio.CancelledError:
             raise
@@ -27,17 +33,37 @@ async def _cadence_loop(app: Starlette) -> None:
         await asyncio.sleep(30)
 
 
-async def _completion_report_loop(app: Starlette) -> None:
-    """Enrich deterministic Work completion turns only after the API can start serving."""
-    await asyncio.sleep(1)
+async def _work_loop(app: Starlette) -> None:
+    """Detached execution owner for ledger-aware Work."""
+    await asyncio.sleep(0.1)
     while True:
         try:
-            await asyncio.to_thread(app.state.runtime.chat.upgrade_pending_work_completion_reports)
+            if bool(app.state.runtime.operational.state().get("quarantined")):
+                await asyncio.sleep(1)
+                continue
+            await asyncio.to_thread(app.state.runtime.work.promote_runnable)
+            await asyncio.to_thread(app.state.runtime.work.run_runnable)
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.warning("completion report enrichment failed", exc_info=True)
-        await asyncio.sleep(15)
+            logger.warning("detached Work loop failed", exc_info=True)
+        await asyncio.sleep(1)
+
+
+async def _obligation_loop(app: Starlette) -> None:
+    """Reconcile obligation truth from durable Action/Evidence and verified reports."""
+    await asyncio.sleep(0.5)
+    while True:
+        try:
+            if bool(app.state.runtime.operational.state().get("quarantined")):
+                await asyncio.sleep(1)
+                continue
+            await asyncio.to_thread(app.state.runtime.obligation_reconciler.tick)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("obligation reconciliation failed", exc_info=True)
+        await asyncio.sleep(2)
 
 
 def create_app(*, instance_root: str | Path = "instance", static_dir: str | Path | None = None) -> Starlette:
@@ -48,13 +74,14 @@ def create_app(*, instance_root: str | Path = "instance", static_dir: str | Path
     @asynccontextmanager
     async def lifespan(app: Starlette):
         cadence_task = asyncio.create_task(_cadence_loop(app), name="atlas-cadence")
-        report_task = asyncio.create_task(_completion_report_loop(app), name="atlas-completion-report")
+        work_task = asyncio.create_task(_work_loop(app), name="atlas-work")
+        obligation_task = asyncio.create_task(_obligation_loop(app), name="atlas-obligations")
         try:
             yield
         finally:
-            for task in (cadence_task, report_task):
+            for task in (cadence_task, work_task, obligation_task):
                 task.cancel()
-            for task in (cadence_task, report_task):
+            for task in (cadence_task, work_task, obligation_task):
                 with suppress(asyncio.CancelledError):
                     await task
             if runtime.sources.registry is not None:
@@ -62,6 +89,9 @@ def create_app(*, instance_root: str | Path = "instance", static_dir: str | Path
 
     routes = [
         Route("/api/health", api.health, methods=["GET"]),
+        Route("/api/quarantine", api.quarantine_state, methods=["GET"]),
+        Route("/api/quarantine/repair", api.quarantine_repair, methods=["POST"]),
+        Route("/api/quarantine/clear", api.quarantine_clear, methods=["POST"]),
         Route("/api/auth/session", api.auth_session, methods=["GET"]),
         Route("/api/auth/login", api.auth_login, methods=["POST"]),
         Route("/api/auth/logout", api.auth_logout, methods=["POST"]),
@@ -130,7 +160,10 @@ def create_app(*, instance_root: str | Path = "instance", static_dir: str | Path
                 name="companion",
             )
         )
-    app = Starlette(debug=False, routes=routes, lifespan=lifespan)
+    app = Starlette(debug=False, routes=routes, lifespan=lifespan, middleware=[
+        Middleware(QuarantineMiddleware, operational=runtime.operational),
+        Middleware(ResponseHandoffMiddleware, chat_store=runtime.chat_store),
+    ])
     app.state.runtime = runtime
     app.state.auth = auth
     return app

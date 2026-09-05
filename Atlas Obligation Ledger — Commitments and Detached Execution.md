@@ -1,6 +1,6 @@
 # Atlas Obligation Ledger — Commitments and Detached Execution
 
-Status: architecture specification. This document freezes the obligation and request/execution boundary before implementation. It describes required runtime truth, forbidden states, recovery semantics, migration treatment, and deletion criteria.
+Status: frozen implementation contract. This document defines the obligation and request/execution boundary implemented by Atlas. It describes required runtime truth, forbidden states, recovery semantics, migration treatment, and deletion criteria.
 
 ## 1. Purpose
 
@@ -19,9 +19,11 @@ These rules apply whether API and execution loops share a process or are operati
 
 ## 2. Core invariants
 
+> **Every authenticated owner communication that reaches durable persistence must remain enumerated.** Once an authenticated owner turn is durably inserted, it is represented either by a completed intake whose commitments are in the obligation ledger, or by an incomplete intake state that remains recoverable or visible for owner attention. Communications rejected before durable persistence are outside this invariant.
+
 - Obligations are grounded in authenticated owner language and are never invented by Atlas.
 - Obligations describe **what** is owed, never **how** to satisfy it. They contain no capability id, Work step, dependency graph, or execution sequence.
-- Bindings are advisory; resolution is authoritative. Deleting every binding must not change any obligation status or resolution.
+- Bindings are advisory with respect to **resolution** and authoritative with respect to **servicing**. Deleting bindings must not change what Atlas owes, but staged Work must continuously retain valid backing.
 - Resolution is written from evidence, never from a Work status transition.
 - A request handler never executes durable Work inline.
 - No consequential dispatch may occur unless obligation intake for the owner turn is `complete`.
@@ -37,10 +39,12 @@ These rules apply whether API and execution loops share a process or are operati
 
 Obligation intake state belongs to the authenticated owner turn because it describes how completely Atlas understood that utterance.
 
-For every authenticated owner-role turn, `chat_turns.intake_status` is structurally required. The column may be null for non-owner roles, but an owner row must satisfy a CHECK equivalent to `intake_status IN ('complete','partial','failed')`. The initial owner-turn insert is fail-closed as `failed` with `intake_error_code = intake_not_completed`; successful intake atomically replaces that state with `complete` or `partial` while committing the validated obligation set. A crash during intake therefore leaves a durable owner turn that is non-executable rather than a row with ambiguous coverage.
+For every authenticated owner-role turn, `chat_turns.intake_status` is structurally required. The column may be null for non-owner roles, but an owner row must satisfy a CHECK equivalent to `intake_status IN ('pending','complete','partial','interrupted','failed')`. The initial owner-turn insert is `pending`. A successful intake atomically commits the validated obligation set and moves the turn to `complete` or `partial`.
+
+`pending` is a transient live-attempt state, not a recovery conclusion. Under the current single-process topology, startup occurs before any prior intake can still be legitimately in flight, so boot converts every persisted `pending` owner turn to `interrupted` before normal serving. `interrupted` means the previous invocation ended before intake committed any obligations and is automatically retryable. A genuine extraction failure that exhausts its allowed attempts becomes `failed` and requires owner intervention; the reason remains in `intake_error_code` but recoverability is not encoded there.
 
 ```text
-intake_status = complete | partial | failed
+intake_status = pending | complete | partial | interrupted | failed
 intake_schema_version = 1
 intake_attempts
 intake_provider
@@ -51,14 +55,19 @@ turn_completed_at
 response_handed_off_at
 ```
 
+`pending` means one intake attempt is currently claimed by this runtime invocation. It is semantically incomplete and therefore non-executable.
+
 `complete` means the extracted obligation set passed grounding and coverage validation. It may contain zero obligations.
 
 `partial` means at least one grounded obligation was captured but coverage validation identified owner language that could not safely be mapped. Consequence-free inspection may continue, but consequential execution is forbidden.
 
-`failed` means Atlas has no trustworthy obligation enumeration for the turn. Planning and consequential execution do not proceed.
+`interrupted` means intake did not commit any obligation set before the owning runtime invocation ended. It is automatically retryable because there are no partial intake effects to replay.
+
+`failed` means extraction actually ran, exhausted its permitted attempts, and still produced no trustworthy obligation enumeration. Planning and consequential execution do not proceed without owner intervention.
+
 A greeting such as `hi` is therefore `complete` with an empty obligation set. It is not an intake failure.
 
-Obligation extraction and planning have independent retry semantics and independent evidence. Obligation creation is idempotent for one owner turn and grounded span; a retry may rediscover the same commitment but may not create a duplicate.
+Obligation extraction and planning have independent retry semantics and independent evidence. Obligation creation is idempotent for one owner turn and grounded span; a retry may rediscover the same commitment but may not create a duplicate. Automatic intake retry is permitted only for `interrupted`, where no partial intake effects were committed.
 
 ## 4. Obligation record
 
@@ -99,7 +108,7 @@ supersedes            optional obligation_id
 
 `revision` increments on every owner-visible authoritative change to the obligation: status, resolution, lapse observation, or other durable state used in reporting. Advisory binding changes do not increment it.
 
-## 5. Advisory servicing bindings
+## 5. Servicing bindings
 
 Work and other servicing mechanisms attach through a many-to-many relation such as:
 
@@ -111,11 +120,11 @@ obligation_bindings
   created_at
 ```
 
-Bindings answer only: **what mechanism currently appears to be servicing this obligation?**
+Bindings answer only: **what mechanism is authorised to claim it is servicing this obligation?**
 
-They never answer whether the obligation is fulfilled. A Work item may be cancelled, revised, replaced, split or abandoned while the obligation remains unchanged. One Work step may service several obligations and one obligation may be serviced by several mechanisms over its lifetime.
+Bindings are advisory for resolution and authoritative for servicing. They never answer whether the obligation is fulfilled. A Work item may be cancelled, revised, replaced, split or abandoned while the obligation remains unchanged. One Work mechanism may service several obligations and one obligation may be serviced by several mechanisms over its lifetime.
 
-Deleting all bindings is permitted to damage observability of current servicing, but it must produce zero changes to obligation status, resolution, lapse, or historical evidence.
+Deleting bindings must produce zero changes to obligation status, resolution, lapse, or historical evidence. However, a staged Work item must continuously retain at least one valid backing obligation. SQLite triggers guard insertion/transition into `staged` and deletion or reassignment of the final binding, so the servicing invariant cannot be violated after staging and discovered only on the next boot.
 
 ## 6. Temporal satisfiability
 
@@ -301,15 +310,17 @@ There is no historical/pre-ledger completeness branch. Section 17 requires a cle
 
 ## 14. Attention and dangling commitments
 
-`Needs you` is derived from obligation truth rather than Work-status heuristics. Useful derived conditions include:
+`Needs you` is the union of obligation truth and incomplete owner-turn intake. Useful derived conditions include:
 
+- authenticated owner turn whose intake is `interrupted`, `partial`, or `failed`;
+- `pending` intake older than a presentation-only grace threshold;
 - open obligation with no active servicing binding;
 - open obligation whose servicing mechanism is blocked or waiting on owner input;
 - open obligation with `lapsed_at` set;
 - open obligation from a complete turn whose response handoff is unconfirmed;
 - historical `unserviceable` resolution whose registry basis is stale.
 
-These are views over durable facts. They are not additional obligation states.
+Semantically, every `pending` turn is incomplete and belongs to Attention. The grace threshold only suppresses a healthy two-second in-flight intake from owner-facing display; it does not alter ledger state or recovery semantics. These are views over durable facts, not additional obligation states.
 
 ## 15. Forbidden states
 
@@ -319,7 +330,7 @@ The following states are invalid and must be prevented by schema constraints, tr
 - staged ledger-aware Work with zero backing obligations;
 - runnable ledger-aware Work whose owner turn is not `complete`;
 - runnable ledger-aware Work with null `turn_completed_at` or null `response_handed_off_at`;
-- consequential occurrence for an owner turn whose intake is `partial`, `failed`, or absent under the ledger-aware schema;
+- consequential occurrence for an owner turn whose intake is not `complete` (`pending`, `partial`, `interrupted`, `failed`, invalid, or absent);
 - obligation whose `grounding_excerpt` is not a substring of its authenticated owner turn;
 - obligation containing a capability id, execution dependency, ordering edge, or Work-step definition;
 - `status = open` with a non-null resolution kind/ref/resolved timestamp;
@@ -361,11 +372,11 @@ Atlas is still in active development. Existing SQLite entries must not constrain
 
 The reset removes existing instances of pre-ledger shapes, but schema/store constraints remove the class. After cutover:
 
-- every owner-role `chat_turns` row must carry `intake_status = complete | partial | failed`; null or any other value is rejected by schema constraint;
+- every owner-role `chat_turns` row must carry `intake_status = pending | complete | partial | interrupted | failed`; null or any other value is rejected by schema constraint;
 - staged Work may be created only through one transactional store boundary that receives a non-empty obligation set, writes the advisory bindings, and then enters `staged`; a staged transition with no backing obligation is rejected at write;
-- startup runs an invariant assertion for owner turns without valid intake state and staged Work without backing obligations. Any hit is fatal: Atlas refuses to serve rather than logging and continuing.
+- startup derives validation directly from the Section 15 forbidden-state list, one named executable check per bullet. Any hit enters durable **quarantine**: health, authentication, diagnostics, narrowly authorised repair and explicit clearance remain available, while normal APIs, recovery dispatch, cadence, reconciliation and Work execution remain disabled. Quarantine is sticky and may not clear merely because a later boot happens to validate cleanly.
 
-Because SQLite cannot express "at least one row exists in another table" as a row CHECK, the staged-Work cardinality invariant belongs to the Work store's transactional write boundary plus a database guard on the transition into `staged`. A temporary composition row must never commit without either becoming validly staged or rolling back.
+Because SQLite cannot express "at least one row exists in another table" as a row CHECK, the staged-Work cardinality invariant belongs to the Work store transactional write boundary plus explicit SQLite triggers. The triggers cover insertion/transition into `staged` and deletion or movement of the final backing binding. A temporary composition row must never commit without either becoming validly staged or rolling back.
 
 ### Reset scope
 
@@ -379,7 +390,11 @@ The live reset recreates all Atlas SQLite databases, including `atlas-identity.d
 
 ### Rollback copy
 
-Before any destructive reset, Atlas must be quiesced and the entire instance/state directory copied to a timestamped rollback location. The copy includes SQLite databases and their WAL/SHM files, secrets, and managed payloads. The copy is rollback evidence only: the new runtime must not read it automatically or use it as a legacy compatibility source. The reset begins only after the copy is verified complete.
+Before any destructive reset, every Atlas process with access to the instance databases must be **stopped**, not merely idle or quiescent. Non-database custody files are copied normally. Each SQLite database is copied with `VACUUM INTO` to produce a consistent single-file rollback database with no WAL/SHM coordination requirement. Every copied database must then be successfully opened and pass `PRAGMA integrity_check` before reset may begin.
+
+The rollback manifest records the runtime revision, timestamp, source instance, per-database integrity result, schema fingerprint/user version, file hashes, and database hashes. The copy is rollback evidence only: the new runtime must not read it automatically or use it as a legacy compatibility source. If backup verification or cutover fails, Atlas remains stopped rather than automatically restarting into an uncertain state.
+
+Quarantine repair never creates a raw-SQL escape hatch. Repairs use normal store boundaries and database triggers and each repair produces a durable operational event with actor, reason, affected records and evidence. A corruption that cannot be repaired through those boundaries is a stopped migration/recovery operation, not an admin API bypass. Quarantine clearance is explicit, follows a full successful invariant pass, and is itself durably recorded.
 
 Do not backfill obligations, introduce `legacy_untracked`, add cutover exemptions, or support mixed pre-ledger/post-ledger completeness semantics. The objective is one total completeness invariant, not preservation of disposable development rows.
 
@@ -408,9 +423,11 @@ The ledger is load-bearing only if these behaviours are proven end to end:
 19. Registry change identifies stale `unserviceable` assessments without reopening the resolved obligation.
 20. Withdrawal can be written only by an explicit authenticated owner action or grounded later owner utterance. Work cancellation, planner output, recovery, policy refusal and unserviceable resolution are each asserted unable to write `withdrawn`.
 21. Deleting every obligation binding leaves obligation status and resolution unchanged.
-22. Persisting an owner-role Chat turn with null or invalid `intake_status` is rejected; a crash during intake leaves the turn in the explicit fail-closed `failed` state, never without intake state.
+22. Persisting an owner-role Chat turn with null or invalid `intake_status` is rejected; a live attempt is `pending`, and a restart converts inherited `pending` to retryable `interrupted` before serving.
 23. Persisting or transitioning Work into `staged` with zero backing obligations is rejected by the transactional store/database boundary.
-24. Startup invariant checking refuses to serve when either invalid shape is injected beneath normal write APIs; it never repairs, exempts, or merely logs the violation.
+24. Startup invariant checking enters durable quarantine when an invalid shape is injected beneath normal write APIs; health/diagnostics remain reachable, normal execution is disabled, and the violation is never silently repaired or exempted.
+25. Quarantine remains sticky across a later clean boot until an explicit owner-authorised clearance follows a full successful invariant pass; repair and clearance each leave durable operational evidence.
+26. The cutover rollback uses a stopped instance and `VACUUM INTO`; every rollback database opens, passes `PRAGMA integrity_check`, and carries runtime/schema provenance before destructive reset starts.
 
 ## 19. Flagship restart test under this model
 

@@ -1,8 +1,6 @@
 from __future__ import annotations
 import hashlib
 import json
-import logging
-from datetime import datetime, timezone
 from typing import Any, Callable
 from atlas_core.actions import ActionStore
 from atlas_core.actions.models import payload_sha256
@@ -11,7 +9,6 @@ from atlas_core.provenance import InvocationProvenance
 from .store import WorkStore
 from .validation import validate_workflow_steps
 
-logger = logging.getLogger(__name__)
 
 def _chat_work_key(owner_turn_id: str, objective: str, steps: list[dict[str, Any]]) -> str:
     signature=json.dumps({"objective":objective,"steps":steps},sort_keys=True,separators=(",",":"),ensure_ascii=False,default=str)
@@ -28,48 +25,39 @@ class WorkRuntime:
     }
 
     def __init__(self, store: WorkStore, capabilities: CapabilityRuntime, actions: ActionStore,
-                 cancel_hook: Callable[[Any], None] | None = None) -> None:
+                 cancel_hook: Callable[[Any], None] | None = None, obligation_store=None,
+                 turn_store=None) -> None:
         self.store = store
         self.capabilities = capabilities
         self.actions = actions
         self.cancel_hook = cancel_hook
-        self.completion_hook: Callable[[dict[str, Any]], None] | None = None
-
-    def set_completion_hook(self, hook: Callable[[dict[str, Any]], None] | None) -> None:
-        self.completion_hook = hook
-
-    def _notify_terminal(self, detail: dict[str, Any]) -> dict[str, Any]:
-        if detail.get("status") in {"completed", "failed", "cancelled"} and self.completion_hook is not None:
-            try:
-                self.completion_hook(detail)
-            except Exception as exc:
-                # Reporting is downstream of execution truth. A Chat persistence or
-                # model-report failure must never make completed Work look failed.
-                logger.warning("work completion reporting failed for %s", detail.get("work_id"), exc_info=True)
-                work_id = str(detail.get("work_id") or "")
-                if work_id:
-                    try:
-                        self.store.merge_metadata(work_id, {
-                            "completion_reporting": {
-                                "status": "failed",
-                                "error_type": type(exc).__name__,
-                                "error": str(exc)[:500],
-                                "observed_at": datetime.now(timezone.utc).isoformat(),
-                            }
-                        })
-                        return self.detail(work_id)
-                    except Exception:
-                        logger.warning("could not record completion reporting failure for %s", work_id, exc_info=True)
-        return detail
-
+        self.obligation_store = obligation_store
+        self.turn_store = turn_store
     def validate_steps(self, steps: list[dict[str, Any]]) -> None:
         validate_workflow_steps(self.capabilities.registry, steps)
 
     def create(self, objective: str, steps: list[dict[str, Any]], *, owner_principal_id: str,
                metadata: dict[str, Any] | None = None, artifact_class: str | None = None,
-               workflow_class: str | None = None, adopt_occurrence_id: str | None = None):
+               workflow_class: str | None = None, adopt_occurrence_id: str | None = None,
+               obligation_ids: list[str] | tuple[str, ...] | None = None, stage: bool = False):
         self.validate_steps(steps)
         meta = dict(metadata or {})
+        backing = tuple(dict.fromkeys(str(item).strip() for item in (obligation_ids or ()) if str(item).strip()))
+        if stage:
+            if self.obligation_store is None:
+                raise RuntimeError("staged Work requires the obligation ledger")
+            if not backing:
+                raise ValueError("staged Work requires at least one backing obligation")
+            origin = meta.get("chat_origin") if isinstance(meta.get("chat_origin"), dict) else {}
+            owner_turn_id = str(origin.get("owner_turn_id") or "")
+            for obligation_id in backing:
+                obligation = self.obligation_store.get(obligation_id)
+                if obligation.status != "open":
+                    raise ValueError("staged Work may bind only open obligations")
+                if obligation.owner_principal_id != owner_principal_id:
+                    raise ValueError("backing obligation owner does not match Work owner")
+                if owner_turn_id and obligation.owner_turn_id != owner_turn_id:
+                    raise ValueError("backing obligation does not belong to the originating owner turn")
         origin_key = str((meta.get("chat_origin") or {}).get("work_key") or "") if isinstance(meta.get("chat_origin"), dict) else ""
         if origin_key:
             existing = self.store.find_by_origin_key(origin_key)
@@ -89,8 +77,11 @@ class WorkRuntime:
             resolved = registration.resolve_scope(dict(first.get("input") or {}))
             if resolved.scope != adopted.scope or payload_sha256(dict(resolved.payload)) != adopted.payload_sha256:
                 raise ValueError("adopted occurrence must match the first Work scope and payload")
-        work = self.store.create(objective, owner_principal_id, steps, metadata=meta,
-                                 artifact_class=artifact_class, workflow_class=workflow_class)
+        work = self.store.create(
+            objective, owner_principal_id, steps, metadata=meta,
+            artifact_class=artifact_class, workflow_class=workflow_class,
+            obligation_ids=backing, stage=stage,
+        )
         if adopted is not None:
             first_step = self.store.steps(work.work_id)[0]
             self.actions.attach_to_work(adopted.occurrence_id, work_id=work.work_id, step_id=first_step.step_id)
@@ -130,6 +121,52 @@ class WorkRuntime:
                 raise ValueError(f"work reference step {source_ordinal} is not completed")
             return _json_pointer(source.output, str(ref.get("output") or ""))
         return {key: self._resolve_input(work_id, ordinal, item) for key, item in value.items()}
+
+    def promote_runnable(self) -> tuple[str, ...]:
+        """Derive execution authority from durable turn and obligation facts."""
+        if self.turn_store is None or self.obligation_store is None:
+            return ()
+        changed=[]
+        for work in self.store.list(limit=10000):
+            origin=work.metadata.get("chat_origin") if isinstance(work.metadata.get("chat_origin"),dict) else None
+            if not origin:
+                continue
+            gate=work.metadata.get("execution_gate") if isinstance(work.metadata.get("execution_gate"),dict) else None
+            if work.status not in {"staged","queued"} and not (work.status=="waiting" and gate):
+                continue
+            owner_turn_id=str(origin.get("owner_turn_id") or "")
+            try: turn=self.turn_store.turn(owner_turn_id)
+            except KeyError:
+                self.store.merge_metadata(work.work_id,{"execution_gate":{"reason":"owner_turn_missing"}});continue
+            if turn.get("intake_status") != "complete":
+                self.store.set_work_status(work.work_id,"waiting")
+                self.store.merge_metadata(work.work_id,{"execution_gate":{"reason":"intake_not_complete"}});continue
+            if not turn.get("turn_completed_at"):
+                continue
+            if not turn.get("response_handed_off_at"):
+                self.store.set_work_status(work.work_id,"waiting")
+                self.store.merge_metadata(work.work_id,{"execution_gate":{"reason":"handoff_unconfirmed"}});continue
+            bindings=self.store.bindings(work.work_id)
+            open_backing=[]
+            for binding in bindings:
+                try: obligation=self.obligation_store.get(str(binding["obligation_id"]))
+                except KeyError: continue
+                if obligation.status=="open" and obligation.owner_turn_id==owner_turn_id:
+                    open_backing.append(obligation.obligation_id)
+            if not open_backing:
+                self.store.set_work_status(work.work_id,"waiting")
+                self.store.merge_metadata(work.work_id,{"execution_gate":{"reason":"no_open_backing_obligation"}});continue
+            self.store.merge_metadata(work.work_id,{"execution_gate":None})
+            self.store.set_work_status(work.work_id,"runnable")
+            changed.append(work.work_id)
+        return tuple(changed)
+
+    def run_runnable(self, limit: int = 50) -> tuple[dict[str, Any], ...]:
+        results=[]
+        for work in self.store.list(limit=max(1,int(limit))):
+            if work.status=="runnable":
+                results.append(self.run(work.work_id))
+        return tuple(results)
 
     def recover_incomplete(self) -> dict[str, Any]:
         """Reconcile durable Work against canonical Action state after a runtime restart.
@@ -200,8 +237,10 @@ class WorkRuntime:
         for work_id in dict.fromkeys(work_ids):
             work = self.store.get(work_id)
             if work.status in {"completed", "failed", "cancelled"}:
-                results.append(self._notify_terminal(self.detail(work_id))); continue
+                results.append(self.detail(work_id)); continue
             if work.status != "queued" or not bool(work.metadata.get("auto_resume_on_recovery")):
+                continue
+            if isinstance(work.metadata.get("chat_origin"), dict):
                 continue
             results.append(self.run(work_id))
         return tuple(results)
@@ -225,12 +264,15 @@ class WorkRuntime:
             return self.detail(work_id)
         self.store.set_step(step.step_id, status="failed", occurrence_id=occurrence.occurrence_id, error=error)
         self.store.set_work_status(work_id, "failed")
-        return self._notify_terminal(self.detail(work_id))
+        return self.detail(work_id)
 
     def run(self, work_id: str) -> dict[str, Any]:
         work = self.store.get(work_id)
         if work.status in {"completed", "failed", "cancelled", "paused"}:
             return self.detail(work_id)
+        ledger_aware = isinstance(work.metadata.get("chat_origin"), dict)
+        if ledger_aware and work.status not in {"runnable", "active"}:
+            raise ValueError("ledger-aware Work is not runnable")
         self.store.set_work_status(work_id, "active")
         for step in self.store.steps(work_id):
             if step.status in {"completed", "cancelled"}:
@@ -266,7 +308,7 @@ class WorkRuntime:
                 else:
                     self.store.set_step(step.step_id, status="failed", error=str(exc))
                     self.store.set_work_status(work_id, "failed")
-                    return self._notify_terminal(self.detail(work_id))
+                    return self.detail(work_id)
                 return self.detail(work_id)
             if occurrence.status == "succeeded":
                 self.store.set_step(step.step_id, status="completed", occurrence_id=occurrence.occurrence_id, output=occurrence.result)
@@ -277,7 +319,7 @@ class WorkRuntime:
                 return self.detail(work_id)
             return self._record_execution_failure(work_id, step, occurrence)
         self.store.set_work_status(work_id, "completed")
-        return self._notify_terminal(self.detail(work_id))
+        return self.detail(work_id)
 
     def reconcile_orchestration_actions(self) -> tuple[str, ...]:
         """Resolve interrupted work.create occurrences from the Work they durably created."""
@@ -296,7 +338,9 @@ class WorkRuntime:
             if item is None:
                 continue
             detail = self.detail(item.work_id)
-            if bool(payload.get("run", True)) and detail.get("status") == "queued" and bool(item.metadata.get("auto_resume_on_recovery")):
+            if (bool(payload.get("run", True)) and detail.get("status") == "queued"
+                    and bool(item.metadata.get("auto_resume_on_recovery"))
+                    and not isinstance(item.metadata.get("chat_origin"), dict)):
                 detail = self.run(item.work_id)
             receipt = {**(occurrence.receipt or {}), "reconciled_from_work": item.work_id}
             self.actions.transition(
@@ -312,12 +356,17 @@ class WorkRuntime:
 
     def resume(self, work_id: str):
         work = self.store.get(work_id)
+        ledger_aware = isinstance(work.metadata.get("chat_origin"), dict)
         if work.status == "failed":
             self.store.reset_failed(work_id)
         elif work.status == "paused":
             self.store.reset_retryable(work_id)
+        elif ledger_aware:
+            self.store.set_work_status(work_id, "staged")
         else:
             self.store.set_work_status(work_id, "active")
+        if ledger_aware:
+            return self.detail(work_id)
         return self.run(work_id)
 
     def cancel(self, work_id: str):
@@ -325,14 +374,14 @@ class WorkRuntime:
         if self.cancel_hook is not None:
             self.cancel_hook(work)
         self.store.cancel(work_id)
-        return self._notify_terminal(self.detail(work_id))
+        return self.detail(work_id)
 
 
 def register_work_capabilities(registry, runtime:WorkRuntime)->None:
     from atlas_core.actions import ActionResult
     from atlas_core.capabilities import CapabilityDefinition,CapabilityRegistration,ScopeResolution
     step_schema={"type":"object","required":["capability_id","input"],"properties":{"capability_id":{"type":"string","minLength":1},"description":{"type":"string","minLength":1},"input":{"type":"object"}},"additionalProperties":False}
-    origin_schema={"type":"object","required":["conversation_id","owner_turn_id"],"properties":{"conversation_id":{"type":"string","minLength":1},"owner_turn_id":{"type":"string","minLength":1}},"additionalProperties":False}
+    origin_schema={"type":"object","required":["conversation_id","owner_turn_id","obligation_ids"],"properties":{"conversation_id":{"type":"string","minLength":1},"owner_turn_id":{"type":"string","minLength":1},"obligation_ids":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}},"additionalProperties":False}
     schema={"type":"object","required":["objective","steps"],"properties":{"objective":{"type":"string","minLength":1},"steps":{"type":"array","minItems":1,"items":step_schema},"run":{"type":"boolean"},"origin":origin_schema,"adopt_occurrence_id":{"type":"string","minLength":1}},"additionalProperties":False}
     exact={"type":"object","required":["work_id"],"properties":{"work_id":{"type":"string","minLength":1}},"additionalProperties":False}
     revise_schema={"type":"object","required":["work_id","base_revision","from_ordinal","change_intent","reason","unchanged_goal","expected_impact","replacement_steps"],"properties":{
@@ -351,12 +400,14 @@ def register_work_capabilities(registry, runtime:WorkRuntime)->None:
             run=bool(payload.get("run",True));origin=payload.get("origin") if surface=="chat" and isinstance(payload.get("origin"),dict) else None
             adopt=payload.get("adopt_occurrence_id") if surface=="chat" else None
             metadata={"auto_resume_on_recovery":run}
+            backing=[]
             if origin:
                 owner_turn_id=str(origin["owner_turn_id"]);conversation_id=str(origin["conversation_id"])
+                backing=[str(item) for item in origin.get("obligation_ids") or []]
                 work_key=_chat_work_key(owner_turn_id,payload["objective"],payload["steps"])
                 metadata["chat_origin"]={"conversation_id":conversation_id,"owner_turn_id":owner_turn_id,"work_key":work_key}
-            work=runtime.create(payload["objective"],payload["steps"],owner_principal_id=principal,metadata=metadata,adopt_occurrence_id=adopt)
-            result=runtime.run(work.work_id) if run else runtime.detail(work.work_id)
+            work=runtime.create(payload["objective"],payload["steps"],owner_principal_id=principal,metadata=metadata,adopt_occurrence_id=adopt,obligation_ids=backing,stage=bool(origin))
+            result=runtime.detail(work.work_id) if origin else (runtime.run(work.work_id) if run else runtime.detail(work.work_id))
             return ActionResult(True,result,{"ok":True,"operation":"work.create","work_id":work.work_id})
         except Exception as exc:return ActionResult(False,error_code="work_create_failed",error=str(exc),receipt={"ok":False,"operation":"work.create"})
     def control_execute(operation):

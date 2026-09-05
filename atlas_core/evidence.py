@@ -55,6 +55,15 @@ class EvidenceStore:
             rows = db.execute("SELECT * FROM evidence WHERE occurrence_id=? ORDER BY created_at,evidence_id", (occurrence_id,)).fetchall()
         return tuple(_record(row) for row in rows)
 
+    def get(self, evidence_id: str) -> EvidenceRecord:
+        with self._db() as db:
+            row = db.execute(
+                "SELECT * FROM evidence WHERE evidence_id=?", (evidence_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(evidence_id)
+        return _record(row)
+
 
 def _record(row: sqlite3.Row) -> EvidenceRecord:
     return EvidenceRecord(row["evidence_id"], row["occurrence_id"], row["kind"], json.loads(row["payload_json"]), row["created_at"])

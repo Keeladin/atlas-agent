@@ -115,6 +115,53 @@ class ChatStore:
             "created_at": row["created_at"],
         }
 
+    def update_work_completion(self, key: str, *, content: str | None = None, metadata_patch: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Upgrade one already-durable completion turn in place.
+
+        The completion key is the idempotent identity. Reporting enrichment may
+        change owner-facing prose and report provenance, never execution truth.
+        """
+        key = str(key or "").strip()
+        if not key:
+            raise ValueError("work completion key is required")
+        with self._db() as db:
+            row = db.execute(
+                "SELECT * FROM chat_turns WHERE json_extract(metadata_json,'$.work_completion_key')=? LIMIT 1",
+                (key,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(key)
+            metadata = json.loads(row["metadata_json"] or "{}")
+            metadata.update(dict(metadata_patch or {}))
+            next_content = row["content"] if content is None else str(content)
+            db.execute(
+                "UPDATE chat_turns SET content=?,metadata_json=? WHERE turn_id=?",
+                (next_content, json.dumps(metadata, sort_keys=True, separators=(",", ":"), default=str), row["turn_id"]),
+            )
+            db.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE conversation_id=?", (row["conversation_id"],))
+            updated = db.execute("SELECT * FROM chat_turns WHERE turn_id=?", (row["turn_id"],)).fetchone()
+        return {
+            "turn_id": updated["turn_id"], "conversation_id": updated["conversation_id"], "role": updated["role"],
+            "content": updated["content"], "metadata": json.loads(updated["metadata_json"] or "{}"),
+            "created_at": updated["created_at"],
+        }
+
+    def pending_work_completions(self, limit: int = 20) -> tuple[dict[str, Any], ...]:
+        """Return completion turns whose deterministic report is awaiting enrichment."""
+        with self._db() as db:
+            rows = db.execute(
+                """SELECT * FROM chat_turns
+                   WHERE json_extract(metadata_json,'$.work_completion_key') IS NOT NULL
+                     AND json_extract(metadata_json,'$.completion_report.mode')='deterministic_pending'
+                   ORDER BY created_at,rowid LIMIT ?""",
+                (max(1, int(limit)),),
+            ).fetchall()
+        return tuple({
+            "turn_id": row["turn_id"], "conversation_id": row["conversation_id"], "role": row["role"],
+            "content": row["content"], "metadata": json.loads(row["metadata_json"] or "{}"),
+            "created_at": row["created_at"],
+        } for row in rows)
+
     def owner_grounding_matches(self, source_ref: str, excerpt: str) -> bool:
         parts = str(source_ref or "").split(":", 2)
         if len(parts) != 3 or parts[0] != "chat" or not excerpt:

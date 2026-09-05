@@ -27,6 +27,19 @@ async def _cadence_loop(app: Starlette) -> None:
         await asyncio.sleep(30)
 
 
+async def _completion_report_loop(app: Starlette) -> None:
+    """Enrich deterministic Work completion turns only after the API can start serving."""
+    await asyncio.sleep(1)
+    while True:
+        try:
+            await asyncio.to_thread(app.state.runtime.chat.upgrade_pending_work_completion_reports)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("completion report enrichment failed", exc_info=True)
+        await asyncio.sleep(15)
+
+
 def create_app(*, instance_root: str | Path = "instance", static_dir: str | Path | None = None) -> Starlette:
     runtime = build_runtime(instance_root)
     auth = auth_from_env(env_file=Path(instance_root) / "companion-auth.env")
@@ -34,13 +47,16 @@ def create_app(*, instance_root: str | Path = "instance", static_dir: str | Path
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
-        task = asyncio.create_task(_cadence_loop(app), name="atlas-cadence")
+        cadence_task = asyncio.create_task(_cadence_loop(app), name="atlas-cadence")
+        report_task = asyncio.create_task(_completion_report_loop(app), name="atlas-completion-report")
         try:
             yield
         finally:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+            for task in (cadence_task, report_task):
+                task.cancel()
+            for task in (cadence_task, report_task):
+                with suppress(asyncio.CancelledError):
+                    await task
             if runtime.sources.registry is not None:
                 runtime.sources.registry.close()
 

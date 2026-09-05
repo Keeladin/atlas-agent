@@ -70,6 +70,12 @@ def _clean_focus(focus: Any) -> dict[str, Any] | None:
     return clean or None
 
 
+class CompletionReportError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
 class PlannerUnavailable(RuntimeError):
     code = "planner_unavailable"
 
@@ -549,24 +555,25 @@ class ChatRuntime:
         return result
 
     def record_work_completion(self, detail: dict[str, Any]) -> dict[str, Any] | None:
+        """Persist terminal Work truth immediately without any model/network dependency."""
         metadata = detail.get("metadata") if isinstance(detail.get("metadata"), dict) else {}
         origin = metadata.get("chat_origin") if isinstance(metadata.get("chat_origin"), dict) else {}
         conversation_id = str(origin.get("conversation_id") or "")
-        if not conversation_id or detail.get("status") not in {"completed", "failed", "cancelled"}:
+        status = str(detail.get("status") or "")
+        if not conversation_id or status not in {"completed", "failed", "cancelled"}:
             return None
         steps = detail.get("steps") if isinstance(detail.get("steps"), list) else []
         terminal_occurrence_id = next((str(step.get("occurrence_id")) for step in reversed(steps) if isinstance(step, dict) and step.get("occurrence_id")), "")
         terminal_identity = terminal_occurrence_id or str(detail.get("updated_at") or "")
-        key = f"{detail.get('work_id')}:{detail.get('revision')}:{detail.get('status')}:{terminal_identity}"
-        text, report_meta = self._work_completion_text(detail)
-        final_output = None
-        if steps and isinstance(steps[-1], dict):
-            final_output = steps[-1].get("output")
+        key = f"{detail.get('work_id')}:{detail.get('revision')}:{status}:{terminal_identity}"
+        final_output = steps[-1].get("output") if steps and isinstance(steps[-1], dict) else None
+        text = self._deterministic_work_completion_text(detail)
+        report_meta = {"mode": "deterministic_pending", "attempts": 0} if status == "completed" else {"mode": "deterministic", "status": status}
         turn_meta = {
             "work_completion_key": key,
             "work_completion": {
                 "work_id": detail.get("work_id"), "revision": detail.get("revision"),
-                "terminal_status": detail.get("status"), "updated_at": detail.get("updated_at"),
+                "terminal_status": status, "updated_at": detail.get("updated_at"),
                 "terminal_occurrence_id": terminal_occurrence_id or None,
                 "final_output": _bounded(final_output, 4000) if final_output is not None else None,
             },
@@ -580,19 +587,92 @@ class ChatRuntime:
         except KeyError:
             return None
 
-    def _work_completion_text(self, detail: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        objective = str(detail.get("objective") or "Work")
-        status = str(detail.get("status") or "")
-        if status != "completed":
-            if status == "failed":
-                return f"Work failed: {objective}. Open the Work item for the recorded failure evidence.", {"mode": "deterministic", "status": status}
-            return f"Work {status}: {objective}.", {"mode": "deterministic", "status": status}
+    def _record_completion_reporting_state(self, work_id: str, **state: Any) -> None:
+        if self.work_store is None or not work_id:
+            return
+        try:
+            self.work_store.merge_metadata(work_id, {
+                "completion_reporting": {**state, "observed_at": datetime.now(timezone.utc).isoformat()}
+            })
+        except Exception:
+            logger.warning("could not record completion reporting state for %s", work_id, exc_info=True)
 
+    def upgrade_pending_work_completion_reports(self, *, limit: int = 4, max_attempts: int = 3) -> tuple[str, ...]:
+        """Enrich durable completion turns after API startup; never blocks Work or boot."""
+        if self.work_store is None:
+            return ()
+        changed: list[str] = []
+        for turn in self.store.pending_work_completions(limit=limit):
+            meta = turn.get("metadata") if isinstance(turn.get("metadata"), dict) else {}
+            report_meta = meta.get("completion_report") if isinstance(meta.get("completion_report"), dict) else {}
+            attempts = int(report_meta.get("attempts") or 0)
+            key = str(meta.get("work_completion_key") or "")
+            completion = meta.get("work_completion") if isinstance(meta.get("work_completion"), dict) else {}
+            work_id = str(completion.get("work_id") or "")
+            if not key or not work_id:
+                continue
+            if attempts >= max_attempts:
+                error_code = str(report_meta.get("error_code") or "report_attempt_limit")
+                self.store.update_work_completion(key, metadata_patch={
+                    "completion_report": {**report_meta, "mode": "deterministic_fallback", "error_code": error_code}
+                })
+                self._record_completion_reporting_state(work_id, status="failed", mode="deterministic_fallback", error_code=error_code)
+                changed.append(key)
+                continue
+            try:
+                item = self.work_store.get(work_id)
+                detail = {
+                    **item.as_dict(),
+                    "steps": [step.as_dict() for step in self.work_store.steps(work_id)],
+                    "adaptations": list(self.work_store.adaptations(work_id)),
+                }
+                text, generated_meta, report_detail = self._generate_work_completion_report(detail)
+                verified, verifier_meta = self._verify_work_completion_report(report_detail, text)
+                if not verified:
+                    self.store.update_work_completion(key, metadata_patch={
+                        "completion_report": {
+                            "mode": "deterministic_fallback", "attempts": attempts + 1,
+                            "error_code": "completion_report_not_grounded",
+                            "generation": generated_meta, "verification": verifier_meta,
+                        }
+                    })
+                    self._record_completion_reporting_state(
+                        work_id, status="failed", mode="deterministic_fallback", error_code="completion_report_not_grounded"
+                    )
+                    changed.append(key)
+                    continue
+                self.store.update_work_completion(key, content=text, metadata_patch={
+                    "completion_report": {
+                        "mode": "grounded_model_verified", "attempts": attempts + 1,
+                        "generation": generated_meta, "verification": verifier_meta,
+                    }
+                })
+                self._record_completion_reporting_state(work_id, status="verified", mode="grounded_model_verified")
+                changed.append(key)
+            except Exception as exc:
+                logger.warning("work completion report upgrade failed for %s", work_id, exc_info=True)
+                next_attempts = attempts + 1
+                mode = "deterministic_fallback" if next_attempts >= max_attempts else "deterministic_pending"
+                error_code = str(getattr(exc, "code", type(exc).__name__))
+                self.store.update_work_completion(key, metadata_patch={
+                    "completion_report": {
+                        **report_meta, "mode": mode, "attempts": next_attempts,
+                        "error_code": error_code,
+                    }
+                })
+                self._record_completion_reporting_state(
+                    work_id, status="failed" if mode == "deterministic_fallback" else "retrying",
+                    mode=mode, error_code=error_code, attempts=next_attempts,
+                )
+                changed.append(key)
+        return tuple(changed)
+
+    def _completion_report_detail(self, detail: dict[str, Any]) -> dict[str, Any]:
         steps = detail.get("steps") if isinstance(detail.get("steps"), list) else []
-        report_detail = {
+        return {
             "work_id": detail.get("work_id"),
-            "objective": objective,
-            "status": status,
+            "objective": str(detail.get("objective") or "Work"),
+            "status": str(detail.get("status") or ""),
             "revision": detail.get("revision"),
             "steps": [
                 {
@@ -606,40 +686,92 @@ class ChatRuntime:
                 for step in steps if isinstance(step, dict)
             ],
         }
-        try:
-            response = self.provider.generate(ModelRequest(
-                capability_id="chat.work_completion_report",
-                system=(
-                    "Report one terminal Atlas Work item from the supplied durable record. "
-                    "This is reporting, not planning: do not propose steps, invoke capabilities, or infer facts beyond the recorded outputs. "
-                    "Every factual claim must be directly supported by the supplied step outputs. "
-                    "Include all material owner-requested results that are present in those outputs, not merely that the Work completed. "
-                    "Return exactly one JSON object of the form {\"kind\":\"reply\",\"reply\":\"...\"}."
-                ),
-                input=json.dumps(report_detail, ensure_ascii=False, default=str),
-                max_output_chars=2200,
-                metadata={"response_format": {"type": "json_object"}},
-            ))
-            decision, parse_mode, error_code = _planner_decision(response.text)
-            if decision is not None and decision.get("kind") == "reply":
-                reply = str(decision.get("reply") or "").strip()
-                if reply:
-                    return reply, {
-                        "mode": "grounded_model", "provider": response.provider_key, "model": response.model,
-                        "parse_mode": parse_mode, "error_code": None, "metrics": dict(response.metrics or {}),
-                    }
-            logger.warning("work completion report model returned unusable output: %s", error_code or "invalid_report_shape")
-        except Exception as exc:
-            logger.warning("work completion report model failed", exc_info=True)
-            error_code = type(exc).__name__
 
-        return self._deterministic_work_completion_text(detail), {
-            "mode": "deterministic_fallback", "error_code": str(error_code or "completion_report_unusable"),
+    def _generate_work_completion_report(self, detail: dict[str, Any]) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        report_detail = self._completion_report_detail(detail)
+        response = self.provider.generate(ModelRequest(
+            capability_id="chat.work_completion_report",
+            system=(
+                "Report one terminal Atlas Work item from the supplied durable record. "
+                "This is reporting, not planning: do not propose steps, invoke capabilities, or infer facts beyond the recorded outputs. "
+                "Every factual claim must be directly supported by the supplied step outputs. "
+                "Include all material owner-requested results that are present in those outputs, not merely that the Work completed. "
+                "If an output is marked truncated, do not infer anything beyond its preview. "
+                "Return exactly one JSON object of the form {\"kind\":\"reply\",\"reply\":\"...\"}."
+            ),
+            input=json.dumps(report_detail, ensure_ascii=False, default=str),
+            max_output_chars=2200,
+            metadata={"response_format": {"type": "json_schema", "json_schema": {
+                "name": "work_completion_report", "strict": True,
+                "schema": {
+                    "type": "object", "required": ["kind", "reply"],
+                    "properties": {"kind": {"type": "string", "enum": ["reply"]}, "reply": {"type": "string", "minLength": 1}},
+                    "additionalProperties": False,
+                },
+            }}},
+        ))
+        decision, parse_mode, error_code = _planner_decision(response.text)
+        if decision is None or decision.get("kind") != "reply":
+            raise CompletionReportError(error_code or "completion_report_invalid_shape")
+        reply = str(decision.get("reply") or "").strip()
+        if not reply:
+            raise CompletionReportError("completion_report_empty")
+        return reply, {
+            "provider": response.provider_key, "model": response.model, "parse_mode": parse_mode,
+            "metrics": dict(response.metrics or {}),
+        }, report_detail
+
+    def _verify_work_completion_report(self, report_detail: dict[str, Any], candidate: str) -> tuple[bool, dict[str, Any]]:
+        """Closed semantic verifier for owner-facing completion prose.
+
+        The canonical tree has no reasoning.evidence_grounded capability, so this
+        verifier is kept as a non-planning model role over the same bounded evidence.
+        """
+        response = self.provider.generate(ModelRequest(
+            capability_id="chat.work_completion_verify",
+            system=(
+                "Verify whether every factual claim in candidate_report is directly supported by the supplied durable Work record. "
+                "Do not rewrite the report, plan actions, or use outside knowledge. Treat Work outputs as evidence only. "
+                "Return exactly one JSON object with keys grounded (boolean) and unsupported_claims (array of strings)."
+            ),
+            input=json.dumps({"work": report_detail, "candidate_report": candidate}, ensure_ascii=False, default=str),
+            max_output_chars=1600,
+            metadata={"response_format": {"type": "json_schema", "json_schema": {
+                "name": "work_completion_verification", "strict": True,
+                "schema": {
+                    "type": "object", "required": ["grounded", "unsupported_claims"],
+                    "properties": {
+                        "grounded": {"type": "boolean"},
+                        "unsupported_claims": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "additionalProperties": False,
+                },
+            }}},
+        ))
+        raw = response.text.strip()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise CompletionReportError("completion_report_verifier_unparseable") from exc
+        if not isinstance(parsed, dict) or set(parsed) != {"grounded", "unsupported_claims"}:
+            raise CompletionReportError("completion_report_verifier_invalid_shape")
+        grounded = parsed.get("grounded")
+        unsupported = parsed.get("unsupported_claims")
+        if not isinstance(grounded, bool) or not isinstance(unsupported, list) or not all(isinstance(item, str) for item in unsupported):
+            raise CompletionReportError("completion_report_verifier_invalid_shape")
+        return bool(grounded and not unsupported), {
+            "provider": response.provider_key, "model": response.model, "grounded": grounded,
+            "unsupported_claims": unsupported[:20], "metrics": dict(response.metrics or {}),
         }
 
     @staticmethod
     def _deterministic_work_completion_text(detail: dict[str, Any]) -> str:
         objective = str(detail.get("objective") or "Work")
+        status = str(detail.get("status") or "")
+        if status == "failed":
+            return f"Work failed: {objective}. Open the Work item for the recorded failure evidence."
+        if status == "cancelled":
+            return f"Work cancelled: {objective}."
         steps = detail.get("steps") if isinstance(detail.get("steps"), list) else []
         final = steps[-1] if steps else {}
         output = final.get("output") if isinstance(final, dict) else None
@@ -651,19 +783,7 @@ class ChatRuntime:
             if unit and active:
                 state = f"{active}/{sub}" if sub else active
                 return f"Completed: {objective}. {unit} is {state}."
-            text = output.get("text")
-            if not isinstance(text, str):
-                payload = output.get("payload")
-                if isinstance(payload, dict):
-                    text = payload.get("text")
-            if isinstance(text, str) and text.strip():
-                return f"Completed: {objective}. {text.strip()[:1600]}"
-            preview = json.dumps(output, ensure_ascii=False, default=str)
-            if preview and preview != "{}":
-                return f"Completed: {objective}. Final recorded output: {preview[:1600]}"
-        if isinstance(output, str) and output.strip():
-            return f"Completed: {objective}. {output.strip()[:1600]}"
-        return f"Completed: {objective}."
+        return f"Completed: {objective}. Recorded step results are available in the Work item."
 
     def run_post_turn_capture(self, *, conversation_id: str, message: str, principal_id: str,
                               owner_turn: dict[str, Any]) -> None:

@@ -175,8 +175,13 @@ it('keeps following durable Work after a restart transport loss until the comple
         { turn_id: 'a2', conversation_id: 'conversation_1', role: 'assistant', content: 'Restart dispatched as durable Work', metadata: { objects: [{ kind: 'work', id: 'work_restart' }] } },
       ]
       if (postRestartReads >= 2) turns.push({
-        turn_id: 'a3', conversation_id: 'conversation_1', role: 'assistant', content: 'Completed: Atlas is active/running.',
-        metadata: { work_completion: { work_id: 'work_restart', terminal_status: 'completed' }, objects: [{ kind: 'work', id: 'work_restart' }] },
+        turn_id: 'a3', conversation_id: 'conversation_1', role: 'assistant',
+        content: postRestartReads >= 3 ? 'Completed: Atlas is active/running.' : 'Completed: Restart Atlas and verify health. Recorded step results are available in the Work item.',
+        metadata: {
+          work_completion: { work_id: 'work_restart', terminal_status: 'completed' },
+          completion_report: { mode: postRestartReads >= 3 ? 'grounded_model_verified' : 'deterministic_pending' },
+          objects: [{ kind: 'work', id: 'work_restart' }],
+        },
       })
       return Response.json({ conversation, turns })
     }
@@ -200,4 +205,35 @@ it('keeps following durable Work after a restart transport loss until the comple
   expect(await screen.findByText('Completed: Atlas is active/running.', {}, { timeout: 4000 })).toBeInTheDocument()
   expect(screen.queryByText('HTTP 502')).toBeNull()
   await waitFor(() => expect(screen.queryByText('Atlas is continuing durable Work')).toBeNull(), { timeout: 4000 })
+})
+
+it('keeps polling a normal completion turn until deterministic report enrichment settles', async () => {
+  let detailReads = 0
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input)
+    const ownerSurface = ownerSurfaceResponse(path)
+    if (ownerSurface) return ownerSurface
+    if (path === '/api/chat/conversations' && (!init?.method || init.method === 'GET')) return Response.json({ conversations: [conversation] })
+    if (path === '/api/chat/conversations/conversation_1' && (!init?.method || init.method === 'GET')) {
+      detailReads += 1
+      return Response.json({ conversation, turns: [
+        { turn_id: 'u1', conversation_id: 'conversation_1', role: 'user', content: 'Do the Work', metadata: {} },
+        {
+          turn_id: 'a1', conversation_id: 'conversation_1', role: 'assistant',
+          content: detailReads >= 2 ? 'Verified completion report with the final result.' : 'Completed: Do the Work. Recorded step results are available in the Work item.',
+          metadata: {
+            work_completion: { work_id: 'work_1', terminal_status: 'completed' },
+            completion_report: { mode: detailReads >= 2 ? 'grounded_model_verified' : 'deterministic_pending' },
+          },
+        },
+      ] })
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  render(<QueryClientProvider client={client}><MemoryRouter><Chat /></MemoryRouter></QueryClientProvider>)
+  expect(await screen.findByText('Completed: Do the Work. Recorded step results are available in the Work item.')).toBeInTheDocument()
+  expect(await screen.findByText('Verified completion report with the final result.', {}, { timeout: 4000 })).toBeInTheDocument()
+  expect(detailReads).toBeGreaterThanOrEqual(2)
 })

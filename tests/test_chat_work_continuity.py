@@ -12,7 +12,7 @@ from atlas_core.capabilities import (
     CapabilityDefinition, CapabilityRegistration, RuntimeContinuityRequired, ScopeResolution,
 )
 from atlas_core.provenance import InvocationProvenance
-from atlas_core.providers import ModelResponse
+from atlas_core.providers import ModelResponse, ProviderRuntime
 
 
 class SequenceProvider:
@@ -155,6 +155,9 @@ def test_recovery_reconciles_restart_then_resumes_verification_and_reports_to_ch
     assert restart_occurrence.receipt["predecessor_invocation_id"] == "old-invocation"
 
     monkeypatch.setenv("INVOCATION_ID", "new-invocation")
+    def provider_must_not_run_during_boot(_self, _request):
+        raise AssertionError("model provider was called before build_runtime returned")
+    monkeypatch.setattr(ProviderRuntime, "generate", provider_must_not_run_during_boot)
     rt2 = build_runtime(root)
     detail = rt2.work.detail(work.work_id)
     assert detail["status"] == "completed"
@@ -385,34 +388,100 @@ def test_normal_work_completion_posts_exactly_one_chat_turn(tmp_path):
     assert len([t for t in rt.chat_store.turns(cid) if t["metadata"].get("work_completion")]) == 1
 
 
-def test_grounded_work_completion_report_surfaces_final_residual_output(tmp_path):
+def test_work_completion_is_durable_before_model_reporting_and_upgrades_in_place(tmp_path):
     rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner().principal_id
     cid = rt.chat_store.create_conversation("Completion report")["conversation_id"]
-    rt.chat.provider = SequenceProvider(
-        '{"kind":"reply","reply":"The API restarted and verified healthy. Cullinan weather: 24°C and clear."}'
-    )
-    detail = {
-        "work_id": "work_report_test",
-        "objective": "Restart the API, verify health, and report the Cullinan weather",
-        "status": "completed",
-        "revision": 1,
-        "updated_at": "2026-09-05T04:31:42+00:00",
-        "metadata": {"chat_origin": {"conversation_id": cid, "owner_turn_id": "turn_owner"}},
-        "steps": [
-            {"ordinal": 1, "description": "Restart", "capability_id": "host.service.restart", "status": "completed", "output": {"unit": "atlas-api.service", "dispatched": True}, "occurrence_id": "action_restart"},
-            {"ordinal": 2, "description": "Verify", "capability_id": "host.service.status", "status": "completed", "output": {"unit": "atlas-api.service", "properties": {"ActiveState": "active", "SubState": "running"}}, "occurrence_id": "action_status"},
-            {"ordinal": 3, "description": "Weather", "capability_id": "web.fetch", "status": "completed", "output": {"payload": {"text": "Cullinan: 24°C, clear"}}, "occurrence_id": "action_weather"},
+    owner_turn = rt.chat_store.append(cid, "user", "Restart, verify, then report weather")
+    work = rt.work_store.create(
+        "Restart the API, verify health, and report the Cullinan weather", owner,
+        [
+            {"capability_id": "host.service.restart", "description": "Restart", "input": {"unit": "atlas-api.service"}},
+            {"capability_id": "host.service.status", "description": "Verify", "input": {"unit": "atlas-api.service"}},
+            {"capability_id": "web.fetch", "description": "Weather", "input": {"url": "https://wttr.in/Cullinan?format=3"}},
         ],
-    }
+        metadata={"chat_origin": {"conversation_id": cid, "owner_turn_id": owner_turn["turn_id"]}},
+    )
+    steps = rt.work_store.steps(work.work_id)
+    rt.work_store.set_step(steps[0].step_id, status="completed", occurrence_id="action_restart", output={"unit": "atlas-api.service", "dispatched": True})
+    rt.work_store.set_step(steps[1].step_id, status="completed", occurrence_id="action_status", output={"unit": "atlas-api.service", "properties": {"ActiveState": "active", "SubState": "running"}})
+    rt.work_store.set_step(steps[2].step_id, status="completed", occurrence_id="action_weather", output={"payload": {"text": "Cullinan: 24°C, clear"}})
+    rt.work_store.set_work_status(work.work_id, "completed")
+    detail = rt.work.detail(work.work_id)
+    rt.chat.provider = SequenceProvider(
+        '{"kind":"reply","reply":"The API restarted and verified healthy. Cullinan weather: 24°C and clear."}',
+        '{"grounded":true,"unsupported_claims":[]}',
+    )
 
+    initial = rt.chat.record_work_completion(detail)
+    assert initial is not None
+    assert initial["metadata"]["completion_report"]["mode"] == "deterministic_pending"
+    assert "24°C" not in initial["content"]
+    assert rt.chat.provider.requests == []
+
+    changed = rt.chat.upgrade_pending_work_completion_reports()
+    assert len(changed) == 1
+    completions = [t for t in rt.chat_store.turns(cid) if t["metadata"].get("work_completion")]
+    assert len(completions) == 1
+    upgraded = completions[0]
+    assert upgraded["turn_id"] == initial["turn_id"]
+    assert "24°C and clear" in upgraded["content"]
+    assert upgraded["metadata"]["completion_report"]["mode"] == "grounded_model_verified"
+    assert upgraded["metadata"]["work_completion"]["final_output"] == {"payload": {"text": "Cullinan: 24°C, clear"}}
+    assert rt.chat.provider.requests[0].capability_id == "chat.work_completion_report"
+    assert rt.chat.provider.requests[1].capability_id == "chat.work_completion_verify"
+
+
+def test_completion_persistence_never_calls_model_and_fallback_does_not_leak_raw_output(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    cid = rt.chat_store.create_conversation("No network at boot")["conversation_id"]
+
+    class BrokenProvider:
+        def generate(self, _request):
+            raise AssertionError("model provider must not run while completion truth is being persisted")
+
+    rt.chat.provider = BrokenProvider()
+    detail = {
+        "work_id": "work_boot_safe", "objective": "Finish a recovered responsibility", "status": "completed",
+        "revision": 1, "updated_at": "2026-09-05T05:00:00+00:00",
+        "metadata": {"chat_origin": {"conversation_id": cid, "owner_turn_id": "turn_owner"}},
+        "steps": [{
+            "ordinal": 1, "description": "Opaque final step", "capability_id": "test.internal", "status": "completed",
+            "output": {"transport_internal": "SECRET STACK TRACE SHOULD NOT BE SHOWN", "code": 500},
+            "occurrence_id": "action_final",
+        }],
+    }
     turn = rt.chat.record_work_completion(detail)
     assert turn is not None
-    assert "24°C and clear" in turn["content"]
-    assert turn["metadata"]["completion_report"]["mode"] == "grounded_model"
-    assert turn["metadata"]["work_completion"]["final_output"] == {"payload": {"text": "Cullinan: 24°C, clear"}}
-    report_input = json.loads(rt.chat.provider.requests[0].input)
-    assert report_input["steps"][-1]["output"]["payload"]["text"] == "Cullinan: 24°C, clear"
-    assert rt.chat.provider.requests[0].capability_id == "chat.work_completion_report"
+    assert "SECRET STACK TRACE" not in turn["content"]
+    assert "Recorded step results are available in the Work item" in turn["content"]
+    assert turn["metadata"]["completion_report"]["mode"] == "deterministic_pending"
+
+
+def test_unverified_completion_report_never_replaces_deterministic_turn(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner().principal_id
+    cid = rt.chat_store.create_conversation("Rejected report")["conversation_id"]
+    owner_turn = rt.chat_store.append(cid, "user", "Do the durable thing")
+    work = rt.work_store.create(
+        "Do the durable thing", owner,
+        [{"capability_id": "memory.search", "description": "Search", "input": {"query": "x"}}],
+        metadata={"chat_origin": {"conversation_id": cid, "owner_turn_id": owner_turn["turn_id"]}},
+    )
+    step = rt.work_store.steps(work.work_id)[0]
+    rt.work_store.set_step(step.step_id, status="completed", occurrence_id="action_search", output={"items": []})
+    rt.work_store.set_work_status(work.work_id, "completed")
+    initial = rt.chat.record_work_completion(rt.work.detail(work.work_id))
+    rt.chat.provider = SequenceProvider(
+        '{"kind":"reply","reply":"I also proved an unrelated fact that is not in evidence."}',
+        '{"grounded":false,"unsupported_claims":["unrelated fact"]}',
+    )
+    rt.chat.upgrade_pending_work_completion_reports()
+    final = [t for t in rt.chat_store.turns(cid) if t["metadata"].get("work_completion")][0]
+    assert final["turn_id"] == initial["turn_id"]
+    assert final["content"] == initial["content"]
+    assert final["metadata"]["completion_report"]["mode"] == "deterministic_fallback"
+    assert final["metadata"]["completion_report"]["verification"]["grounded"] is False
 
 
 def test_completion_reporting_failure_never_flips_completed_work(tmp_path):

@@ -66,6 +66,13 @@ function completionWorkId(turn: ChatTurn) {
   return typeof value === 'string' ? value : ''
 }
 
+function completionReportSettled(turn: ChatTurn) {
+  const raw = turn.metadata?.completion_report
+  if (!raw || typeof raw !== 'object') return true
+  const mode = (raw as Record<string, unknown>).mode
+  return mode !== 'deterministic_pending'
+}
+
 function attachmentsForTurn(turn: ChatTurn): Attachment[] {
   const raw = Array.isArray(turn.metadata?.attachments) ? turn.metadata.attachments : []
   return raw.flatMap(value => {
@@ -153,7 +160,11 @@ export function Chat() {
     queryKey: ['conversation', selected],
     queryFn: () => api<{ conversation: Conversation; turns: ChatTurn[] }>(`/api/chat/conversations/${selected}`),
     enabled: selectedValid,
-    refetchInterval: (recoveringSend && recoveringSend.conversationId === selected) || (completionWatch && completionWatch.conversationId === selected) ? 1500 : false,
+    refetchInterval: query => {
+      const data = query.state.data as { turns?: ChatTurn[] } | undefined
+      const pendingReport = data?.turns?.some(turn => Boolean(completionWorkId(turn)) && !completionReportSettled(turn)) ?? false
+      return (recoveringSend && recoveringSend.conversationId === selected) || (completionWatch && completionWatch.conversationId === selected) || pendingReport ? 1500 : false
+    },
   })
   const send = useMutation({
     mutationFn: ({ conversationId, text, focus, attachments: attached }: SendRequest) => api<{ turn: ChatTurn }>(`/api/chat/conversations/${conversationId}/messages`, {
@@ -214,7 +225,7 @@ export function Chat() {
       const origin = workOrigin(item)
       return origin?.conversationId === recoveringSend.conversationId && origin.ownerTurnId === ownerTurn.turn_id
     })
-    const completedWorkIds = new Set(afterOwner.map(completionWorkId).filter(Boolean))
+    const completedWorkIds = new Set(afterOwner.filter(completionReportSettled).map(completionWorkId).filter(Boolean))
     if (relatedWork.length && relatedWork.every(item => completedWorkIds.has(item.work_id))) {
       setRecoveringSend(null); setCompletionWatch(null); send.reset()
     } else if (relatedWork.length) {
@@ -232,7 +243,7 @@ export function Chat() {
 
   useEffect(() => {
     if (!completionWatch || completionWatch.conversationId !== selected) return
-    const completed = new Set(turns.map(completionWorkId).filter(Boolean))
+    const completed = new Set(turns.filter(completionReportSettled).map(completionWorkId).filter(Boolean))
     if (!completionWatch.workIds.every(workId => completed.has(workId))) return
     setCompletionWatch(null)
     void qc.invalidateQueries({ queryKey: ['conversations'] })

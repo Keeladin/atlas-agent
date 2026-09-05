@@ -59,6 +59,20 @@ def capability_document(registration) -> str:
     return "\n".join(fields)
 
 
+def registry_fingerprint(registry: CapabilityRegistry) -> str:
+    """Canonical definition/schema identity for the live capability registry."""
+    rows = []
+    for reg in registry.all():
+        d = reg.definition
+        rows.append({
+            "id": d.id, "description": d.description, "operation": d.operation,
+            "tags": list(d.tags), "source": d.source, "schema": d.input_schema,
+            "metadata": {k: reg.metadata.get(k) for k in ("purpose", "category", "tool_name")},
+        })
+    raw = json.dumps(rows, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
 class CapabilityRetriever:
     """Hybrid objective-to-capability retrieval over the live CapabilityRegistry."""
 
@@ -72,16 +86,7 @@ class CapabilityRetriever:
 
     @staticmethod
     def _registry_fingerprint(registry: CapabilityRegistry) -> str:
-        rows = []
-        for reg in registry.all():
-            d = reg.definition
-            rows.append({
-                "id": d.id, "description": d.description, "operation": d.operation,
-                "tags": list(d.tags), "source": d.source, "schema": d.input_schema,
-                "metadata": {k: reg.metadata.get(k) for k in ("purpose", "category", "tool_name")},
-            })
-        raw = json.dumps(rows, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
-        return hashlib.sha256(raw).hexdigest()
+        return registry_fingerprint(registry)
 
     def _ensure_index(self, registry: CapabilityRegistry) -> None:
         fingerprint = self._registry_fingerprint(registry)

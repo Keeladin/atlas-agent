@@ -2,8 +2,9 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
-import type { Cadence, Conversation, SourceRoot, WorkItem } from '../api/types'
+import type { AttentionItem, Cadence, Conversation, SourceRoot, WorkItem } from '../api/types'
 import { StatusLamp } from '../ui/OperationsPrimitives'
+import { attentionDetail, attentionHref, attentionStatus, attentionTitle } from '../ui/attentionState'
 
 type Health = { ok: boolean; service: string; version: string }
 type HostFilesystem = { path?: string; total?: number; used?: number; free?: number }
@@ -90,6 +91,7 @@ export function Home() {
   const artifacts = useQuery({ queryKey: ['artifacts'], queryFn: () => api<{ artifacts: Artifact[] }>('/api/artifacts'), refetchInterval: 20000 })
   const conversations = useQuery({ queryKey: ['conversations'], queryFn: () => api<{ conversations: Conversation[] }>('/api/chat/conversations'), refetchInterval: 15000 })
   const roots = useQuery({ queryKey: ['source-roots'], queryFn: () => api<{ roots: SourceRoot[] }>('/api/sources/roots'), refetchInterval: 30000 })
+  const attention = useQuery({ queryKey: ['attention'], queryFn: () => api<{ attention: AttentionItem[] }>('/api/attention'), refetchInterval: 5000 })
   const [selectedArtifactId, setSelectedArtifactId] = useState('')
   const [ask, setAsk] = useState('')
 
@@ -102,7 +104,7 @@ export function Home() {
   }, [artifactRows, recentArtifacts, selectedArtifactId])
 
   const selectedArtifact = artifactRows.find(item => item.artifact_id === selectedArtifactId) ?? recentArtifacts[0]
-  const attention = workRows.filter(item => ['failed', 'paused', 'waiting'].includes(item.status))
+  const attentionRows = attention.data?.attention ?? []
   const active = workRows.filter(item => ['active', 'running', 'queued'].includes(item.status))
   const latestWork = [...workRows].sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0]
   const upcoming = (cadence.data?.cadences ?? []).filter(item => item.enabled && item.next_run_at).sort((a, b) => String(a.next_run_at).localeCompare(String(b.next_run_at)))[0]
@@ -111,8 +113,8 @@ export function Home() {
   const enabledRoots = (roots.data?.roots ?? []).filter(root => root.enabled).slice(0, 4)
 
   const matters = [
-    attention.length ? { tone: 'red', title: `${attention.length} ${attention.length === 1 ? 'responsibility needs' : 'responsibilities need'} your attention`, detail: attention[0].objective, meta: attention[0].status }
-      : { tone: 'green', title: 'Nothing needs your attention', detail: 'No Work is failed, paused, or waiting.', meta: 'clear' },
+    attentionRows.length ? { tone: 'red', title: `${attentionRows.length} ${attentionRows.length === 1 ? 'commitment needs' : 'commitments need'} your attention`, detail: attentionTitle(attentionRows[0]), meta: attentionStatus(attentionRows[0]) }
+      : { tone: 'green', title: 'Nothing needs your attention', detail: 'No open obligation currently requires owner attention.', meta: 'clear' },
     active.length ? { tone: 'blue', title: `${active.length} ${active.length === 1 ? 'responsibility is' : 'responsibilities are'} active`, detail: active[0].objective, meta: active[0].status }
       : { tone: 'dim', title: 'No Work is currently running', detail: 'Atlas has no active responsibility at this moment.', meta: 'quiet' },
     recentArtifacts.length ? { tone: 'violet', title: `${recentArtifacts.length} recent ${recentArtifacts.length === 1 ? 'artifact is' : 'artifacts are'} ready to inspect`, detail: recentArtifacts[0].display_name, meta: when(recentArtifacts[0].created_at) }
@@ -120,7 +122,11 @@ export function Home() {
         : { tone: 'dim', title: 'No new context is waiting', detail: 'Your visible Atlas world is quiet.', meta: 'quiet' },
   ] as const
 
-  const recommended = attention[0] ?? active[0] ?? latestWork
+  const attentionNext = attentionRows[0]
+  const recommendedWork = active[0] ?? latestWork
+  const recommendedHref = attentionNext ? attentionHref(attentionNext) : recommendedWork ? `/work/${recommendedWork.work_id}` : latestConversation ? '/chat' : '/chat?ask=What%20should%20we%20work%20on%20next%3F'
+  const recommendedTitle = attentionNext ? attentionTitle(attentionNext) : recommendedWork ? recommendedWork.objective : latestConversation ? `Continue “${latestConversation.title}”` : 'Decide what Atlas should take on next'
+  const recommendedDetail = attentionNext ? attentionDetail(attentionNext) : recommendedWork ? `${recommendedWork.status.replaceAll('_', ' ')} · updated ${when(recommendedWork.updated_at)}` : latestConversation ? `Last active ${when(latestConversation.updated_at)}` : 'No unfinished Work is currently visible.'
   const memTotal = parseKb(system.data?.host.resources?.memory?.MemTotal)
   const memAvailable = parseKb(system.data?.host.resources?.memory?.MemAvailable)
   const memUsed = memTotal ? Math.max(0, memTotal - memAvailable) : 0
@@ -144,8 +150,8 @@ export function Home() {
       </article>)}</div>
 
       <div className="home-section-label"><span>Recommended next</span></div>
-      <Link className="home-recommended" to={recommended ? `/work/${recommended.work_id}` : latestConversation ? '/chat' : '/chat?ask=What%20should%20we%20work%20on%20next%3F'}>
-        <span className="home-spark">✦</span><span><strong>{recommended ? recommended.objective : latestConversation ? `Continue “${latestConversation.title}”` : 'Decide what Atlas should take on next'}</strong><small>{recommended ? `${recommended.status.replaceAll('_', ' ')} · updated ${when(recommended.updated_at)}` : latestConversation ? `Last active ${when(latestConversation.updated_at)}` : 'No unfinished Work is currently visible.'}</small></span><span>Open →</span>
+      <Link className="home-recommended" to={recommendedHref}>
+        <span className="home-spark">✦</span><span><strong>{recommendedTitle}</strong><small>{recommendedDetail}</small></span><span>Open →</span>
       </Link>
 
       <div className="home-conversation-area">

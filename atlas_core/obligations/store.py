@@ -8,8 +8,9 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 from .models import IntakeResult, Obligation
+from .temporal import normalize_satisfiable_until
 
-INTAKE_STATES = ("pending", "complete", "partial", "interrupted", "failed")
+INTAKE_STATES = ("complete", "partial", "failed")
 
 
 class ObligationStore:
@@ -58,7 +59,6 @@ class ObligationStore:
                 FOREIGN KEY(owner_turn_id) REFERENCES chat_turns(turn_id) ON DELETE RESTRICT,
                 FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id) ON DELETE RESTRICT,
                 FOREIGN KEY(supersedes) REFERENCES obligations(obligation_id) ON DELETE RESTRICT,
-                UNIQUE(owner_turn_id, grounding_excerpt),
                 CHECK(
                     (status='open' AND resolution_kind IS NULL
                      AND resolution_ref IS NULL AND resolved_at IS NULL)
@@ -139,14 +139,14 @@ class ObligationStore:
         unmapped_spans: Iterable[str] = (),
     ) -> IntakeResult:
         rows = [dict(item) for item in candidates]
-        unmapped = tuple(str(item) for item in unmapped_spans if str(item))
+        unmapped_list = [str(item) for item in unmapped_spans if str(item)]
         with self._db() as db:
             turn = db.execute("SELECT * FROM chat_turns WHERE turn_id=?", (owner_turn_id,)).fetchone()
             if turn is None:
                 raise KeyError(owner_turn_id)
             if turn["role"] != "user" or not turn["owner_principal_id"]:
                 raise ValueError("obligation intake requires an authenticated owner turn")
-            if turn["intake_status"] not in {"pending", "interrupted"}:
+            if turn["intake_status"] != "failed":
                 raise ValueError(f"owner turn intake is not writable from {turn['intake_status']}")
             if db.execute(
                 "SELECT 1 FROM obligations WHERE owner_turn_id=? LIMIT 1", (owner_turn_id,)
@@ -166,6 +166,16 @@ class ObligationStore:
                     raise ValueError("obligation text is required")
                 if kind not in {"state_change", "communication"}:
                     raise ValueError("obligation kind must be state_change or communication")
+                temporal_excerpt = item.get("temporal_grounding_excerpt")
+                satisfiable_until = anchor_at = anchor_timezone = None
+                if temporal_excerpt is not None:
+                    if not isinstance(temporal_excerpt, str) or not temporal_excerpt or temporal_excerpt not in turn["content"]:
+                        raise ValueError("temporal grounding excerpt is not a substring of the owner turn")
+                    satisfiable_until, anchor_at, anchor_timezone = normalize_satisfiable_until(
+                        temporal_excerpt, anchor_at=turn["created_at"]
+                    )
+                    if satisfiable_until is None and temporal_excerpt not in unmapped_list:
+                        unmapped_list.append(temporal_excerpt)
                 oid = f"obligation_{uuid4().hex}"
                 db.execute(
                     """INSERT INTO obligations(
@@ -175,13 +185,13 @@ class ObligationStore:
                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         oid, turn["owner_principal_id"], turn["conversation_id"], owner_turn_id,
-                        excerpt, text, kind, item.get("satisfiable_until"),
-                        item.get("temporal_grounding_excerpt"), item.get("temporal_anchor_at"),
-                        item.get("temporal_anchor_timezone"),
+                        excerpt, text, kind, satisfiable_until,
+                        temporal_excerpt, anchor_at, anchor_timezone,
                     ),
                 )
                 obligation_ids.append(oid)
 
+            unmapped = tuple(dict.fromkeys(unmapped_list))
             if unmapped and rows:
                 status, error_code = "partial", "intake_coverage_partial"
             elif unmapped:
@@ -210,7 +220,7 @@ class ObligationStore:
             turn = db.execute("SELECT * FROM chat_turns WHERE turn_id=?", (owner_turn_id,)).fetchone()
             if turn is None:
                 raise KeyError(owner_turn_id)
-            if turn["intake_status"] not in {"pending", "interrupted"}:
+            if turn["intake_status"] != "failed":
                 raise ValueError(f"owner turn intake is not writable from {turn['intake_status']}")
             if db.execute(
                 "SELECT 1 FROM obligations WHERE owner_turn_id=? LIMIT 1", (owner_turn_id,)
@@ -225,19 +235,8 @@ class ObligationStore:
             )
         return IntakeResult(owner_turn_id, "failed", int(attempts), (), (), str(error_code))
 
-    def retryable_interrupted(self, limit: int = 100) -> tuple[dict[str, Any], ...]:
-        with self._db() as db:
-            rows = db.execute(
-                """SELECT turn_id,conversation_id,owner_principal_id,content,created_at,intake_attempts
-                   FROM chat_turns
-                   WHERE role='user' AND intake_status='interrupted'
-                   ORDER BY created_at,rowid LIMIT ?""",
-                (max(1, int(limit)),),
-            ).fetchall()
-        return tuple(dict(row) for row in rows)
-
     def intake_attention(self, limit: int = 200) -> tuple[dict[str, Any], ...]:
-        """Semantic intake Attention; presentation may suppress very fresh pending rows."""
+        """Return owner turns whose fail-closed intake did not complete."""
         with self._db() as db:
             rows = db.execute(
                 """SELECT turn_id,conversation_id,owner_principal_id,content,intake_status,
@@ -264,12 +263,14 @@ class ObligationStore:
                    JOIN chat_turns t ON t.turn_id=o.owner_turn_id
                    WHERE t.role!='user'
                       OR t.owner_principal_id!=o.owner_principal_id
-                      OR instr(t.content,o.grounding_excerpt)=0"""
+                      OR instr(t.content,o.grounding_excerpt)=0
+                      OR (o.temporal_grounding_excerpt IS NOT NULL
+                          AND instr(t.content,o.temporal_grounding_excerpt)=0)"""
             ).fetchall()
         return tuple(row["obligation_id"] for row in rows)
 
     def begin_attempt(self, owner_turn_id: str) -> int:
-        """Claim one intake attempt; interrupted retry becomes live pending again."""
+        """Record an intake attempt while keeping the owner turn fail-closed."""
         with self._db() as db:
             row = db.execute(
                 "SELECT intake_status,intake_attempts FROM chat_turns WHERE turn_id=?",
@@ -277,17 +278,21 @@ class ObligationStore:
             ).fetchone()
             if row is None:
                 raise KeyError(owner_turn_id)
-            if row["intake_status"] not in {"pending", "interrupted"}:
-                raise ValueError(f"owner turn intake is not retryable from {row['intake_status']}")
+            if row["intake_status"] != "failed":
+                raise ValueError(f"owner turn intake is not writable from {row['intake_status']}")
+            if db.execute(
+                "SELECT 1 FROM obligations WHERE owner_turn_id=? LIMIT 1", (owner_turn_id,)
+            ).fetchone():
+                raise RuntimeError("failed intake cannot already own obligation rows")
             attempts = int(row["intake_attempts"] or 0) + 1
             changed = db.execute(
                 """UPDATE chat_turns
-                   SET intake_status='pending',intake_attempts=?,intake_error_code=NULL
-                   WHERE turn_id=? AND intake_status IN ('pending','interrupted')""",
+                   SET intake_attempts=?,intake_error_code='intake_not_completed'
+                   WHERE turn_id=? AND intake_status='failed'""",
                 (attempts, owner_turn_id),
             ).rowcount
             if changed != 1:
-                raise RuntimeError("owner turn intake claim changed concurrently")
+                raise RuntimeError("owner turn intake attempt changed concurrently")
         return attempts
 
     def revisions(self, obligation_ids: Iterable[str]) -> dict[str, tuple[int, str]]:
@@ -322,11 +327,12 @@ class ObligationStore:
             if row["status"] != "open" or int(row["revision"]) != int(base_revision):
                 raise ValueError("obligation revision changed or is not open")
             if row["kind"] == "communication" and resolution_kind == "fulfilled":
-                if not resolution_ref.startswith("chat_turn:"):
-                    raise ValueError("fulfilled communication requires a persisted Chat turn")
+                raise ValueError("fulfilled communication must be persisted atomically with its verified Chat turn")
             if row["kind"] == "state_change" and resolution_kind == "fulfilled":
-                if not resolution_ref.startswith(("evidence:", "action:")):
-                    raise ValueError("fulfilled state change requires action or evidence authority")
+                if not resolution_ref.startswith("evidence:"):
+                    raise ValueError("fulfilled state change requires execution/observation evidence authority")
+            if resolution_kind == "declined_policy" and not resolution_ref.startswith("action:"):
+                raise ValueError("policy decline requires an Action occurrence reference")
             db.execute(
                 """UPDATE obligations
                    SET status='resolved',resolution_kind=?,resolution_ref=?,resolved_at=CURRENT_TIMESTAMP,
@@ -385,8 +391,18 @@ class ObligationStore:
     ) -> dict[str, Any]:
         if not obligation_revisions:
             raise ValueError("communication report requires at least one obligation")
+        report_meta = dict(metadata or {})
+        direct = report_meta.get("communication_delivery") if isinstance(report_meta.get("communication_delivery"), dict) else None
+        background = report_meta.get("obligation_report") if isinstance(report_meta.get("obligation_report"), dict) else None
+        direct_ids = set(str(item) for item in (direct or {}).get("fulfilled_obligation_ids", []) if str(item))
+        report_ids = set(str(item) for item in (background or {}).get("obligation_ids", []) if str(item))
+        verified_direct = bool(direct and direct.get("grounded") is True and set(obligation_revisions).issubset(direct_ids))
+        verification = (background or {}).get("verification") if isinstance((background or {}).get("verification"), dict) else None
+        verified_background = bool(verification and verification.get("grounded") is True and set(obligation_revisions).issubset(report_ids))
+        if not (verified_direct or verified_background):
+            raise ValueError("communication resolution requires verified persisted-report metadata")
         turn_id = f"turn_{uuid4().hex}"
-        encoded = json.dumps(metadata or {}, sort_keys=True, separators=(",", ":"), default=str)
+        encoded = json.dumps(report_meta, sort_keys=True, separators=(",", ":"), default=str)
         with self._db() as db:
             for obligation_id, revision in obligation_revisions.items():
                 row = db.execute(

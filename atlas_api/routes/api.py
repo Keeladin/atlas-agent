@@ -46,101 +46,9 @@ def _error(exc: Exception, status: int = 400) -> JSONResponse:
 
 async def health(request: Request) -> JSONResponse:
     rt = _runtime(request); revision = rt.runtime_revision
-    state = rt.operational.state()
-    quarantined = bool(state.get("quarantined"))
     return JSONResponse({
         "ok": True, "service": "atlas-api", "version": revision, "runtime_revision": revision,
-        "operational_status": "quarantined" if quarantined else "normal",
-        "quarantined": quarantined, "active_quarantine_event_id": state.get("active_event_id"),
     })
-
-
-async def quarantine_state(request: Request) -> JSONResponse:
-    gate = require_session(request)
-    if isinstance(gate, JSONResponse):
-        return gate
-    rt = _runtime(request)
-    from atlas_core.obligations import collect_runtime_violations
-    current = collect_runtime_violations(
-        rt.chat_store, rt.obligation_store, rt.work_store, rt.actions_store, rt.evidence
-    )
-    return JSONResponse({
-        "state": rt.operational.state(),
-        "current_violations": [item.__dict__ for item in current],
-        "events": list(rt.operational.events(limit=50)),
-    })
-
-
-async def quarantine_clear(request: Request) -> JSONResponse:
-    gate = require_mutation_auth(request)
-    if isinstance(gate, JSONResponse):
-        return gate
-    rt = _runtime(request); owner = _owner(request, gate)
-    from atlas_core.obligations import collect_runtime_violations
-    current = collect_runtime_violations(
-        rt.chat_store, rt.obligation_store, rt.work_store, rt.actions_store, rt.evidence
-    )
-    if current:
-        return JSONResponse({
-            "error": "quarantine cannot be cleared while runtime invariants are invalid",
-            "code": "quarantine_validation_failed",
-            "violations": [item.__dict__ for item in current],
-        }, status_code=409)
-    event_id = rt.operational.clear_quarantine(
-        runtime_revision=rt.runtime_revision, actor=owner.principal_id,
-        validation_evidence={"checks": "section-15", "violations": []},
-    )
-    return JSONResponse({"ok": True, "event_id": event_id, "state": rt.operational.state()})
-
-
-async def quarantine_repair(request: Request) -> JSONResponse:
-    gate = require_mutation_auth(request)
-    if isinstance(gate, JSONResponse):
-        return gate
-    rt = _runtime(request); owner = _owner(request, gate)
-    if not bool(rt.operational.state().get("quarantined")):
-        return _error(ValueError("runtime is not quarantined"), 409)
-    try:
-        body = await _body(request)
-        action = str(body.get("action") or "")
-        if action == "retry_interrupted_intake":
-            turn_id = str(body.get("owner_turn_id") or "")
-            turn = rt.chat_store.turn(turn_id)
-            if turn.get("owner_principal_id") != owner.principal_id or turn.get("intake_status") != "interrupted":
-                raise ValueError("owner turn is not an authorized interrupted intake")
-            result = await run_in_threadpool(
-                rt.obligation_intake.capture, turn,
-                recent_context=rt.chat_store.turns(turn["conversation_id"], limit=8),
-            )
-            evidence = {"action": action, "result": result.as_dict()}
-        elif action == "bind_staged_work":
-            work_id = str(body.get("work_id") or ""); obligation_id = str(body.get("obligation_id") or "")
-            work = rt.work_store.get(work_id); obligation = rt.obligation_store.get(obligation_id)
-            origin = work.metadata.get("chat_origin") if isinstance(work.metadata.get("chat_origin"), dict) else {}
-            if work.status != "staged" or work.owner_principal_id != owner.principal_id:
-                raise ValueError("Work is not an authorized staged item")
-            if obligation.status != "open" or obligation.owner_principal_id != owner.principal_id:
-                raise ValueError("obligation is not an authorized open commitment")
-            if obligation.owner_turn_id != str(origin.get("owner_turn_id") or ""):
-                raise ValueError("obligation does not back the staged owner turn")
-            binding = rt.work_store.bind_obligation(work_id, obligation_id)
-            evidence = {"action": action, "binding": binding}
-        elif action == "clear_unproven_handoff":
-            turn_id = str(body.get("owner_turn_id") or "")
-            turn = rt.chat_store.turn(turn_id)
-            if turn.get("owner_principal_id") != owner.principal_id:
-                raise ValueError("owner turn is not authorized")
-            repaired = rt.chat_store.clear_unproven_handoff(turn_id)
-            evidence = {"action": action, "owner_turn_id": turn_id, "response_handed_off_at": repaired.get("response_handed_off_at")}
-        else:
-            raise ValueError("unsupported quarantine repair action")
-        event_id = rt.operational.record_repair(
-            runtime_revision=rt.runtime_revision, actor=owner.principal_id,
-            reason=f"quarantine repair: {action}", evidence=evidence,
-        )
-        return JSONResponse({"ok": True, "event_id": event_id, "evidence": evidence})
-    except Exception as exc:
-        return _error(exc, 409)
 
 
 async def auth_session(request: Request) -> JSONResponse:
@@ -197,6 +105,13 @@ async def system_state(request: Request) -> JSONResponse:
         "storage": rt.host.storage().output,
     }
     return JSONResponse(state)
+
+
+async def attention_snapshot(request: Request) -> JSONResponse:
+    gate = require_session(request)
+    if isinstance(gate, JSONResponse):
+        return gate
+    return JSONResponse({"attention": list(_runtime(request).attention.snapshot())})
 
 
 async def capabilities_list(request: Request) -> JSONResponse:

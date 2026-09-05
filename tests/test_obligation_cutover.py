@@ -27,9 +27,9 @@ def test_cutover_copies_full_state_then_recreates_sqlite_only(tmp_path):
     assert rollback.is_dir()
     assert (rollback / MANIFEST_NAME).is_file()
     manifest = json.loads((rollback / MANIFEST_NAME).read_text())
-    assert manifest["schema"] == 2
+    assert manifest["schema"] == 3
     assert manifest["runtime_revision"]
-    assert manifest["verification"] == "vacuum_into + open + pragma_integrity_check"
+    assert manifest["verification"] == "full_state_copy + readonly_open + pragma_integrity_check + sha256"
     assert "atlas-chat.db" in manifest["databases"]
     assert manifest["databases"]["atlas-chat.db"]["integrity_check"] == "ok"
     assert manifest["databases"]["atlas-chat.db"]["schema_sha256"]

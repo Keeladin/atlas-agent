@@ -39,21 +39,28 @@ class WorkRuntime:
     def create(self, objective: str, steps: list[dict[str, Any]], *, owner_principal_id: str,
                metadata: dict[str, Any] | None = None, artifact_class: str | None = None,
                workflow_class: str | None = None, adopt_occurrence_id: str | None = None,
-               obligation_ids: list[str] | tuple[str, ...] | None = None, stage: bool = False):
+               stage: bool = False):
         self.validate_steps(steps)
         meta = dict(metadata or {})
-        backing = tuple(dict.fromkeys(str(item).strip() for item in (obligation_ids or ()) if str(item).strip()))
-        if stage:
+        mapped = tuple(dict.fromkeys(
+            str(obligation_id).strip()
+            for step in steps
+            for obligation_id in (step.get("obligation_ids") or ())
+            if str(obligation_id).strip()
+        ))
+        origin = meta.get("chat_origin") if isinstance(meta.get("chat_origin"), dict) else {}
+        owner_turn_id = str(origin.get("owner_turn_id") or "")
+        if stage and not mapped:
+            raise ValueError("staged Work requires at least one step-level obligation binding")
+        if stage and not owner_turn_id:
+            raise ValueError("staged owner Work requires an originating owner turn")
+        if mapped:
             if self.obligation_store is None:
-                raise RuntimeError("staged Work requires the obligation ledger")
-            if not backing:
-                raise ValueError("staged Work requires at least one backing obligation")
-            origin = meta.get("chat_origin") if isinstance(meta.get("chat_origin"), dict) else {}
-            owner_turn_id = str(origin.get("owner_turn_id") or "")
-            for obligation_id in backing:
+                raise RuntimeError("obligation-bound Work requires the obligation ledger")
+            for obligation_id in mapped:
                 obligation = self.obligation_store.get(obligation_id)
                 if obligation.status != "open":
-                    raise ValueError("staged Work may bind only open obligations")
+                    raise ValueError("Work may bind only open obligations")
                 if obligation.owner_principal_id != owner_principal_id:
                     raise ValueError("backing obligation owner does not match Work owner")
                 if owner_turn_id and obligation.owner_turn_id != owner_turn_id:
@@ -79,8 +86,7 @@ class WorkRuntime:
                 raise ValueError("adopted occurrence must match the first Work scope and payload")
         work = self.store.create(
             objective, owner_principal_id, steps, metadata=meta,
-            artifact_class=artifact_class, workflow_class=workflow_class,
-            obligation_ids=backing, stage=stage,
+            artifact_class=artifact_class, workflow_class=workflow_class, stage=stage,
         )
         if adopted is not None:
             first_step = self.store.steps(work.work_id)[0]
@@ -100,6 +106,27 @@ class WorkRuntime:
             raise ValueError("revision prefix must already be completed")
         combined = [{"capability_id": step.capability_id, "description": step.description, "input": step.input} for step in prefix] + replacement_steps
         self.validate_steps(combined)
+        origin = current.metadata.get("chat_origin") if isinstance(current.metadata.get("chat_origin"), dict) else None
+        mapped = tuple(dict.fromkeys(
+            str(obligation_id).strip()
+            for step in replacement_steps
+            for obligation_id in (step.get("obligation_ids") or ())
+            if str(obligation_id).strip()
+        ))
+        owner_turn_id = str(origin.get("owner_turn_id") or "") if origin else ""
+        if origin and not mapped:
+            raise ValueError("ledger-aware Work revision requires step-level obligation bindings")
+        if mapped:
+            if self.obligation_store is None:
+                raise RuntimeError("obligation-bound Work revision requires the obligation ledger")
+            for obligation_id in mapped:
+                obligation = self.obligation_store.get(obligation_id)
+                if obligation.status != "open":
+                    raise ValueError("revised Work may bind only open obligations")
+                if obligation.owner_principal_id != current.owner_principal_id:
+                    raise ValueError("revised Work obligation owner does not match Work owner")
+                if owner_turn_id and obligation.owner_turn_id != owner_turn_id:
+                    raise ValueError("revised Work obligation scope does not match the originating owner turn")
         self.store.revise(work_id, base_revision=base_revision, from_ordinal=from_ordinal, replacement_steps=replacement_steps,
                           change_intent=change_intent, reason=reason, unchanged_goal=unchanged_goal, expected_impact=expected_impact)
         return self.detail(current.work_id)
@@ -380,8 +407,8 @@ class WorkRuntime:
 def register_work_capabilities(registry, runtime:WorkRuntime)->None:
     from atlas_core.actions import ActionResult
     from atlas_core.capabilities import CapabilityDefinition,CapabilityRegistration,ScopeResolution
-    step_schema={"type":"object","required":["capability_id","input"],"properties":{"capability_id":{"type":"string","minLength":1},"description":{"type":"string","minLength":1},"input":{"type":"object"}},"additionalProperties":False}
-    origin_schema={"type":"object","required":["conversation_id","owner_turn_id","obligation_ids"],"properties":{"conversation_id":{"type":"string","minLength":1},"owner_turn_id":{"type":"string","minLength":1},"obligation_ids":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}},"additionalProperties":False}
+    step_schema={"type":"object","required":["capability_id","input"],"properties":{"capability_id":{"type":"string","minLength":1},"description":{"type":"string","minLength":1},"input":{"type":"object"},"obligation_ids":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":True}},"additionalProperties":False}
+    origin_schema={"type":"object","required":["conversation_id","owner_turn_id"],"properties":{"conversation_id":{"type":"string","minLength":1},"owner_turn_id":{"type":"string","minLength":1}},"additionalProperties":False}
     schema={"type":"object","required":["objective","steps"],"properties":{"objective":{"type":"string","minLength":1},"steps":{"type":"array","minItems":1,"items":step_schema},"run":{"type":"boolean"},"origin":origin_schema,"adopt_occurrence_id":{"type":"string","minLength":1}},"additionalProperties":False}
     exact={"type":"object","required":["work_id"],"properties":{"work_id":{"type":"string","minLength":1}},"additionalProperties":False}
     revise_schema={"type":"object","required":["work_id","base_revision","from_ordinal","change_intent","reason","unchanged_goal","expected_impact","replacement_steps"],"properties":{
@@ -400,13 +427,11 @@ def register_work_capabilities(registry, runtime:WorkRuntime)->None:
             run=bool(payload.get("run",True));origin=payload.get("origin") if surface=="chat" and isinstance(payload.get("origin"),dict) else None
             adopt=payload.get("adopt_occurrence_id") if surface=="chat" else None
             metadata={"auto_resume_on_recovery":run}
-            backing=[]
             if origin:
                 owner_turn_id=str(origin["owner_turn_id"]);conversation_id=str(origin["conversation_id"])
-                backing=[str(item) for item in origin.get("obligation_ids") or []]
                 work_key=_chat_work_key(owner_turn_id,payload["objective"],payload["steps"])
                 metadata["chat_origin"]={"conversation_id":conversation_id,"owner_turn_id":owner_turn_id,"work_key":work_key}
-            work=runtime.create(payload["objective"],payload["steps"],owner_principal_id=principal,metadata=metadata,adopt_occurrence_id=adopt,obligation_ids=backing,stage=bool(origin))
+            work=runtime.create(payload["objective"],payload["steps"],owner_principal_id=principal,metadata=metadata,adopt_occurrence_id=adopt,stage=bool(origin))
             result=runtime.detail(work.work_id) if origin else (runtime.run(work.work_id) if run else runtime.detail(work.work_id))
             return ActionResult(True,result,{"ok":True,"operation":"work.create","work_id":work.work_id})
         except Exception as exc:return ActionResult(False,error_code="work_create_failed",error=str(exc),receipt={"ok":False,"operation":"work.create"})

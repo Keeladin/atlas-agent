@@ -2,9 +2,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { ApiError, api, uploadArtifact } from '../api/client'
-import type { ActionOccurrence, Cadence, ChatFocus, ChatTurn, Conversation, WorkItem } from '../api/types'
+import type { ActionOccurrence, AttentionItem, Cadence, ChatFocus, ChatTurn, Conversation, WorkItem } from '../api/types'
 import { ArtifactObject } from '../ui/ArtifactObject'
 import { StatusLamp } from '../ui/OperationsPrimitives'
+import { attentionHref, attentionStatus, attentionTitle, attentionTone } from '../ui/attentionState'
 import type { LampTone } from '../ui/operationState'
 import { workStateToLamp } from '../ui/operationState'
 import { RuntimeObject, type RuntimeObjectDescriptor } from '../ui/RuntimeObject'
@@ -16,7 +17,6 @@ type Health = { ok: boolean; service: string; version: string }
 type Attachment = { artifact_id: string; display_name: string; media_type?: string | null; created_at?: string | null }
 type SendRequest = { conversationId: string; text: string; focus?: ChatFocus | null; attachments: Attachment[]; baselineTurnId?: string | null }
 type RecoveringSend = { conversationId: string; text: string; baselineTurnId: string | null; startedAt: number }
-type CompletionWatch = { conversationId: string; ownerTurnId: string; workIds: string[]; startedAt: number }
 type UploadResponse = { artifact: Attachment }
 
 function shouldRecoverSend(error: unknown) {
@@ -59,20 +59,6 @@ function workOrigin(item: WorkItem) {
   return conversationId && ownerTurnId ? { conversationId, ownerTurnId } : null
 }
 
-function completionWorkId(turn: ChatTurn) {
-  const raw = turn.metadata?.work_completion
-  if (!raw || typeof raw !== 'object') return ''
-  const value = (raw as Record<string, unknown>).work_id
-  return typeof value === 'string' ? value : ''
-}
-
-function completionReportSettled(turn: ChatTurn) {
-  const raw = turn.metadata?.completion_report
-  if (!raw || typeof raw !== 'object') return true
-  const mode = (raw as Record<string, unknown>).mode
-  return mode !== 'deterministic_pending'
-}
-
 function attachmentsForTurn(turn: ChatTurn): Attachment[] {
   const raw = Array.isArray(turn.metadata?.attachments) ? turn.metadata.attachments : []
   return raw.flatMap(value => {
@@ -93,6 +79,7 @@ export function Chat() {
   const work = useQuery({ queryKey: ['work'], queryFn: () => api<{ work: WorkItem[] }>('/api/work'), refetchInterval: 6000 })
   const cadence = useQuery({ queryKey: ['cadence'], queryFn: () => api<{ cadences: Cadence[] }>('/api/cadence'), refetchInterval: 12000 })
   const health = useQuery({ queryKey: ['health'], queryFn: () => api<Health>('/api/health'), refetchInterval: 15000 })
+  const attention = useQuery({ queryKey: ['attention'], queryFn: () => api<{ attention: AttentionItem[] }>('/api/attention'), refetchInterval: 5000 })
   const [selected, setSelected] = useState<string | null>(null)
   const [message, setMessage] = useState('')
   const [pendingFocus, setPendingFocus] = useState<ChatFocus | null>(null)
@@ -104,7 +91,6 @@ export function Chat() {
   const [conversationFilter, setConversationFilter] = useState('')
   const [traceTurn, setTraceTurn] = useState<string | null>(null)
   const [recoveringSend, setRecoveringSend] = useState<RecoveringSend | null>(null)
-  const [completionWatch, setCompletionWatch] = useState<CompletionWatch | null>(null)
   const threadEndRef = useRef<HTMLDivElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [searchParams, setSearchParams] = useSearchParams()
@@ -160,11 +146,7 @@ export function Chat() {
     queryKey: ['conversation', selected],
     queryFn: () => api<{ conversation: Conversation; turns: ChatTurn[] }>(`/api/chat/conversations/${selected}`),
     enabled: selectedValid,
-    refetchInterval: query => {
-      const data = query.state.data as { turns?: ChatTurn[] } | undefined
-      const pendingReport = data?.turns?.some(turn => Boolean(completionWorkId(turn)) && !completionReportSettled(turn)) ?? false
-      return (recoveringSend && recoveringSend.conversationId === selected) || (completionWatch && completionWatch.conversationId === selected) || pendingReport ? 1500 : false
-    },
+    refetchInterval: recoveringSend && recoveringSend.conversationId === selected ? 1500 : 5000,
   })
   const send = useMutation({
     mutationFn: ({ conversationId, text, focus, attachments: attached }: SendRequest) => api<{ turn: ChatTurn }>(`/api/chat/conversations/${conversationId}/messages`, {
@@ -178,6 +160,7 @@ export function Chat() {
         qc.invalidateQueries({ queryKey: ['conversations'] }),
         qc.invalidateQueries({ queryKey: ['work'] }),
         qc.invalidateQueries({ queryKey: ['cadence'] }),
+        qc.invalidateQueries({ queryKey: ['attention'] }),
       ])
     },
     onError: (error, variables) => {
@@ -189,6 +172,7 @@ export function Chat() {
       void qc.invalidateQueries({ queryKey: ['conversation', variables.conversationId] })
       void qc.invalidateQueries({ queryKey: ['health'] })
       void qc.invalidateQueries({ queryKey: ['work'] })
+      void qc.invalidateQueries({ queryKey: ['attention'] })
     },
   })
 
@@ -225,31 +209,13 @@ export function Chat() {
       const origin = workOrigin(item)
       return origin?.conversationId === recoveringSend.conversationId && origin.ownerTurnId === ownerTurn.turn_id
     })
-    const completedWorkIds = new Set(afterOwner.filter(completionReportSettled).map(completionWorkId).filter(Boolean))
-    if (relatedWork.length && relatedWork.every(item => completedWorkIds.has(item.work_id))) {
-      setRecoveringSend(null); setCompletionWatch(null); send.reset()
-    } else if (relatedWork.length) {
-      setCompletionWatch({ conversationId: recoveringSend.conversationId, ownerTurnId: ownerTurn.turn_id, workIds: relatedWork.map(item => item.work_id), startedAt: Date.now() })
-      setRecoveringSend(null); send.reset()
-    } else if (afterOwner.some(turn => turn.role === 'assistant')) {
-      setRecoveringSend(null); send.reset()
-    } else {
-      return
-    }
+    if (!afterOwner.some(turn => turn.role === 'assistant')) return
+    setRecoveringSend(null); send.reset()
+    if (relatedWork.length) void qc.invalidateQueries({ queryKey: ['attention'] })
     void qc.invalidateQueries({ queryKey: ['conversations'] })
     void qc.invalidateQueries({ queryKey: ['work'] })
     void qc.invalidateQueries({ queryKey: ['cadence'] })
   }, [recoveringSend, selected, turns, workRows, send, qc])
-
-  useEffect(() => {
-    if (!completionWatch || completionWatch.conversationId !== selected) return
-    const completed = new Set(turns.filter(completionReportSettled).map(completionWorkId).filter(Boolean))
-    if (!completionWatch.workIds.every(workId => completed.has(workId))) return
-    setCompletionWatch(null)
-    void qc.invalidateQueries({ queryKey: ['conversations'] })
-    void qc.invalidateQueries({ queryKey: ['work'] })
-    void qc.invalidateQueries({ queryKey: ['cadence'] })
-  }, [completionWatch, selected, turns, qc])
 
   useEffect(() => {
     if (!recoveringSend) return
@@ -257,14 +223,8 @@ export function Chat() {
     return () => window.clearTimeout(timeout)
   }, [recoveringSend])
 
-  useEffect(() => {
-    if (!completionWatch) return
-    const timeout = window.setTimeout(() => setCompletionWatch(null), 15 * 60 * 1000)
-    return () => window.clearTimeout(timeout)
-  }, [completionWatch])
-
   const activeWork = workRows.filter(item => ['active', 'queued', 'waiting', 'paused'].includes(item.status)).slice(0, 6)
-  const attentionWork = workRows.filter(item => ['failed', 'paused', 'waiting'].includes(item.status))
+  const attentionRows = attention.data?.attention ?? []
   const enabledCadence = (cadence.data?.cadences ?? []).filter(item => item.enabled).slice(0, 5)
   const currentConversation = detail.data?.conversation ?? items.find(item => item.conversation_id === selected) ?? null
   const visibleConversations = items.filter(item => !conversationFilter || item.title.toLowerCase().includes(conversationFilter.toLowerCase()))
@@ -297,21 +257,21 @@ export function Chat() {
   return <div className="owner-canvas">
     <header className="owner-canvas-head">
       <div className="owner-canvas-title">
-        <span className="owner-canvas-kicker"><StatusLamp tone={send.isPending || recoveringSend || completionWatch ? 'amber' : runtimeTone} />{recoveringSend ? 'Reconnecting' : send.isPending ? 'Working' : completionWatch ? 'Continuing' : health.data?.ok ? 'Ready' : 'Runtime'}</span>
+        <span className="owner-canvas-kicker"><StatusLamp tone={send.isPending || recoveringSend ? 'amber' : runtimeTone} />{recoveringSend ? 'Reconnecting' : send.isPending ? 'Working' : health.data?.ok ? 'Ready' : 'Runtime'}</span>
         <h1>{currentConversation?.title || 'Atlas'}</h1>
       </div>
       <div className="owner-canvas-actions">
-        <button type="button" className={runtimeOpen ? 'active' : ''} onClick={() => { setRuntimeOpen(value => !value); setHistoryOpen(false) }}>Runtime{attentionWork.length ? <b>{attentionWork.length}</b> : null}</button>
+        <button type="button" className={runtimeOpen ? 'active' : ''} onClick={() => { setRuntimeOpen(value => !value); setHistoryOpen(false) }}>Runtime{attentionRows.length ? <b>{attentionRows.length}</b> : null}</button>
         <button type="button" className={historyOpen ? 'active' : ''} onClick={() => { setHistoryOpen(value => !value); setRuntimeOpen(false) }}>History</button>
         <button type="button" onClick={() => createConversation.mutate()} disabled={createConversation.isPending}>New conversation</button>
       </div>
     </header>
 
     {runtimeOpen ? <aside className="owner-popover runtime-popover">
-      {attentionWork.length ? <section><span className="owner-popover-label">Needs you</span>{attentionWork.slice(0, 4).map(item => <Link key={item.work_id} to={`/work/${item.work_id}`}><StatusLamp tone="red" /><span><strong>{item.objective}</strong><small>{item.status}</small></span></Link>)}</section> : null}
+      {attentionRows.length ? <section><span className="owner-popover-label">Needs you</span>{attentionRows.slice(0, 4).map(item => <Link key={`${item.kind}:${item.obligation_id}`} to={attentionHref(item)}><StatusLamp tone={attentionTone(item)} /><span><strong>{attentionTitle(item)}</strong><small>{attentionStatus(item)}</small></span></Link>)}</section> : null}
       {activeWork.length ? <section><span className="owner-popover-label">Active Work</span>{activeWork.map(item => <Link key={item.work_id} to={`/work/${item.work_id}`}><StatusLamp tone={workStateToLamp(item.status)} /><span><strong>{item.objective}</strong><small>{item.status}</small></span></Link>)}</section> : null}
       {enabledCadence.length ? <section><span className="owner-popover-label">Standing duties</span>{enabledCadence.map(item => <Link key={item.cadence_id} to="/cadence"><StatusLamp tone="blue" /><span><strong>{item.name}</strong><small>{item.objective}</small></span></Link>)}</section> : null}
-      {!attentionWork.length && !activeWork.length && !enabledCadence.length ? <p>No active responsibilities right now.</p> : null}
+      {!attentionRows.length && !activeWork.length && !enabledCadence.length ? <p>No active responsibilities right now.</p> : null}
       <footer><Link to="/work">Browse Work</Link><Link to="/cadence">Standing duties</Link></footer>
     </aside> : null}
 
@@ -323,7 +283,7 @@ export function Chat() {
       </div>)}{!visibleConversations.length ? <p>No matching conversations</p> : null}</div>
     </aside> : null}
 
-    {attentionWork.length ? <div className="owner-attention-strip"><span>Attention</span><strong>{attentionWork[0].objective}</strong><Link to={`/work/${attentionWork[0].work_id}`}>Open Work →</Link>{attentionWork.length > 1 ? <small>+{attentionWork.length - 1} more</small> : null}</div> : null}
+    {attentionRows.length ? <div className="owner-attention-strip"><span>Attention</span><strong>{attentionTitle(attentionRows[0])}</strong><Link to={attentionHref(attentionRows[0])}>Open →</Link>{attentionRows.length > 1 ? <small>+{attentionRows.length - 1} more</small> : null}</div> : null}
 
     <main className="owner-thread" aria-label="Conversation and runtime objects">
       <div className="owner-thread-inner">        {turns.map(turn => {
@@ -346,7 +306,7 @@ export function Chat() {
             </div>
           </article>
         })}
-        {send.isPending || recoveringSend || completionWatch ? <div className="owner-working"><StatusLamp tone="amber" /><span>{recoveringSend ? 'Atlas is reconnecting to durable state' : send.isPending ? 'Atlas is working' : 'Atlas is continuing durable Work'}</span></div> : null}
+        {send.isPending || recoveringSend ? <div className="owner-working"><StatusLamp tone="amber" /><span>{recoveringSend ? 'Atlas is reconnecting to durable state' : 'Atlas is working'}</span></div> : null}
         {detail.isError && !recoveringSend ? <p className="owner-error">{detail.error.message}</p> : null}
         <div ref={threadEndRef} aria-hidden />
       </div>

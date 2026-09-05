@@ -148,9 +148,8 @@ it('treats a restart 502 as reconnectable transport loss when the durable turn a
   await waitFor(() => expect(box).toHaveValue(''))
 })
 
-it('keeps following durable Work after a restart transport loss until the completion turn arrives', async () => {
+it('recovers a durable restart handoff from conversation state without a Work-completion polling contract', async () => {
   let restarted = false
-  let postRestartReads = 0
   const durableWork = {
     work_id: 'work_restart', objective: 'Restart Atlas and verify health', status: 'waiting', owner_principal_id: 'owner',
     created_at: '2026-09-05 02:27:13', updated_at: '2026-09-05 02:27:19', revision: 1,
@@ -165,26 +164,14 @@ it('keeps following durable Work after a restart transport loss until the comple
     if (path === '/api/work') return Response.json({ work: restarted ? [durableWork] : [] })
     if (path === '/api/cadence') return Response.json({ cadences: [] })
     if (path === '/api/health') return Response.json({ ok: true, service: 'atlas-api', version: '4' })
+    if (path === '/api/attention') return Response.json({ attention: [] })
+    if (path === '/api/work/work_restart') return Response.json(durableWork)
     if (path === '/api/chat/conversations' && (!init?.method || init.method === 'GET')) return Response.json({ conversations: [conversation] })
-    if (path === '/api/chat/conversations/conversation_1' && (!init?.method || init.method === 'GET')) {
-      if (!restarted) return Response.json({ conversation, turns: baseTurns })
-      postRestartReads += 1
-      const turns = [
-        ...baseTurns,
-        { turn_id: 'u2', conversation_id: 'conversation_1', role: 'user', content: 'Restart and verify', metadata: {} },
-        { turn_id: 'a2', conversation_id: 'conversation_1', role: 'assistant', content: 'Restart dispatched as durable Work', metadata: { objects: [{ kind: 'work', id: 'work_restart' }] } },
-      ]
-      if (postRestartReads >= 2) turns.push({
-        turn_id: 'a3', conversation_id: 'conversation_1', role: 'assistant',
-        content: postRestartReads >= 3 ? 'Completed: Atlas is active/running.' : 'Completed: Restart Atlas and verify health. Recorded step results are available in the Work item.',
-        metadata: {
-          work_completion: { work_id: 'work_restart', terminal_status: 'completed' },
-          completion_report: { mode: postRestartReads >= 3 ? 'grounded_model_verified' : 'deterministic_pending' },
-          objects: [{ kind: 'work', id: 'work_restart' }],
-        },
-      })
-      return Response.json({ conversation, turns })
-    }
+    if (path === '/api/chat/conversations/conversation_1' && (!init?.method || init.method === 'GET')) return Response.json({ conversation, turns: restarted ? [
+      ...baseTurns,
+      { turn_id: 'u2', conversation_id: 'conversation_1', role: 'user', content: 'Restart and verify', metadata: {} },
+      { turn_id: 'a2', conversation_id: 'conversation_1', role: 'assistant', content: 'Restart dispatched as durable Work', metadata: { objects: [{ kind: 'work', id: 'work_restart' }] } },
+    ] : baseTurns })
     if (path === '/api/chat/conversations/conversation_1/messages' && init?.method === 'POST') {
       restarted = true
       return new Response('', { status: 502 })
@@ -201,31 +188,29 @@ it('keeps following durable Work after a restart transport loss until the comple
 
   expect(await screen.findByText('Restart dispatched as durable Work')).toBeInTheDocument()
   expect(screen.queryByText('HTTP 502')).toBeNull()
-  expect(await screen.findByText('Atlas is continuing durable Work')).toBeInTheDocument()
-  expect(await screen.findByText('Completed: Atlas is active/running.', {}, { timeout: 4000 })).toBeInTheDocument()
-  expect(screen.queryByText('HTTP 502')).toBeNull()
-  await waitFor(() => expect(screen.queryByText('Atlas is continuing durable Work')).toBeNull(), { timeout: 4000 })
+  await waitFor(() => expect(box).toHaveValue(''))
+  expect(screen.queryByText('Atlas is reconnecting to durable state')).toBeNull()
+  expect(fetchMock.mock.calls.some(([input]) => String(input).includes('completion'))).toBe(false)
 })
 
-it('keeps polling a normal completion turn until deterministic report enrichment settles', async () => {
+it('renders obligation-derived Attention independently of legacy completion metadata', async () => {
   let detailReads = 0
+  const attentionItem = {
+    kind: 'unserviced_obligation', obligation_id: 'obl_1', owner_turn_id: 'u1', conversation_id: 'conversation_1',
+    obligation_kind: 'communication', text: 'Provide the verified owner-facing report.',
+  }
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input)
-    const ownerSurface = ownerSurfaceResponse(path)
-    if (ownerSurface) return ownerSurface
+    if (path === '/api/work') return Response.json({ work: [] })
+    if (path === '/api/cadence') return Response.json({ cadences: [] })
+    if (path === '/api/health') return Response.json({ ok: true, service: 'atlas-api', version: '4' })
+    if (path === '/api/attention') return Response.json({ attention: [attentionItem] })
     if (path === '/api/chat/conversations' && (!init?.method || init.method === 'GET')) return Response.json({ conversations: [conversation] })
     if (path === '/api/chat/conversations/conversation_1' && (!init?.method || init.method === 'GET')) {
       detailReads += 1
       return Response.json({ conversation, turns: [
         { turn_id: 'u1', conversation_id: 'conversation_1', role: 'user', content: 'Do the Work', metadata: {} },
-        {
-          turn_id: 'a1', conversation_id: 'conversation_1', role: 'assistant',
-          content: detailReads >= 2 ? 'Verified completion report with the final result.' : 'Completed: Do the Work. Recorded step results are available in the Work item.',
-          metadata: {
-            work_completion: { work_id: 'work_1', terminal_status: 'completed' },
-            completion_report: { mode: detailReads >= 2 ? 'grounded_model_verified' : 'deterministic_pending' },
-          },
-        },
+        { turn_id: 'a1', conversation_id: 'conversation_1', role: 'assistant', content: 'Execution is durable; the verified report is still owed.', metadata: {} },
       ] })
     }
     throw new Error(`unexpected fetch ${path}`)
@@ -233,7 +218,9 @@ it('keeps polling a normal completion turn until deterministic report enrichment
   vi.stubGlobal('fetch', fetchMock)
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   render(<QueryClientProvider client={client}><MemoryRouter><Chat /></MemoryRouter></QueryClientProvider>)
-  expect(await screen.findByText('Completed: Do the Work. Recorded step results are available in the Work item.')).toBeInTheDocument()
-  expect(await screen.findByText('Verified completion report with the final result.', {}, { timeout: 4000 })).toBeInTheDocument()
-  expect(detailReads).toBeGreaterThanOrEqual(2)
+
+  expect(await screen.findByText('Execution is durable; the verified report is still owed.')).toBeInTheDocument()
+  expect(await screen.findByText('Provide the verified owner-facing report.')).toBeInTheDocument()
+  expect(detailReads).toBe(1)
+  expect(fetchMock.mock.calls.some(([input]) => String(input).includes('completion'))).toBe(false)
 })

@@ -21,6 +21,24 @@ export type ActionOccurrence = {
   completed_at?: string | null
 }
 
+export type AttentionItem = {
+  kind: 'unserviced_obligation' | 'servicing_blocked' | 'handoff_unconfirmed' | 'lapsed_obligation' | 'stale_unserviceable'
+  obligation_id: string
+  owner_turn_id?: string
+  conversation_id?: string
+  obligation_kind?: 'state_change' | 'communication'
+  text: string
+  work_id?: string | null
+  mechanism_kind?: string | null
+  mechanism_id?: string | null
+  status?: string | null
+  lapsed_at?: string | null
+  assessment_id?: string
+  recorded_registry_fingerprint?: string
+  current_registry_fingerprint?: string
+  created_at?: string
+}
+
 export type Conversation = { conversation_id: string; title: string; created_at: string; updated_at: string }
 export type ChatTurn = { turn_id: string; conversation_id: string; role: string; content: string; metadata: Record<string, unknown>; created_at?: string }
 export type WorkStep = { step_id: string; ordinal: number; description: string; capability_id: string; input: Record<string, unknown>; status: string; occurrence_id?: string | null; output?: unknown; error?: string | null }

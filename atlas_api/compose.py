@@ -27,8 +27,10 @@ from atlas_core.knowledge.passages import PassageStore
 from atlas_core.library import LibraryRuntime, LibraryStore
 from atlas_core.mcp import MCPRuntime, MCPServerStore
 from atlas_core.memory import MemoryRuntime, MemoryStore
-from atlas_core.obligations import (AttentionRuntime, ObligationIntakeRuntime, ObligationReconciler, ObligationStore, collect_runtime_violations)
-from atlas_core.operational import OperationalStateStore
+from atlas_core.obligations import (
+    AttentionRuntime, ObligationIntakeRuntime, ObligationReconciler, ObligationStore,
+    assert_runtime_invariants,
+)
 from atlas_core.model_runtime import ModelInferenceRuntime
 from atlas_core.policy import OwnerPolicy, PolicyStore
 from atlas_core.providers import ProviderRuntime, ProviderSettingsStore
@@ -53,8 +55,6 @@ class AtlasRuntime:
     work_database: WorkDatabase
     actions_store: ActionStore
     evidence: EvidenceStore
-    operational: OperationalStateStore
-    startup_violations: tuple[Any, ...]
     capabilities_registry: CapabilityRegistry
     actions: ActionRuntime
     capabilities: CapabilityRuntime
@@ -166,7 +166,6 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     cadence_db = root / "atlas-cadence.db"
 
     identities = IdentityStore(identity_db); identities.initialize()
-    operational = OperationalStateStore(identity_db); operational.initialize()
     policy_store = PolicyStore(identity_db); policy_store.initialize(); policy = OwnerPolicy(policy_store)
     work_database = WorkDatabase(work_db); work_database.initialize()
     actions_store = ActionStore(work_database); actions_store.initialize()
@@ -231,7 +230,6 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     representations = RepresentationRuntime(artifact_store, sources, registry, model_provider=providers)
     chat_store = ChatStore(chat_db); chat_store.initialize()
     obligation_store = ObligationStore(chat_db); obligation_store.initialize()
-    chat_store.interrupt_pending_intakes()
     obligation_intake = ObligationIntakeRuntime(obligation_store, providers)
     memory_store = MemoryStore(work_database, embedding_provider); memory_store.initialize(); memory = MemoryRuntime(
         memory_store, registry, actions_store, grounding_validator=chat_store.owner_grounding_matches,
@@ -240,10 +238,8 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
         if item.metadata.get("workflow_intent") == "knowledge.ingest":
             indexing.abandon_for_work(item.work_id)
     work_store = WorkStore(work_database); work_store.initialize()
-    startup_violations = collect_runtime_violations(chat_store, obligation_store, work_store, actions_store, evidence)
-    if startup_violations:
-        operational.enter_quarantine(startup_violations, runtime_revision=runtime_revision)
-    attention = AttentionRuntime(obligation_store, work_store); work = WorkRuntime(
+    assert_runtime_invariants(chat_store, obligation_store, work_store, actions_store, evidence)
+    attention = AttentionRuntime(obligation_store, work_store, registry=registry); work = WorkRuntime(
         work_store, capabilities, actions_store, cancel_hook=cancel_work_cleanup, obligation_store=obligation_store, turn_store=chat_store,
     )
     artifact_intake_store = ArtifactIntakeStore(work_database); artifact_intake_store.initialize()
@@ -263,7 +259,7 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     )
 
     runtime = AtlasRuntime(
-        root, runtime_revision, identities, policy_store, policy, work_database, actions_store, evidence, operational, startup_violations, registry,
+        root, runtime_revision, identities, policy_store, policy, work_database, actions_store, evidence, registry,
         actions, capabilities, credentials, provider_settings, providers,
         mcp_store, mcp, source_roots, sources, web_provider_settings, web_providers, web, host, knowledge_store, knowledge, library_store, library,
         passages, generations, indexing, artifact_store, artifacts, managed_intake, artifact_intake_store, artifact_intake, uploads, model_inference, representations, memory_store, memory,
@@ -271,12 +267,10 @@ def build_runtime(instance_root: str | Path) -> AtlasRuntime:
     )
     runtime.seed_policy()
 
-    # Quarantine is sticky. Validation failure records it; a later clean boot does not
-    # silently clear it. While quarantined, no recovery path may dispatch execution.
-    if not bool(operational.state().get("quarantined")):
-        actions_store.recover_executing()
-        host.reconcile_self_restart()
-        recovery = work.recover_incomplete()
-        work.resume_recovered(recovery.get("touched_work_ids", []))
-        work.reconcile_orchestration_actions()
+    # Recovery begins only after every persisted invariant has passed.
+    actions_store.recover_executing()
+    host.reconcile_self_restart()
+    recovery = work.recover_incomplete()
+    work.resume_recovered(recovery.get("touched_work_ids", []))
+    work.reconcile_orchestration_actions()
     return runtime

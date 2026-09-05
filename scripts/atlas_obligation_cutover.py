@@ -60,7 +60,8 @@ def _schema_fingerprint(path: Path) -> dict[str, object]:
     encoded = json.dumps(rows, ensure_ascii=False, default=str, separators=(",", ":"))
     return {"user_version": user_version, "schema_sha256": hashlib.sha256(encoded.encode()).hexdigest()}
 def _verify_sqlite(path: Path) -> dict[str, object]:
-    with sqlite3.connect(path) as db:
+    uri = f"file:{path.resolve()}?mode=ro"
+    with sqlite3.connect(uri, uri=True) as db:
         opened = db.execute("SELECT 1").fetchone()[0] == 1
         integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
     if not opened or integrity != "ok":
@@ -68,27 +69,13 @@ def _verify_sqlite(path: Path) -> dict[str, object]:
     return {"integrity_check": integrity, **_schema_fingerprint(path)}
 
 
-def _copy_non_sqlite(instance_root: Path, rollback: Path) -> None:
-    for source in sorted(instance_root.rglob("*")):
-        rel = source.relative_to(instance_root)
-        target = rollback / rel
-        if source.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-            continue
-        if source.suffix.casefold() in DB_SUFFIXES or source.name.endswith(("-wal", "-shm")):
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if source.is_symlink():
-            target.symlink_to(source.readlink())
-        else:
-            shutil.copy2(source, target)
+def _copy_full_state(instance_root: Path, rollback: Path) -> None:
+    """Copy the stopped instance byte-for-byte, preserving symlinks and SQLite sidecars."""
+    if rollback.exists():
+        raise FileExistsError(rollback)
+    shutil.copytree(instance_root, rollback, symlinks=True)
 
 
-def _vacuum_into(source: Path, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    escaped = str(target).replace("'", "''")
-    with sqlite3.connect(source) as db:
-        db.execute(f"VACUUM INTO '{escaped}'")
 def create_verified_rollback(
     instance_root: Path, *, runtime_revision: str,
     rollback_root: Path | None = None,
@@ -100,21 +87,18 @@ def create_verified_rollback(
     destination = rollback_root.resolve() if rollback_root else instance_root.parent
     destination.mkdir(parents=True, exist_ok=True)
     rollback = destination / f"{instance_root.name}.rollback.{stamp}"
-    if rollback.exists():
-        raise FileExistsError(rollback)
-    rollback.mkdir(parents=True)
+    _copy_full_state(instance_root, rollback)
 
-    _copy_non_sqlite(instance_root, rollback)
     databases: dict[str, dict[str, object]] = {}
     for source in _sqlite_mains(instance_root):
         rel = source.relative_to(instance_root)
         target = rollback / rel
-        _vacuum_into(source, target)
         databases[rel.as_posix()] = {
             "size": target.stat().st_size,
             "sha256": _sha256(target),
             **_verify_sqlite(target),
         }
+
     files: dict[str, dict[str, object]] = {}
     for path in sorted(rollback.rglob("*")):
         if not path.is_file() or path.name == MANIFEST_NAME:
@@ -125,14 +109,14 @@ def create_verified_rollback(
         files[rel] = {"size": path.stat().st_size, "sha256": _sha256(path)}
 
     manifest = {
-        "schema": 2,
+        "schema": 3,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source": str(instance_root),
         "runtime_revision": runtime_revision,
         "database_count": len(databases),
         "databases": databases,
         "files": files,
-        "verification": "vacuum_into + open + pragma_integrity_check",
+        "verification": "full_state_copy + readonly_open + pragma_integrity_check + sha256",
     }
     (rollback / MANIFEST_NAME).write_text(
         json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8"

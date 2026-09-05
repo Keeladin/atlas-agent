@@ -11,7 +11,6 @@ from starlette.routing import Mount, Route
 
 from atlas_api.auth import auth_from_env
 from atlas_api.handoff import ResponseHandoffMiddleware
-from atlas_api.quarantine import QuarantineMiddleware
 from atlas_api.compose import build_runtime
 from atlas_api.routes import api
 from atlas_api.spa import CompanionStaticFiles
@@ -22,9 +21,6 @@ logger = logging.getLogger(__name__)
 async def _cadence_loop(app: Starlette) -> None:
     while True:
         try:
-            if bool(app.state.runtime.operational.state().get("quarantined")):
-                await asyncio.sleep(1)
-                continue
             await asyncio.to_thread(app.state.runtime.cadence.tick)
         except asyncio.CancelledError:
             raise
@@ -38,9 +34,6 @@ async def _work_loop(app: Starlette) -> None:
     await asyncio.sleep(0.1)
     while True:
         try:
-            if bool(app.state.runtime.operational.state().get("quarantined")):
-                await asyncio.sleep(1)
-                continue
             await asyncio.to_thread(app.state.runtime.work.promote_runnable)
             await asyncio.to_thread(app.state.runtime.work.run_runnable)
         except asyncio.CancelledError:
@@ -55,9 +48,6 @@ async def _obligation_loop(app: Starlette) -> None:
     await asyncio.sleep(0.5)
     while True:
         try:
-            if bool(app.state.runtime.operational.state().get("quarantined")):
-                await asyncio.sleep(1)
-                continue
             await asyncio.to_thread(app.state.runtime.obligation_reconciler.tick)
         except asyncio.CancelledError:
             raise
@@ -89,13 +79,11 @@ def create_app(*, instance_root: str | Path = "instance", static_dir: str | Path
 
     routes = [
         Route("/api/health", api.health, methods=["GET"]),
-        Route("/api/quarantine", api.quarantine_state, methods=["GET"]),
-        Route("/api/quarantine/repair", api.quarantine_repair, methods=["POST"]),
-        Route("/api/quarantine/clear", api.quarantine_clear, methods=["POST"]),
         Route("/api/auth/session", api.auth_session, methods=["GET"]),
         Route("/api/auth/login", api.auth_login, methods=["POST"]),
         Route("/api/auth/logout", api.auth_logout, methods=["POST"]),
         Route("/api/system", api.system_state, methods=["GET"]),
+        Route("/api/attention", api.attention_snapshot, methods=["GET"]),
         Route("/api/capabilities", api.capabilities_list, methods=["GET"]),
         Route("/api/capabilities/search", api.capabilities_search, methods=["GET"]),
         Route("/api/capabilities/{capability_id:str}/invoke", api.capability_invoke, methods=["POST"]),
@@ -161,7 +149,6 @@ def create_app(*, instance_root: str | Path = "instance", static_dir: str | Path
             )
         )
     app = Starlette(debug=False, routes=routes, lifespan=lifespan, middleware=[
-        Middleware(QuarantineMiddleware, operational=runtime.operational),
         Middleware(ResponseHandoffMiddleware, chat_store=runtime.chat_store),
     ])
     app.state.runtime = runtime

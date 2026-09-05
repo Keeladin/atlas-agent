@@ -35,9 +35,10 @@ class ObligationReconciler:
         except KeyError:
             return None
         evidence_rows = [row.as_dict() for row in self.evidence.for_occurrence(occurrence_id)]
+        basis_rows = [row for row in evidence_rows if row["kind"] != "obligation_fulfilment_verification"]
         authoritative = next(
             (
-                row for row in reversed(evidence_rows)
+                row for row in reversed(basis_rows)
                 if row["kind"] == "execution_receipt"
                 and isinstance(row.get("payload"), dict)
                 and row["payload"].get("ok") is True
@@ -51,7 +52,7 @@ class ObligationReconciler:
             "policy_decision": occurrence.policy_decision,
             "result": occurrence.result,
             "receipt": occurrence.receipt,
-            "evidence": evidence_rows,
+            "evidence": basis_rows,
         }
         return {
             **snapshot,
@@ -60,43 +61,110 @@ class ObligationReconciler:
         }
 
     def _support(self, obligation) -> dict[str, Any] | None:
+        """Return evidence from mechanisms explicitly bound to this obligation only."""
         for binding in self.work_store.servicing(obligation.obligation_id):
-            try:
-                work = self.work_store.get(binding["work_id"])
-                steps = self.work_store.steps(work.work_id)
-            except KeyError:
-                continue
-            for step in steps:
-                if not step.occurrence_id:
+            mechanism_kind = str(binding.get("mechanism_kind") or "")
+            mechanism_id = str(binding.get("mechanism_id") or "")
+            occurrence_id = ""
+            work_id = binding.get("work_id")
+            if mechanism_kind == "occurrence":
+                occurrence_id = mechanism_id
+            elif mechanism_kind == "work_step":
+                try:
+                    step = self.work_store.step(mechanism_id)
+                except KeyError:
                     continue
-                evidence = self._occurrence_evidence(step.occurrence_id)
-                if evidence and evidence["status"] == "blocked" and evidence["policy_decision"] == "NO":
-                    return {
-                        "kind": "declined_policy",
-                        "resolution_ref": f"action:{step.occurrence_id}",
-                        "work_id": work.work_id,
-                        "records": [evidence],
-                        "digest": evidence["digest"],
-                    }
-            if work.status != "completed" or not steps or any(step.status != "completed" for step in steps):
+                if work_id and step.work_id != work_id:
+                    continue
+                occurrence_id = str(step.occurrence_id or "")
+            else:
                 continue
-            records: list[dict[str, Any]] = []
-            valid = True
-            for step in steps:
-                evidence = self._occurrence_evidence(step.occurrence_id or "")
-                if not evidence or evidence["status"] != "succeeded" or not evidence["authoritative_evidence_id"]:
-                    valid = False
-                    break
-                records.append(evidence)
-            if valid and records:
+            if not occurrence_id:
+                continue
+            evidence = self._occurrence_evidence(occurrence_id)
+            if evidence is None:
+                continue
+            if evidence["status"] == "blocked" and evidence["policy_decision"] == "NO":
                 return {
-                    "kind": "fulfilled",
-                    "resolution_ref": f"evidence:{records[-1]['authoritative_evidence_id']}",
-                    "work_id": work.work_id,
-                    "records": records,
-                    "digest": _digest([row["digest"] for row in records]),
+                    "kind": "declined_policy",
+                    "resolution_ref": f"action:{occurrence_id}",
+                    "work_id": work_id,
+                    "mechanism_kind": mechanism_kind,
+                    "mechanism_id": mechanism_id,
+                    "records": [evidence],
+                    "digest": evidence["digest"],
                 }
+            if evidence["status"] != "succeeded" or not evidence["authoritative_evidence_id"]:
+                continue
+            return {
+                "kind": "fulfilled",
+                "resolution_ref": f"evidence:{evidence['authoritative_evidence_id']}",
+                "work_id": work_id,
+                "mechanism_kind": mechanism_kind,
+                "mechanism_id": mechanism_id,
+                "records": [evidence],
+                "digest": evidence["digest"],
+            }
         return None
+
+    def _verify_state_change(self, obligation, support: dict[str, Any]) -> str | None:
+        """Verify that bound action evidence actually proves this specific outcome."""
+        record = support["records"][-1]
+        occurrence_id = str(record["occurrence_id"])
+        evidence_digest = str(support["digest"])
+        for existing in self.evidence.for_occurrence(occurrence_id):
+            payload = existing.payload if isinstance(existing.payload, dict) else {}
+            if (
+                existing.kind == "obligation_fulfilment_verification"
+                and payload.get("obligation_id") == obligation.obligation_id
+                and payload.get("evidence_digest") == evidence_digest
+                and payload.get("fulfilled") is True
+            ):
+                return existing.evidence_id
+
+        basis = {
+            "obligation": {
+                "obligation_id": obligation.obligation_id,
+                "text": obligation.text,
+                "grounding_excerpt": obligation.grounding_excerpt,
+            },
+            "action_evidence": self._bounded_record(record),
+            "evidence_digest": evidence_digest,
+        }
+        try:
+            response = self.provider.generate(ModelRequest(
+                capability_id="obligation.state_change_verify",
+                system=(
+                    "Decide only whether the supplied durable action/observation evidence proves the exact owner obligation. "
+                    "A servicing binding is not proof. Work status is not proof. Return JSON with fulfilled boolean and reason string. "
+                    "Fail closed when the evidence could be unrelated, incomplete, merely attempted, or only preparatory."
+                ),
+                input=json.dumps(basis, ensure_ascii=False, default=str),
+                max_output_chars=1200,
+                metadata={"response_format": {"type": "json_object"}},
+            ))
+            parsed = json.loads(str(response.text or "").strip())
+        except Exception:
+            logger.warning("state-change obligation verification failed", exc_info=True)
+            return None
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("fulfilled"), bool):
+            return None
+        reason = str(parsed.get("reason") or "").strip()
+        if parsed["fulfilled"] is not True:
+            return None
+        verification = self.evidence.add(
+            occurrence_id,
+            "obligation_fulfilment_verification",
+            {
+                "obligation_id": obligation.obligation_id,
+                "evidence_digest": evidence_digest,
+                "fulfilled": True,
+                "reason": reason,
+                "provider": getattr(response, "provider_key", None),
+                "model": getattr(response, "model", None),
+            },
+        )
+        return verification.evidence_id
 
     def reconcile_noncommunication(self) -> tuple[str, ...]:
         changed: list[str] = []
@@ -115,11 +183,14 @@ class ObligationReconciler:
                 continue
             if obligation.kind != "state_change":
                 continue
+            verification_id = self._verify_state_change(obligation, support)
+            if verification_id is None:
+                continue
             self.obligations.resolve(
                 obligation.obligation_id,
                 base_revision=obligation.revision,
                 resolution_kind="fulfilled",
-                resolution_ref=support["resolution_ref"],
+                resolution_ref=f"evidence:{verification_id}",
             )
             changed.append(obligation.obligation_id)
         return tuple(changed)

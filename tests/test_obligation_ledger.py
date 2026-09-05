@@ -1,31 +1,76 @@
 from __future__ import annotations
 
+import ast
+import asyncio
+import inspect
 import json
 import sqlite3
+import subprocess
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import atlas_core.host as host_module
+
 from atlas_api.compose import build_runtime
+from atlas_api.handoff import ResponseHandoffMiddleware
+from atlas_core.actions import ActionResult
+from atlas_core.capabilities import CapabilityDefinition, CapabilityRegistration, ScopeResolution
 from atlas_core.chat import ChatStore
-from atlas_core.obligations import ObligationIntakeRuntime, ObligationStore
+from atlas_core.obligations import (
+    ObligationIntakeRuntime,
+    ObligationStore,
+    RuntimeInvariantError,
+    collect_runtime_violations,
+)
 from atlas_core.providers import ModelResponse
+from atlas_core.retrieval.capabilities import registry_fingerprint
 
 
-class RoleProvider:
-    def __init__(self, intake: str, planner: str = '{"kind":"reply","reply":"Done."}') -> None:
+class ScriptProvider:
+    def __init__(self, *, intake=None, planner=(), communication_verify=None,
+                 state_verify=None, report=None, report_verify=None):
         self.intake = intake
-        self.planner = planner
+        self.planner = list(planner)
+        self.communication_verify = communication_verify
+        self.state_verify = state_verify
+        self.report = report
+        self.report_verify = report_verify
         self.requests = []
+
+    @staticmethod
+    def _value(value, request):
+        return value(request) if callable(value) else value
 
     def generate(self, request):
         self.requests.append(request)
         if request.capability_id == "chat.obligation_intake":
-            text = self.intake
+            text = self._value(self.intake, request)
         elif request.capability_id == "chat.communication_delivery_verify":
-            text = '{"grounded":false,"fulfilled_obligation_ids":[],"unsupported_claims":[]}'
+            value = self.communication_verify
+            text = self._value(value, request) if value is not None else json.dumps({
+                "grounded": False, "fulfilled_obligation_ids": [], "unsupported_claims": []
+            })
+        elif request.capability_id == "obligation.state_change_verify":
+            value = self.state_verify
+            text = self._value(value, request) if value is not None else json.dumps({
+                "fulfilled": True, "reason": "The bound successful action evidence proves the requested outcome."
+            })
+        elif request.capability_id == "chat.obligation_report":
+            value = self.report
+            text = self._value(value, request) if value is not None else json.dumps({
+                "kind": "reply", "reply": "The requested result is now available."
+            })
+        elif request.capability_id == "chat.obligation_report_verify":
+            value = self.report_verify
+            text = self._value(value, request) if value is not None else json.dumps({
+                "grounded": True, "unsupported_claims": []
+            })
         else:
-            text = self.planner
-        return ModelResponse(text=text, provider_key="test", model="test-model", raw={})
+            if not self.planner:
+                raise AssertionError(f"unexpected planner request: {request.capability_id}")
+            text = self._value(self.planner.pop(0), request)
+        return ModelResponse(text=str(text), provider_key="test", model="test-model", raw={})
 
 
 def _stores(tmp_path):
@@ -36,73 +81,117 @@ def _stores(tmp_path):
     return chat, obligations, cid
 
 
-def test_authenticated_owner_turn_is_durable_pending_before_intake(tmp_path):
-    chat, obligations, cid = _stores(tmp_path)
-    turn = chat.append_owner(cid, "Do the thing", principal_id="owner-1")
-    assert turn["intake_status"] == "pending"
-    assert turn["owner_principal_id"] == "owner-1"
-    attention = obligations.intake_attention()
-    assert [row["turn_id"] for row in attention] == [turn["turn_id"]]
-
-
-def test_boot_converts_only_persisted_pending_intake_to_interrupted(tmp_path):
-    chat, obligations, cid = _stores(tmp_path)
-    pending = chat.append_owner(cid, "Do the thing", principal_id="owner-1")
-    complete = chat.append_owner(cid, "hi", principal_id="owner-1")
-    attempt = obligations.begin_attempt(complete["turn_id"])
-    obligations.commit_intake(
-        complete["turn_id"], [], attempts=attempt, provider="test", model="test"
+def _commit(rt, message: str, *, kind: str = "state_change", temporal: str | None = None):
+    owner = rt.identities.current_owner().principal_id
+    cid = rt.chat_store.create_conversation("Obligation")["conversation_id"]
+    turn = rt.chat_store.append_owner(cid, message, principal_id=owner)
+    attempt = rt.obligation_store.begin_attempt(turn["turn_id"])
+    item = {"grounding_excerpt": message, "text": message, "kind": kind}
+    if temporal is not None:
+        item["temporal_grounding_excerpt"] = temporal
+    result = rt.obligation_store.commit_intake(
+        turn["turn_id"], [item], attempts=attempt, provider="test", model="test"
     )
-    changed = chat.interrupt_pending_intakes()
-    assert changed == (pending["turn_id"],)
-    assert chat.turn(pending["turn_id"])["intake_status"] == "interrupted"
-    assert chat.turn(complete["turn_id"])["intake_status"] == "complete"
+    return owner, cid, rt.chat_store.turn(turn["turn_id"]), result.obligation_ids[0]
 
 
-def test_interrupted_intake_is_retryable_without_partial_commitments(tmp_path):
-    chat, obligations, cid = _stores(tmp_path)
-    turn = chat.append_owner(cid, "Restart Atlas", principal_id="owner-1")
-    chat.interrupt_pending_intakes()
-    attempt = obligations.begin_attempt(turn["turn_id"])
-    result = obligations.commit_intake(
-        turn["turn_id"],
-        [{"grounding_excerpt": "Restart Atlas", "text": "Restart Atlas", "kind": "state_change"}],
-        attempts=attempt, provider="test", model="test",
-    )
-    assert result.status == "complete"
-    assert len(obligations.for_turn(turn["turn_id"])) == 1
+def _register_effect(rt, *, capability_id="test.effect", scope="test/effect", operation="apply",
+                     effect_class="external", output=None):
+    owner = rt.identities.current_owner().principal_id
+    calls = []
+
+    def execute(payload):
+        calls.append(dict(payload))
+        return ActionResult(True, output if output is not None else {"changed": True}, {"ok": True})
+
+    rt.capabilities_registry.register(CapabilityRegistration(
+        CapabilityDefinition(
+            capability_id, capability_id, operation, effect_class,
+            {"type": "object", "properties": {}, "additionalProperties": False},
+        ),
+        lambda payload: ScopeResolution(scope, dict(payload), capability_id),
+        execute,
+        metadata={"scope_hint": scope},
+    ), replace=True)
+    rt.policy_store.set(principal_id=owner, scope=scope, operation=operation, decision="YES")
+    return calls
 
 
-def test_zero_obligation_greeting_is_complete_not_failed(tmp_path):
+def _mapped_step(capability_id: str, obligation_id: str, *, description: str | None = None):
+    return {
+        "capability_id": capability_id,
+        "description": description or capability_id,
+        "input": {},
+        "obligation_ids": [obligation_id],
+    }
+
+
+def test_owner_turn_starts_fail_closed_and_zero_obligation_greeting_completes(tmp_path):
     chat, obligations, cid = _stores(tmp_path)
     turn = chat.append_owner(cid, "hi", principal_id="owner-1")
-    provider = RoleProvider('{"obligations":[],"unmapped_spans":[]}')
+    assert turn["intake_status"] == "failed"
+    assert turn["intake_error_code"] == "intake_not_completed"
+    provider = ScriptProvider(intake='{"obligations":[],"unmapped_spans":[]}')
     result = ObligationIntakeRuntime(obligations, provider).capture(turn)
     assert result.status == "complete"
     assert result.obligation_ids == ()
     assert obligations.for_turn(turn["turn_id"]) == ()
-    assert obligations.intake_attention() == ()
 
 
-def test_partial_intake_keeps_captured_commitment_and_turn_visible(tmp_path):
-    chat, obligations, cid = _stores(tmp_path)
-    message = "Restart Atlas, but only after the report is saved"
-    turn = chat.append_owner(cid, message, principal_id="owner-1")
-    provider = RoleProvider(json.dumps({
-        "obligations": [{
-            "grounding_excerpt": "Restart Atlas", "text": "Restart Atlas", "kind": "state_change"
-        }],
-        "unmapped_spans": ["but only after the report is saved"],
-    }))
-    result = ObligationIntakeRuntime(obligations, provider).capture(turn)
-    assert result.status == "partial"
-    assert len(obligations.for_turn(turn["turn_id"])) == 1
-    attention = obligations.intake_attention()
-    assert attention[0]["intake_status"] == "partial"
-    assert attention[0]["unmapped_spans"] == ["but only after the report is saved"]
+def test_three_outcome_turn_commits_obligations_before_staged_execution(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner().principal_id
+    for cid in ("test.restart", "test.health", "test.weather"):
+        _register_effect(rt, capability_id=cid, scope=f"test/{cid}", operation=cid.split(".")[-1])
+    conversation = rt.chat_store.create_conversation("Three outcomes")["conversation_id"]
+    message = (
+        "Restart your API service, then verify that it came back healthy. "
+        "Then tell me what the weather is like today in Cullinan."
+    )
+    intake = json.dumps({
+        "obligations": [
+            {"grounding_excerpt": "Restart your API service", "text": "Restart the API service", "kind": "state_change"},
+            {"grounding_excerpt": "verify that it came back healthy", "text": "Verify the API is healthy", "kind": "state_change"},
+            {"grounding_excerpt": "tell me what the weather is like today in Cullinan", "text": "Report today's Cullinan weather", "kind": "communication"},
+        ],
+        "unmapped_spans": [],
+    })
+
+    def plan_work(request):
+        prompt = json.loads(request.input)
+        rows = prompt["owner_obligations"]
+        assert len(rows) == 3
+        return json.dumps({
+            "kind": "capability", "capability_id": "work.create", "input": {
+                "objective": "Restart, verify, then gather Cullinan weather",
+                "steps": [
+                    _mapped_step("test.restart", rows[0]["obligation_id"], description="Restart"),
+                    _mapped_step("test.health", rows[1]["obligation_id"], description="Verify health"),
+                    _mapped_step("test.weather", rows[2]["obligation_id"], description="Gather weather"),
+                ],
+                "run": True,
+            }
+        })
+
+    provider = ScriptProvider(
+        intake=intake,
+        planner=[plan_work, '{"kind":"reply","reply":"I have staged the ordered work."}'],
+    )
+    rt.chat.provider = provider; rt.obligation_intake.provider = provider
+    result = rt.chat.send(conversation, message, principal_id=owner, defer_capture=True)
+    owner_turn = rt.chat_store.turn(result["_owner_turn_id"])
+    obligations = rt.obligation_store.for_turn(owner_turn["turn_id"])
+    assert [item.kind for item in obligations] == ["state_change", "state_change", "communication"]
+    assert owner_turn["intake_status"] == "complete"
+    assert provider.requests[0].capability_id == "chat.obligation_intake"
+    assert provider.requests[1].capability_id == "chat.turn"
+    work = rt.work_store.list(limit=10)[0]
+    assert work.status == "staged"
+    assert len(rt.work_store.bindings(work.work_id)) == 3
+    assert not [x for x in rt.actions_store.recent(limit=50) if x.capability_id.startswith("test.")]
 
 
-def test_invalid_grounding_never_commits_an_obligation(tmp_path):
+def test_invalid_grounding_is_rejected(tmp_path):
     chat, obligations, cid = _stores(tmp_path)
     turn = chat.append_owner(cid, "Restart Atlas", principal_id="owner-1")
     attempt = obligations.begin_attempt(turn["turn_id"])
@@ -115,305 +204,121 @@ def test_invalid_grounding_never_commits_an_obligation(tmp_path):
     assert obligations.for_turn(turn["turn_id"]) == ()
 
 
-def test_three_outcome_turn_is_enumerated_before_planning(tmp_path):
+def test_intake_failure_never_reaches_planning_or_execution(tmp_path):
     rt = build_runtime(tmp_path / "instance")
-    owner = rt.identities.current_owner()
-    cid = rt.chat_store.create_conversation("Three outcomes")["conversation_id"]
-    message = (
-        "Restart your API service, then verify that it came back healthy. "
-        "Then tell me what the weather is like today in Cullinan."
-    )
-    provider = RoleProvider(json.dumps({
-        "obligations": [
-            {"grounding_excerpt": "Restart your API service", "text": "Restart the API service", "kind": "state_change"},
-            {"grounding_excerpt": "verify that it came back healthy", "text": "Verify the API is healthy", "kind": "state_change"},
-            {"grounding_excerpt": "tell me what the weather is like today in Cullinan", "text": "Report today's Cullinan weather", "kind": "communication"},
-        ],
-        "unmapped_spans": [],
-    }), planner='{"kind":"reply","reply":"I have the three commitments enumerated."}')
-    rt.chat.provider = provider
-    rt.obligation_intake.provider = provider
-    result = rt.chat.send(cid, message, principal_id=owner.principal_id, defer_capture=True)
-    owner_turn = next(t for t in rt.chat_store.turns(cid) if t["role"] == "user")
-    rows = rt.obligation_store.for_turn(owner_turn["turn_id"])
-    assert [row.kind for row in rows] == ["state_change", "state_change", "communication"]
-    assert owner_turn["intake_status"] == "complete"
-    assert provider.requests[0].capability_id == "chat.obligation_intake"
-    intake_input = json.loads(provider.requests[0].input)
-    assert set(intake_input) == {"owner_message", "recent_conversation"}
-    assert "capability" not in provider.requests[0].input.casefold()
-    assert provider.requests[1].capability_id != "chat.obligation_intake"
-    assert result["turn"]["content"] == "I have the three commitments enumerated."
-
-
-def test_exhausted_intake_failure_never_reaches_planning_or_execution(tmp_path):
-    rt = build_runtime(tmp_path / "instance")
-    owner = rt.identities.current_owner()
-    cid = rt.chat_store.create_conversation("Failed intake")["conversation_id"]
-    provider = RoleProvider("not-json")
-    rt.chat.provider = provider
-    rt.obligation_intake.provider = provider
-    result = rt.chat.send(cid, "Restart Atlas", principal_id=owner.principal_id)
-    owner_turn = next(t for t in rt.chat_store.turns(cid) if t["role"] == "user")
-    assert owner_turn["intake_status"] == "failed"
-    assert owner_turn["intake_attempts"] == 2
-    assert owner_turn["intake_error_code"] == "intake_unparseable_response"
-    assert rt.obligation_store.for_turn(owner_turn["turn_id"]) == ()
-    assert len(provider.requests) == 2
-    assert all(req.capability_id == "chat.obligation_intake" for req in provider.requests)
+    owner = rt.identities.current_owner().principal_id
+    cid = rt.chat_store.create_conversation("Bad intake")["conversation_id"]
+    provider = ScriptProvider(intake="not-json", planner=['{"kind":"reply","reply":"should not run"}'])
+    rt.chat.provider = provider; rt.obligation_intake.provider = provider
+    result = rt.chat.send(cid, "Restart Atlas", principal_id=owner)
+    turn = next(item for item in rt.chat_store.turns(cid) if item["role"] == "user")
+    assert turn["intake_status"] == "failed"
+    assert turn["intake_attempts"] == 2
+    assert rt.obligation_store.for_turn(turn["turn_id"]) == ()
+    assert all(request.capability_id == "chat.obligation_intake" for request in provider.requests)
     assert rt.actions_store.recent(limit=20) == ()
     assert "didn't execute anything" in result["turn"]["content"]
 
 
-def test_owner_turn_schema_rejects_null_or_invalid_intake_state(tmp_path):
-    chat, _obligations, cid = _stores(tmp_path)
-    with sqlite3.connect(chat.path) as db:
-        with pytest.raises(sqlite3.IntegrityError):
-            db.execute(
-                """INSERT INTO chat_turns(
-                       turn_id,conversation_id,role,content,owner_principal_id,intake_status,intake_schema_version
-                   ) VALUES ('turn_bad',?,'user','x','owner-1',NULL,1)""", (cid,)
-            )
-        with pytest.raises(sqlite3.IntegrityError):
-            db.execute(
-                """INSERT INTO chat_turns(
-                       turn_id,conversation_id,role,content,owner_principal_id,intake_status,intake_schema_version
-                   ) VALUES ('turn_bad2',?,'user','x','owner-1','unknown',1)""", (cid,)
-            )
-
-
-def test_preledger_chat_schema_requires_explicit_development_reset(tmp_path):
-    path = tmp_path / "chat.db"
-    with sqlite3.connect(path) as db:
-        db.execute("CREATE TABLE chat_turns(turn_id TEXT PRIMARY KEY, role TEXT NOT NULL)")
-    with pytest.raises(RuntimeError, match="development schema reset"):
-        ChatStore(path).initialize()
-
-
-def _open_obligation(rt, message="Do the durable thing"):
-    owner = rt.identities.current_owner().principal_id
-    cid = rt.chat_store.create_conversation("Binding")["conversation_id"]
-    turn = rt.chat_store.append_owner(cid, message, principal_id=owner)
-    attempts = rt.obligation_store.begin_attempt(turn["turn_id"])
-    result = rt.obligation_store.commit_intake(
-        turn["turn_id"],
-        [{"grounding_excerpt": message, "text": message, "kind": "state_change"}],
-        attempts=attempts, provider="test", model="test",
-    )
-    return owner, cid, turn, result.obligation_ids[0]
-
-
-def test_staged_work_requires_and_retains_database_backing(tmp_path):
-    rt = build_runtime(tmp_path / "instance")
-    owner, cid, turn, obligation_id = _open_obligation(rt)
-    work = rt.work.create(
-        "Service obligation", [{"capability_id":"memory.search","input":{"query":"x"}}],
-        owner_principal_id=owner,
-        metadata={"chat_origin":{"conversation_id":cid,"owner_turn_id":turn["turn_id"]}},
-        obligation_ids=[obligation_id], stage=True,
-    )
-    assert work.status == "staged"
-    bindings = rt.work_store.bindings(work.work_id)
-    assert [row["obligation_id"] for row in bindings] == [obligation_id]
-    with pytest.raises(sqlite3.IntegrityError, match="final backing obligation"):
-        with rt.work_store._db() as db:
-            db.execute("DELETE FROM obligation_bindings WHERE binding_id=?", (bindings[0]["binding_id"],))
-    assert rt.obligation_store.get(obligation_id).status == "open"
-
-
-def test_unbacked_work_cannot_transition_to_staged(tmp_path):
+def test_partial_intake_persists_grounded_subset_but_dispatches_nothing(tmp_path):
     rt = build_runtime(tmp_path / "instance")
     owner = rt.identities.current_owner().principal_id
-    work = rt.work_store.create(
-        "Unbacked", owner, [{"capability_id":"memory.search","input":{"query":"x"}}]
-    )
-    with pytest.raises(sqlite3.IntegrityError, match="backing obligation"):
-        rt.work_store.set_work_status(work.work_id, "staged")
+    cid = rt.chat_store.create_conversation("Partial")["conversation_id"]
+    message = "Restart Atlas, but only after the report is saved"
+    provider = ScriptProvider(intake=json.dumps({
+        "obligations": [{"grounding_excerpt": "Restart Atlas", "text": "Restart Atlas", "kind": "state_change"}],
+        "unmapped_spans": ["but only after the report is saved"],
+    }))
+    rt.chat.provider = provider; rt.obligation_intake.provider = provider
+    result = rt.chat.send(cid, message, principal_id=owner)
+    turn = next(item for item in rt.chat_store.turns(cid) if item["role"] == "user")
+    assert turn["intake_status"] == "partial"
+    assert turn["unmapped_spans"] == ["but only after the report is saved"]
+    assert len(rt.obligation_store.for_turn(turn["turn_id"])) == 1
+    assert rt.actions_store.recent(limit=20) == ()
+    assert "didn't execute anything" in result["turn"]["content"]
 
 
-def test_binding_is_authoritative_for_servicing_not_resolution(tmp_path):
+def test_restart_after_obligation_commit_before_dispatch_preserves_duty_without_occurrence(tmp_path):
+    root = tmp_path / "instance"
+    rt = build_runtime(root)
+    _owner, _cid, _turn, obligation_id = _commit(rt, "Apply the requested change")
+    assert rt.actions_store.recent(limit=20) == ()
+    rt2 = build_runtime(root)
+    assert rt2.obligation_store.get(obligation_id).status == "open"
+    assert rt2.actions_store.recent(limit=20) == ()
+
+
+def test_binding_and_work_completion_are_not_sufficient_without_evidence_verification(tmp_path):
     rt = build_runtime(tmp_path / "instance")
-    owner, cid, turn, obligation_id = _open_obligation(rt)
+    owner, _cid, _turn, obligation_id = _commit(rt, "Make the requested state change")
+    _register_effect(rt)
     work = rt.work.create(
-        "Service obligation", [{"capability_id":"memory.search","input":{"query":"x"}}],
-        owner_principal_id=owner,
-        metadata={"chat_origin":{"conversation_id":cid,"owner_turn_id":turn["turn_id"]}},
-        obligation_ids=[obligation_id], stage=True,
+        "Attempt service", [_mapped_step("test.effect", obligation_id)], owner_principal_id=owner
     )
-    rt.work_store.set_work_status(work.work_id, "queued")
-    with rt.work_store._db() as db:
-        db.execute("DELETE FROM obligation_bindings WHERE work_id=?", (work.work_id,))
-    assert rt.work_store.bindings(work.work_id) == ()
-    assert rt.obligation_store.get(obligation_id).status == "open"
-
-
-def test_runtime_refuses_staged_work_with_nonexistent_obligation(tmp_path):
-    rt = build_runtime(tmp_path / "instance")
-    owner = rt.identities.current_owner().principal_id
-    with pytest.raises(KeyError):
-        rt.work.create(
-            "Invalid backing", [{"capability_id":"memory.search","input":{"query":"x"}}],
-            owner_principal_id=owner, obligation_ids=["obligation_missing"], stage=True,
-        )
-
-
-def test_attention_unions_incomplete_intake_and_unserviced_obligations(tmp_path):
-    rt = build_runtime(tmp_path / "instance")
-    owner, cid, turn, obligation_id = _open_obligation(rt, "Inspect Atlas")
-    pending = rt.chat_store.append_owner(cid, "And tell me the result", principal_id=owner)
-    snapshot = rt.attention.snapshot()
-    assert any(row["kind"] == "incomplete_intake" and row["owner_turn_id"] == pending["turn_id"] for row in snapshot)
-    assert any(row["kind"] == "unserviced_obligation" and row["obligation_id"] == obligation_id for row in snapshot)
-
-    work = rt.work.create(
-        "Inspect Atlas", [{"capability_id":"memory.search","input":{"query":"atlas"}}],
-        owner_principal_id=owner,
-        metadata={"chat_origin":{"conversation_id":cid,"owner_turn_id":turn["turn_id"]}},
-        obligation_ids=[obligation_id], stage=True,
+    assert rt.work.run(work.work_id)["status"] == "completed"
+    rt.obligation_reconciler.provider = ScriptProvider(
+        state_verify='{"fulfilled":false,"reason":"The evidence does not prove the requested outcome."}'
     )
-    snapshot = rt.attention.snapshot()
-    assert not any(row["kind"] == "unserviced_obligation" and row["obligation_id"] == obligation_id for row in snapshot)
-    assert rt.work_store.bindings(work.work_id)
-
-
-class ScriptProvider:
-    def __init__(self, intake: str, *planner: str) -> None:
-        self.intake = intake
-        self.planner = list(planner)
-        self.requests = []
-
-    def generate(self, request):
-        self.requests.append(request)
-        if request.capability_id == "chat.obligation_intake":
-            text = self.intake
-        else:
-            if not self.planner:
-                raise AssertionError(f"unexpected provider call: {request.capability_id}")
-            text = self.planner.pop(0)
-        return ModelResponse(text=text, provider_key="test", model="test-model", raw={})
-
-
-def test_chat_work_stays_detached_until_response_handoff(tmp_path):
-    rt = build_runtime(tmp_path / "instance")
-    owner = rt.identities.current_owner()
-    cid = rt.chat_store.create_conversation("Detached")["conversation_id"]
-    message = "Search durable memory for Atlas"
-    intake = json.dumps({"obligations":[{
-        "grounding_excerpt": message, "text": message, "kind":"state_change"
-    }],"unmapped_spans":[]})
-    provider = ScriptProvider(
-        intake,
-        json.dumps({"kind":"capability","capability_id":"work.create","input":{
-            "objective":"Search durable memory",
-            "steps":[{"capability_id":"memory.search","input":{"query":"Atlas"}}],
-            "run":True,
-        }}),
-        '{"kind":"reply","reply":"The work is staged."}',
-    )
-    rt.chat.provider = provider
-    rt.obligation_intake.provider = provider
-    result = rt.chat.send(cid, message, principal_id=owner.principal_id, defer_capture=True)
-    owner_turn = rt.chat_store.turn(result["_owner_turn_id"])
-    work = rt.work_store.list(limit=10)[0]
-    assert work.status == "staged"
-    assert owner_turn["turn_completed_at"] is not None
-    assert owner_turn["response_handed_off_at"] is None
-    assert not [row for row in rt.actions_store.recent(limit=20) if row.capability_id == "memory.search"]
-
-    rt.work.promote_runnable()
-    assert rt.work_store.get(work.work_id).status == "waiting"
-    assert not [row for row in rt.actions_store.recent(limit=20) if row.capability_id == "memory.search"]
-
-    rt.chat_store.mark_response_handed_off(owner_turn["turn_id"])
-    assert rt.work.promote_runnable() == (work.work_id,)
-    assert rt.work_store.get(work.work_id).status == "runnable"
-    details = rt.work.run_runnable()
-    assert details[0]["status"] == "completed"
-    assert [row for row in rt.actions_store.recent(limit=20) if row.capability_id == "memory.search"]
-
-
-def _commit_obligation(rt, message: str, *, kind: str, satisfiable_until: str | None = None):
-    owner = rt.identities.current_owner().principal_id
-    cid = rt.chat_store.create_conversation("Reconcile")["conversation_id"]
-    turn = rt.chat_store.append_owner(cid, message, principal_id=owner)
-    attempts = rt.obligation_store.begin_attempt(turn["turn_id"])
-    item = {"grounding_excerpt": message, "text": message, "kind": kind}
-    if satisfiable_until is not None:
-        item["satisfiable_until"] = satisfiable_until
-    result = rt.obligation_store.commit_intake(
-        turn["turn_id"], [item], attempts=attempts, provider="test", model="test"
-    )
-    return owner, cid, turn, result.obligation_ids[0]
-
-
-def _completed_bound_search(rt, owner: str, obligation_id: str, query: str = "x"):
-    work = rt.work.create(
-        "Gather supporting evidence",
-        [{"capability_id": "memory.search", "input": {"query": query}}],
-        owner_principal_id=owner, obligation_ids=[obligation_id],
-    )
-    detail = rt.work.run(work.work_id)
-    assert detail["status"] == "completed"
-    return work
-
-
-def test_state_change_never_resolves_from_work_status_without_action_evidence(tmp_path):
-    rt = build_runtime(tmp_path / "instance")
-    owner, _cid, _turn, obligation_id = _commit_obligation(
-        rt, "Make the durable change", kind="state_change"
-    )
-    work = rt.work_store.create(
-        "Fake completion", owner,
-        [{"capability_id": "memory.search", "input": {"query": "x"}}],
-        obligation_ids=[obligation_id],
-    )
-    step = rt.work_store.steps(work.work_id)[0]
-    rt.work_store.set_step(step.step_id, status="completed", output={"fake": True})
-    rt.work_store.set_work_status(work.work_id, "completed")
     assert rt.obligation_reconciler.reconcile_noncommunication() == ()
     assert rt.obligation_store.get(obligation_id).status == "open"
 
-    _completed_bound_search(rt, owner, obligation_id, "real evidence")
-    assert rt.obligation_reconciler.reconcile_noncommunication() == (obligation_id,)
-    resolved = rt.obligation_store.get(obligation_id)
-    assert resolved.status == "resolved"
-    assert resolved.resolution_kind == "fulfilled"
-    assert resolved.resolution_ref.startswith("evidence:")
 
-
-def test_policy_no_resolves_with_authoritative_action_reference(tmp_path):
+def test_one_completed_obligation_does_not_make_turn_complete_while_another_is_open(tmp_path):
     rt = build_runtime(tmp_path / "instance")
-    owner, _cid, _turn, obligation_id = _commit_obligation(
-        rt, "Search memory as requested", kind="state_change"
+    owner = rt.identities.current_owner().principal_id
+    cid = rt.chat_store.create_conversation("Two duties")["conversation_id"]
+    turn = rt.chat_store.append_owner(cid, "Do A and do B", principal_id=owner)
+    attempt = rt.obligation_store.begin_attempt(turn["turn_id"])
+    result = rt.obligation_store.commit_intake(
+        turn["turn_id"], [
+            {"grounding_excerpt": "Do A", "text": "Do A", "kind": "state_change"},
+            {"grounding_excerpt": "do B", "text": "Do B", "kind": "state_change"},
+        ], attempts=attempt, provider="test", model="test",
     )
-    rt.policy_store.set(
-        principal_id=owner, scope="atlas/memory", operation="search", decision="NO"
-    )
+    _register_effect(rt)
     work = rt.work.create(
-        "Policy refused service",
-        [{"capability_id": "memory.search", "input": {"query": "x"}}],
-        owner_principal_id=owner, obligation_ids=[obligation_id],
+        "Do A", [_mapped_step("test.effect", result.obligation_ids[0])], owner_principal_id=owner
     )
     rt.work.run(work.work_id)
-    changed = rt.obligation_reconciler.reconcile_noncommunication()
-    assert changed == (obligation_id,)
-    resolved = rt.obligation_store.get(obligation_id)
-    assert resolved.status == "resolved"
-    assert resolved.resolution_kind == "declined_policy"
-    assert resolved.resolution_ref.startswith("action:")
+    rt.obligation_reconciler.provider = ScriptProvider()
+    assert rt.obligation_reconciler.reconcile_noncommunication() == (result.obligation_ids[0],)
+    assert [x.obligation_id for x in rt.obligation_store.open_for_turn(turn["turn_id"])] == [result.obligation_ids[1]]
 
 
-def test_work_cancellation_leaves_obligation_open_and_attention_visible(tmp_path):
+def test_policy_no_resolves_only_the_obligation_bound_to_the_blocked_step(tmp_path):
     rt = build_runtime(tmp_path / "instance")
-    owner, _cid, _turn, obligation_id = _commit_obligation(
-        rt, "Keep responsibility for this", kind="state_change"
-    )
+    owner = rt.identities.current_owner().principal_id
+    cid = rt.chat_store.create_conversation("Policy")["conversation_id"]
+    turn = rt.chat_store.append_owner(cid, "Do A and do B", principal_id=owner)
+    attempt = rt.obligation_store.begin_attempt(turn["turn_id"])
+    ids = rt.obligation_store.commit_intake(
+        turn["turn_id"], [
+            {"grounding_excerpt": "Do A", "text": "Do A", "kind": "state_change"},
+            {"grounding_excerpt": "do B", "text": "Do B", "kind": "state_change"},
+        ], attempts=attempt, provider="test", model="test",
+    ).obligation_ids
+    _register_effect(rt, capability_id="test.a", scope="test/a", operation="apply-a")
+    _register_effect(rt, capability_id="test.b", scope="test/b", operation="apply-b")
+    rt.policy_store.set(principal_id=owner, scope="test/a", operation="apply-a", decision="NO")
     work = rt.work.create(
-        "Disposable mechanism", [{"capability_id": "memory.search", "input": {"query": "x"}}],
-        owner_principal_id=owner, obligation_ids=[obligation_id],
+        "Do both", [_mapped_step("test.a", ids[0]), _mapped_step("test.b", ids[1])], owner_principal_id=owner
+    )
+    assert rt.work.run(work.work_id)["status"] == "paused"
+    assert rt.obligation_reconciler.reconcile_noncommunication() == (ids[0],)
+    first = rt.obligation_store.get(ids[0]); second = rt.obligation_store.get(ids[1])
+    assert first.resolution_kind == "declined_policy" and first.resolution_ref.startswith("action:")
+    assert second.status == "open"
+
+
+def test_work_cancellation_leaves_obligation_open_and_attention_derived_from_ledger(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner, _cid, _turn, obligation_id = _commit(rt, "Keep responsibility for this")
+    _register_effect(rt)
+    work = rt.work.create(
+        "Disposable mechanism", [_mapped_step("test.effect", obligation_id)], owner_principal_id=owner
     )
     rt.work.cancel(work.work_id)
-    rt.obligation_reconciler.reconcile_noncommunication()
     assert rt.obligation_store.get(obligation_id).status == "open"
     assert any(
         row["kind"] == "unserviced_obligation" and row["obligation_id"] == obligation_id
@@ -421,132 +326,187 @@ def test_work_cancellation_leaves_obligation_open_and_attention_visible(tmp_path
     )
 
 
-def test_unserviced_obligation_survives_runtime_restart(tmp_path):
+def test_unbound_obligation_survives_restart_and_remains_attention(tmp_path):
     root = tmp_path / "instance"
     rt = build_runtime(root)
-    _owner, _cid, _turn, obligation_id = _commit_obligation(
-        rt, "Remember this dangling duty", kind="state_change"
-    )
+    _owner, _cid, _turn, obligation_id = _commit(rt, "Keep this dangling duty")
     rt2 = build_runtime(root)
     assert rt2.obligation_store.get(obligation_id).status == "open"
-    assert any(
-        row["kind"] == "unserviced_obligation" and row["obligation_id"] == obligation_id
-        for row in rt2.attention.snapshot()
+    assert any(row["obligation_id"] == obligation_id for row in rt2.attention.snapshot())
+
+
+def _completed_support(rt, owner, obligation_id, *, capability_id="test.effect"):
+    _register_effect(rt, capability_id=capability_id, scope=f"test/{capability_id}", operation=f"run-{capability_id}")
+    work = rt.work.create(
+        "Gather supporting evidence", [_mapped_step(capability_id, obligation_id)], owner_principal_id=owner
     )
+    assert rt.work.run(work.work_id)["status"] == "completed"
+    return work
 
 
-class ReportProvider:
-    def __init__(self, report: str, verification: str) -> None:
-        self.responses = [report, verification]
-        self.requests = []
-
-    def generate(self, request):
-        self.requests.append(request)
-        if not self.responses:
-            raise AssertionError(f"unexpected provider call: {request.capability_id}")
-        return ModelResponse(
-            text=self.responses.pop(0), provider_key="test", model="report-model", raw={}
-        )
-
-
-def test_communication_stays_open_until_verified_chat_turn_is_persisted(tmp_path):
+def test_communication_stays_open_until_verified_owner_facing_turn_is_persisted(tmp_path):
     rt = build_runtime(tmp_path / "instance")
-    owner, cid, _turn, obligation_id = _commit_obligation(
-        rt, "Tell me the recorded result", kind="communication"
-    )
-    _completed_bound_search(rt, owner, obligation_id, "result")
+    owner, cid, _turn, obligation_id = _commit(rt, "Tell me the recorded result", kind="communication")
+    _completed_support(rt, owner, obligation_id)
     assert rt.obligation_store.get(obligation_id).status == "open"
-    assert rt.obligation_reconciler.reconcile_noncommunication() == ()
-
-    provider = ReportProvider(
-        '{"kind":"reply","reply":"The recorded search completed successfully."}',
-        '{"grounded":true,"unsupported_claims":[]}',
+    rt.obligation_reconciler.provider = ScriptProvider(
+        report='{"kind":"reply","reply":"The recorded result is available."}',
+        report_verify='{"grounded":true,"unsupported_claims":[]}',
     )
-    rt.obligation_reconciler.provider = provider
     reports = rt.obligation_reconciler.report_communications()
     assert len(reports) == 1
     resolved = rt.obligation_store.get(obligation_id)
-    assert resolved.status == "resolved"
-    assert resolved.resolution_kind == "fulfilled"
-    assert resolved.resolution_ref == f"chat_turn:{reports[0]}"
-    persisted = rt.chat_store.turn(reports[0])
-    assert persisted["conversation_id"] == cid
-    assert persisted["metadata"]["obligation_report"]["verification"]["grounded"] is True
+    assert resolved.status == "resolved" and resolved.resolution_ref == f"chat_turn:{reports[0]}"
+    assert rt.chat_store.turn(reports[0])["conversation_id"] == cid
 
 
 def test_failed_report_verification_leaves_communication_open(tmp_path):
     rt = build_runtime(tmp_path / "instance")
-    owner, _cid, _turn, obligation_id = _commit_obligation(
-        rt, "Tell me the verified result", kind="communication"
-    )
-    _completed_bound_search(rt, owner, obligation_id, "result")
-    rt.obligation_reconciler.provider = ReportProvider(
-        '{"kind":"reply","reply":"An unsupported result."}',
-        '{"grounded":false,"unsupported_claims":["unsupported result"]}',
+    owner, _cid, _turn, obligation_id = _commit(rt, "Tell me the verified result", kind="communication")
+    _completed_support(rt, owner, obligation_id)
+    rt.obligation_reconciler.provider = ScriptProvider(
+        report='{"kind":"reply","reply":"Unsupported result."}',
+        report_verify='{"grounded":false,"unsupported_claims":["Unsupported result"]}',
     )
     assert rt.obligation_reconciler.report_communications() == ()
     assert rt.obligation_store.get(obligation_id).status == "open"
 
 
-def test_report_is_discarded_when_obligation_revision_changes_before_persistence(tmp_path):
+def test_report_snapshot_change_discards_candidate(tmp_path):
     rt = build_runtime(tmp_path / "instance")
-    owner, _cid, _turn, obligation_id = _commit_obligation(
-        rt, "Tell me before the deadline", kind="communication",
-        satisfiable_until="2000-01-01T00:00:00+00:00",
+    message = "Tell me the result within 1 second"
+    owner, _cid, _turn, obligation_id = _commit(rt, message, kind="communication", temporal="within 1 second")
+    _completed_support(rt, owner, obligation_id)
+
+    def race_verify(_request):
+        future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+        rt.obligation_store.observe_lapses(future)
+        return '{"grounded":true,"unsupported_claims":[]}'
+
+    rt.obligation_reconciler.provider = ScriptProvider(
+        report='{"kind":"reply","reply":"The result is ready."}', report_verify=race_verify
     )
-    _completed_bound_search(rt, owner, obligation_id, "deadline result")
-
-    class RacingProvider:
-        def __init__(self):
-            self.calls = 0
-        def generate(self, request):
-            self.calls += 1
-            if self.calls == 1:
-                text = '{"kind":"reply","reply":"The result is ready."}'
-            else:
-                rt.obligation_store.observe_lapses("2026-09-05T12:00:00+00:00")
-                text = '{"grounded":true,"unsupported_claims":[]}'
-            return ModelResponse(text=text, provider_key="test", model="race", raw={})
-
-    rt.obligation_reconciler.provider = RacingProvider()
     assert rt.obligation_reconciler.report_communications() == ()
     current = rt.obligation_store.get(obligation_id)
-    assert current.status == "open"
-    assert current.lapsed_at is not None
-    assert current.revision == 2
+    assert current.status == "open" and current.lapsed_at is not None
 
 
-def test_lapse_is_event_history_and_resolution_clears_live_annotation(tmp_path):
+def test_staged_work_never_runs_before_confirmed_response_handoff(tmp_path):
     rt = build_runtime(tmp_path / "instance")
-    owner, _cid, _turn, obligation_id = _commit_obligation(
-        rt, "Complete this before yesterday", kind="state_change",
-        satisfiable_until="2000-01-01T00:00:00+00:00",
+    owner, cid, turn, obligation_id = _commit(rt, "Apply the durable change")
+    _register_effect(rt)
+    work = rt.work.create(
+        "Apply later", [_mapped_step("test.effect", obligation_id)], owner_principal_id=owner,
+        metadata={"chat_origin": {"conversation_id": cid, "owner_turn_id": turn["turn_id"]}}, stage=True,
     )
-    assert rt.obligation_store.observe_lapses("2026-09-05T12:00:00+00:00") == (obligation_id,)
-    lapsed = rt.obligation_store.get(obligation_id)
-    assert lapsed.status == "open" and lapsed.lapsed_at is not None
-    _completed_bound_search(rt, owner, obligation_id, "late evidence")
-    rt.obligation_reconciler.reconcile_noncommunication()
+    rt.chat_store.append(cid, "assistant", "The work is staged.")
+    rt.chat_store.mark_turn_completed(turn["turn_id"])
+    assert rt.work.promote_runnable() == ()
+    assert rt.work_store.get(work.work_id).status == "waiting"
+    assert not [x for x in rt.actions_store.recent(limit=20) if x.capability_id == "test.effect"]
+    rt.chat_store.mark_response_handed_off(turn["turn_id"])
+    assert rt.work.promote_runnable() == (work.work_id,)
+    assert rt.work.run_runnable()[0]["status"] == "completed"
+
+
+def test_handoff_stamp_failure_is_loud_and_leaves_waiting_attention(tmp_path, caplog):
+    rt = build_runtime(tmp_path / "instance")
+    owner, cid, turn, obligation_id = _commit(rt, "Apply after response handoff")
+    _register_effect(rt)
+    work = rt.work.create(
+        "Wait for handoff", [_mapped_step("test.effect", obligation_id)], owner_principal_id=owner,
+        metadata={"chat_origin": {"conversation_id": cid, "owner_turn_id": turn["turn_id"]}}, stage=True,
+    )
+    rt.chat_store.append(cid, "assistant", "Staged.")
+    rt.chat_store.mark_turn_completed(turn["turn_id"])
+
+    class FailingStore:
+        def mark_response_handed_off(self, _turn_id):
+            raise RuntimeError("simulated handoff stamp failure")
+
+    async def inner(scope, receive, send):
+        scope.setdefault("state", {})["handoff_owner_turn_id"] = turn["turn_id"]
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    sent = []
+    async def send(message): sent.append(message)
+    async def receive(): return {"type": "http.request", "body": b"", "more_body": False}
+    middleware = ResponseHandoffMiddleware(inner, chat_store=FailingStore())
+    with caplog.at_level("CRITICAL"):
+        asyncio.run(middleware({"type": "http", "state": {}}, receive, send))
+    assert "response handoff stamp failed" in caplog.text
+    assert rt.chat_store.turn(turn["turn_id"])["response_handed_off_at"] is None
+    rt.work.promote_runnable()
+    assert rt.work_store.get(work.work_id).status == "waiting"
+    assert any(row["kind"] == "handoff_unconfirmed" for row in rt.attention.snapshot())
+
+
+def test_recovery_keeps_handoff_unconfirmed_and_partial_work_nonrunnable(tmp_path):
+    root = tmp_path / "instance"
+    rt = build_runtime(root)
+    owner, cid, turn, obligation_id = _commit(rt, "Do the durable thing")
+    _register_effect(rt)
+    work = rt.work.create(
+        "Durable", [_mapped_step("test.effect", obligation_id)], owner_principal_id=owner,
+        metadata={"chat_origin": {"conversation_id": cid, "owner_turn_id": turn["turn_id"]}}, stage=True,
+    )
+    rt.chat_store.append(cid, "assistant", "Staged.")
+    rt.chat_store.mark_turn_completed(turn["turn_id"])
+    rt2 = build_runtime(root)
+    _register_effect(rt2)
+    rt2.work.promote_runnable()
+    assert rt2.work_store.get(work.work_id).status == "waiting"
+    assert not rt2.actions_store.for_work_step(work.work_id, rt2.work_store.steps(work.work_id)[0].step_id)
+
+    cid2 = rt2.chat_store.create_conversation("Partial recovery")["conversation_id"]
+    turn2 = rt2.chat_store.append_owner(cid2, "Do A, but maybe not now", principal_id=owner)
+    attempt = rt2.obligation_store.begin_attempt(turn2["turn_id"])
+    result = rt2.obligation_store.commit_intake(
+        turn2["turn_id"], [{"grounding_excerpt": "Do A", "text": "Do A", "kind": "state_change"}],
+        attempts=attempt, provider="test", model="test", unmapped_spans=["but maybe not now"],
+    )
+    partial_id = result.obligation_ids[0]
+    partial_work = rt2.work.create(
+        "Partial", [_mapped_step("test.effect", partial_id)], owner_principal_id=owner,
+        metadata={"chat_origin": {"conversation_id": cid2, "owner_turn_id": turn2["turn_id"]}}, stage=True,
+    )
+    rt2.chat_store.append(cid2, "assistant", "Not executable.")
+    rt2.chat_store.mark_turn_completed(turn2["turn_id"])
+    rt2.chat_store.mark_response_handed_off(turn2["turn_id"])
+    rt2.work.promote_runnable()
+    assert rt2.work_store.get(partial_work.work_id).status == "waiting"
+
+
+def test_lapse_is_durable_history_and_resolution_clears_live_annotation(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    message = "Make the change within 1 second"
+    owner, _cid, _turn, obligation_id = _commit(rt, message, temporal="within 1 second")
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    assert rt.obligation_store.observe_lapses(future) == (obligation_id,)
+    assert rt.obligation_store.get(obligation_id).lapsed_at is not None
+    _completed_support(rt, owner, obligation_id)
+    rt.obligation_reconciler.provider = ScriptProvider()
+    assert rt.obligation_reconciler.reconcile_noncommunication() == (obligation_id,)
     resolved = rt.obligation_store.get(obligation_id)
     assert resolved.status == "resolved" and resolved.lapsed_at is None
     assert any(event["kind"] == "lapse_observed" for event in rt.obligation_store.events(obligation_id))
 
 
-def test_supersession_requires_a_later_owner_turn(tmp_path):
+def test_supersession_requires_later_owner_turn(tmp_path):
     rt = build_runtime(tmp_path / "instance")
     owner = rt.identities.current_owner().principal_id
-    cid = rt.chat_store.create_conversation("Supersede")["conversation_id"]
-    first_turn = rt.chat_store.append_owner(cid, "Do A and do B", principal_id=owner)
-    attempt = rt.obligation_store.begin_attempt(first_turn["turn_id"])
-    result = rt.obligation_store.commit_intake(
-        first_turn["turn_id"], [
+    cid = rt.chat_store.create_conversation("Supersession")["conversation_id"]
+    first = rt.chat_store.append_owner(cid, "Do A and do B", principal_id=owner)
+    attempt = rt.obligation_store.begin_attempt(first["turn_id"])
+    ids = rt.obligation_store.commit_intake(
+        first["turn_id"], [
             {"grounding_excerpt": "Do A", "text": "Do A", "kind": "state_change"},
             {"grounding_excerpt": "do B", "text": "Do B", "kind": "state_change"},
         ], attempts=attempt, provider="test", model="test",
-    )
+    ).obligation_ids
     with pytest.raises(ValueError, match="later owner turn"):
-        rt.obligation_store.supersede(result.obligation_ids[0], result.obligation_ids[1])
-
+        rt.obligation_store.supersede(ids[0], ids[1])
     later = rt.chat_store.append_owner(cid, "Replace A with C", principal_id=owner)
     attempt = rt.obligation_store.begin_attempt(later["turn_id"])
     replacement = rt.obligation_store.commit_intake(
@@ -554,21 +514,33 @@ def test_supersession_requires_a_later_owner_turn(tmp_path):
         [{"grounding_excerpt": "Replace A with C", "text": "Do C instead", "kind": "state_change"}],
         attempts=attempt, provider="test", model="test",
     ).obligation_ids[0]
-    old, new = rt.obligation_store.supersede(result.obligation_ids[0], replacement)
-    assert old.status == "superseded"
-    assert old.resolution_ref == f"obligation:{replacement}"
-    assert new.supersedes == result.obligation_ids[0]
+    old, new = rt.obligation_store.supersede(ids[0], replacement)
+    assert old.status == "superseded" and new.supersedes == ids[0]
 
 
-def test_withdrawal_is_owner_grounded_and_cannot_be_written_by_work(tmp_path):
+def test_stale_unserviceable_surfaces_without_reopening(tmp_path):
     rt = build_runtime(tmp_path / "instance")
-    owner, cid, source_turn, obligation_id = _commit_obligation(
-        rt, "Do this task", kind="state_change"
+    _owner, cid, _turn, obligation_id = _commit(rt, "Do the unavailable thing")
+    explanation = rt.chat_store.append(cid, "assistant", "I cannot service that with the current registry.")
+    current = rt.obligation_store.get(obligation_id)
+    old_fingerprint = "registry-before-change"
+    rt.obligation_store.resolve_unserviceable(
+        obligation_id, base_revision=current.revision, registry_fingerprint=old_fingerprint,
+        search_basis={"query": "unavailable"}, owner_facing_turn_id=explanation["turn_id"],
     )
-    work = rt.work.create(
-        "Mechanism", [{"capability_id": "memory.search", "input": {"query": "x"}}],
-        owner_principal_id=owner, obligation_ids=[obligation_id],
-    )
+    assert rt.obligation_store.get(obligation_id).status == "resolved"
+    current_fingerprint = registry_fingerprint(rt.capabilities_registry)
+    assert current_fingerprint != old_fingerprint
+    assert rt.obligation_store.stale_unserviceable(current_fingerprint)[0]["obligation_id"] == obligation_id
+    assert any(row["kind"] == "stale_unserviceable" and row["obligation_id"] == obligation_id for row in rt.attention.snapshot())
+    assert rt.obligation_store.get(obligation_id).status == "resolved"
+
+
+def test_withdrawal_is_owner_grounded_and_work_cannot_write_it(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner, cid, source_turn, obligation_id = _commit(rt, "Do this task")
+    _register_effect(rt)
+    work = rt.work.create("Mechanism", [_mapped_step("test.effect", obligation_id)], owner_principal_id=owner)
     rt.work.cancel(work.work_id)
     assert rt.obligation_store.get(obligation_id).status == "open"
     with pytest.raises(ValueError, match="later owner turn"):
@@ -579,216 +551,314 @@ def test_withdrawal_is_owner_grounded_and_cannot_be_written_by_work(tmp_path):
     withdrawn = rt.obligation_store.withdraw(
         obligation_id, actor_turn_id=later["turn_id"], grounding_excerpt="Cancel that task"
     )
-    assert withdrawn.status == "withdrawn"
-    assert withdrawn.resolution_ref == f"chat_turn:{later['turn_id']}"
+    assert withdrawn.status == "withdrawn" and withdrawn.resolution_ref == f"chat_turn:{later['turn_id']}"
 
 
-def test_unserviceable_registry_drift_surfaces_without_reopening(tmp_path):
+def test_deleting_every_binding_never_changes_obligation_truth(tmp_path):
     rt = build_runtime(tmp_path / "instance")
-    _owner, cid, _turn, obligation_id = _commit_obligation(
-        rt, "Do the unavailable thing", kind="state_change"
+    owner, cid, turn, obligation_id = _commit(rt, "Stage this responsibility")
+    _register_effect(rt)
+    work = rt.work.create(
+        "Stage", [_mapped_step("test.effect", obligation_id)], owner_principal_id=owner,
+        metadata={"chat_origin": {"conversation_id": cid, "owner_turn_id": turn["turn_id"]}}, stage=True,
     )
-    explanation = rt.chat_store.append(cid, "assistant", "I cannot service that with the current registry.")
-    current = rt.obligation_store.get(obligation_id)
-    resolved = rt.obligation_store.resolve_unserviceable(
-        obligation_id, base_revision=current.revision,
-        registry_fingerprint="registry-old", search_basis={"query": "unavailable thing"},
-        owner_facing_turn_id=explanation["turn_id"],
+    before = rt.obligation_store.get(obligation_id)
+    with rt.work_store._db() as db:
+        db.execute("DELETE FROM obligation_bindings WHERE work_id=?", (work.work_id,))
+    after = rt.obligation_store.get(obligation_id)
+    assert (after.status, after.resolution_kind, after.resolution_ref, after.revision) == (
+        before.status, before.resolution_kind, before.resolution_ref, before.revision
     )
-    assert resolved.status == "resolved" and resolved.resolution_kind == "unserviceable"
-    assert rt.obligation_store.stale_unserviceable("registry-old") == ()
-    stale = rt.obligation_store.stale_unserviceable("registry-new")
-    assert stale[0]["obligation_id"] == obligation_id
-    assert rt.obligation_store.get(obligation_id).status == "resolved"
+    violations = collect_runtime_violations(
+        rt.chat_store, rt.obligation_store, rt.work_store, rt.actions_store, rt.evidence
+    )
+    assert any(item.code == "staged_work_unbacked" and item.reference == work.work_id for item in violations)
 
 
-def test_startup_refuses_invalid_owner_intake_injected_below_store_api(tmp_path):
-    from atlas_core.obligations import RuntimeInvariantError
+def test_owner_turn_schema_is_fail_closed_and_rejects_invalid_intake_state(tmp_path):
+    chat, _obligations, cid = _stores(tmp_path)
+    turn = chat.append_owner(cid, "Do something", principal_id="owner-1")
+    assert turn["intake_status"] == "failed" and turn["intake_error_code"] == "intake_not_completed"
+    with sqlite3.connect(chat.path) as db:
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """INSERT INTO chat_turns(turn_id,conversation_id,role,content,owner_principal_id,intake_status,intake_schema_version)
+                   VALUES ('bad-null',?,'user','x','owner-1',NULL,1)""", (cid,)
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """INSERT INTO chat_turns(turn_id,conversation_id,role,content,owner_principal_id,intake_status,intake_schema_version)
+                   VALUES ('bad-value',?,'user','x','owner-1','pending',1)""", (cid,)
+            )
 
-    root = tmp_path / "instance"
+
+def test_staged_work_without_step_level_backing_is_rejected(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner().principal_id
+    _register_effect(rt)
+    with pytest.raises(ValueError, match="step-level obligation binding"):
+        rt.work.create(
+            "Invalid staged Work", [{"capability_id": "test.effect", "input": {}}],
+            owner_principal_id=owner,
+            metadata={"chat_origin": {"conversation_id": "c", "owner_turn_id": "t"}}, stage=True,
+        )
+
+
+def test_startup_refuses_invalid_owner_intake_and_unbacked_staged_work(tmp_path):
+    root = tmp_path / "bad-owner"
     rt = build_runtime(root)
-    owner, _cid, turn, _obligation_id = _commit_obligation(
-        rt, "Keep this valid first", kind="state_change"
-    )
-    assert owner
+    _owner, _cid, turn, _obligation_id = _commit(rt, "Keep this valid first")
     with sqlite3.connect(root / "atlas-chat.db") as db:
         db.execute("PRAGMA ignore_check_constraints=ON")
-        db.execute(
-            "UPDATE chat_turns SET intake_status=NULL WHERE turn_id=?", (turn["turn_id"],)
-        )
-    rt2 = build_runtime(root)
-    assert rt2.operational.state()["quarantined"] == 1
-    assert any(item.code == "invalid_owner_intake" for item in rt2.startup_violations)
+        db.execute("UPDATE chat_turns SET intake_status=NULL WHERE turn_id=?", (turn["turn_id"],))
+    with pytest.raises(RuntimeInvariantError, match="invalid_owner_intake"):
+        build_runtime(root)
 
-
-def test_startup_refuses_staged_work_injected_without_backing(tmp_path):
-    from atlas_core.obligations import RuntimeInvariantError
-
-    root = tmp_path / "instance"
-    rt = build_runtime(root)
-    owner, cid, turn, obligation_id = _open_obligation(rt, "Stage this safely")
+    root2 = tmp_path / "bad-work"
+    rt = build_runtime(root2)
+    owner, cid, turn, obligation_id = _commit(rt, "Stage safely")
+    _register_effect(rt)
     work = rt.work.create(
-        "Stage safely", [{"capability_id": "memory.search", "input": {"query": "x"}}],
-        owner_principal_id=owner,
-        metadata={"chat_origin": {"conversation_id": cid, "owner_turn_id": turn["turn_id"]}},
-        obligation_ids=[obligation_id], stage=True,
+        "Stage safely", [_mapped_step("test.effect", obligation_id)], owner_principal_id=owner,
+        metadata={"chat_origin": {"conversation_id": cid, "owner_turn_id": turn["turn_id"]}}, stage=True,
     )
-    with sqlite3.connect(root / "atlas-work.db") as db:
-        db.execute("DROP TRIGGER binding_delete_preserves_staged_work")
+    with rt.work_store._db() as db:
         db.execute("DELETE FROM obligation_bindings WHERE work_id=?", (work.work_id,))
-    rt2 = build_runtime(root)
-    assert rt2.operational.state()["quarantined"] == 1
-    assert any(item.code == "staged_work_unbacked" for item in rt2.startup_violations)
+    with pytest.raises(RuntimeInvariantError, match="staged_work_unbacked"):
+        build_runtime(root2)
 
 
-class DirectDeliveryProvider:
-    def __init__(self, *, grounded: bool) -> None:
-        self.grounded = grounded
-        self.requests = []
+def test_direct_consequential_action_binds_exact_occurrence_before_execution(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner().principal_id
+    _register_effect(rt)
+    cid = rt.chat_store.create_conversation("Direct")["conversation_id"]
+    message = "Apply the change now"
+    intake = json.dumps({
+        "obligations": [{"grounding_excerpt": message, "text": message, "kind": "state_change"}],
+        "unmapped_spans": [],
+    })
 
-    def generate(self, request):
-        self.requests.append(request)
-        if request.capability_id == "chat.obligation_intake":
-            message = json.loads(request.input)["owner_message"]
-            text = json.dumps({
-                "obligations": [{
-                    "grounding_excerpt": message, "text": message, "kind": "communication"
-                }], "unmapped_spans": [],
-            })
-        elif request.capability_id == "chat.communication_delivery_verify":
-            basis = json.loads(request.input)
-            obligation_id = basis["communication_obligations"][0]["obligation_id"]
-            text = json.dumps({
-                "grounded": self.grounded,
-                "fulfilled_obligation_ids": [obligation_id] if self.grounded else [],
-                "unsupported_claims": [] if self.grounded else ["not sufficiently grounded"],
-            })
-        else:
-            text = '{"kind":"reply","reply":"Hello from Atlas."}'
-        return ModelResponse(text=text, provider_key="test", model="direct", raw={})
+    def direct_plan(request):
+        obligation_id = json.loads(request.input)["owner_obligations"][0]["obligation_id"]
+        return json.dumps({
+            "kind": "capability", "capability_id": "test.effect", "input": {},
+            "obligation_ids": [obligation_id],
+        })
+
+    provider = ScriptProvider(
+        intake=intake,
+        planner=[direct_plan, '{"kind":"reply","reply":"The change was dispatched and recorded."}'],
+        state_verify='{"fulfilled":true,"reason":"The successful effect receipt proves the change."}',
+    )
+    rt.chat.provider = provider; rt.obligation_intake.provider = provider
+    result = rt.chat.send(cid, message, principal_id=owner, defer_capture=True)
+    obligation = rt.obligation_store.for_turn(result["_owner_turn_id"])[0]
+    servicing = rt.work_store.servicing(obligation.obligation_id)
+    assert len(servicing) == 1 and servicing[0]["mechanism_kind"] == "occurrence"
+    occurrence = rt.actions_store.get(servicing[0]["mechanism_id"])
+    assert occurrence.status == "succeeded"
+    rt.obligation_reconciler.provider = provider
+    assert rt.obligation_reconciler.reconcile_noncommunication() == (obligation.obligation_id,)
+    assert rt.obligation_store.get(obligation.obligation_id).status == "resolved"
 
 
 def test_direct_verified_reply_atomically_fulfils_communication_obligation(tmp_path):
     rt = build_runtime(tmp_path / "instance")
-    owner = rt.identities.current_owner()
-    cid = rt.chat_store.create_conversation("Direct delivery")["conversation_id"]
-    provider = DirectDeliveryProvider(grounded=True)
-    rt.chat.provider = provider
-    rt.obligation_intake.provider = provider
-    result = rt.chat.send(
-        cid, "Give me a short greeting", principal_id=owner.principal_id, defer_capture=True
+    owner = rt.identities.current_owner().principal_id
+    cid = rt.chat_store.create_conversation("Direct communication")["conversation_id"]
+    message = "Give me a short greeting"
+    intake = json.dumps({
+        "obligations": [{"grounding_excerpt": message, "text": message, "kind": "communication"}],
+        "unmapped_spans": [],
+    })
+
+    def verify(request):
+        basis = json.loads(request.input)
+        oid = basis["communication_obligations"][0]["obligation_id"]
+        return json.dumps({"grounded": True, "fulfilled_obligation_ids": [oid], "unsupported_claims": []})
+
+    provider = ScriptProvider(
+        intake=intake,
+        planner=['{"kind":"reply","reply":"Hello from Atlas."}'],
+        communication_verify=verify,
     )
-    owner_turn = rt.chat_store.turn(result["_owner_turn_id"])
-    obligation = rt.obligation_store.for_turn(owner_turn["turn_id"])[0]
+    rt.chat.provider = provider; rt.obligation_intake.provider = provider
+    result = rt.chat.send(cid, message, principal_id=owner, defer_capture=True)
+    obligation = rt.obligation_store.for_turn(result["_owner_turn_id"])[0]
     assert obligation.status == "resolved"
     assert obligation.resolution_ref == f"chat_turn:{result['turn']['turn_id']}"
-    assert result["turn"]["content"] == "Hello from Atlas."
     assert result["turn"]["metadata"]["communication_delivery"]["grounded"] is True
 
 
-def test_direct_unverified_reply_leaves_communication_obligation_open(tmp_path):
-    rt = build_runtime(tmp_path / "instance")
-    owner = rt.identities.current_owner()
-    cid = rt.chat_store.create_conversation("Direct unverified")["conversation_id"]
-    provider = DirectDeliveryProvider(grounded=False)
+def test_forbidden_state_list_has_one_executable_check_per_bullet():
+    import atlas_core.obligations.invariants as invariants_module
+
+    source = inspect.getsource(invariants_module.collect_runtime_violations)
+    tree = ast.parse(source)
+    implemented = {
+        call.args[1].value
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "_append"
+        and len(call.args) > 1
+        and isinstance(call.args[1], ast.Constant)
+        and isinstance(call.args[1].value, str)
+    }
+    frozen = set(invariants_module.FORBIDDEN_STATE_CHECK_IDS)
+    assert implemented == frozen
+    assert len(invariants_module.FORBIDDEN_STATE_CHECK_IDS) == 20
+
+
+def test_flagship_restart_health_then_cullinan_weather_survives_restart_without_second_owner_turn(tmp_path, monkeypatch):
+    """Frozen flagship: one owner turn, three obligations, detached restart, verified report."""
+    monkeypatch.setenv("ATLAS_SERVICE_UNIT", "atlas-api.service")
+    monkeypatch.setenv("INVOCATION_ID", "old-invocation")
+
+    def fake_systemd(args, timeout=20):
+        if "show" in args:
+            stdout = (
+                "Id=atlas-api.service\nLoadState=loaded\nActiveState=active\nSubState=running\n"
+                "MainPID=222\nInvocationID=new-invocation\nExecMainStatus=0\n"
+            )
+            return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(host_module, "_run", fake_systemd)
+    root = tmp_path / "instance"
+    rt = build_runtime(root)
+    owner = rt.identities.current_owner().principal_id
+
+    def register_weather(runtime):
+        runtime.capabilities_registry.register(CapabilityRegistration(
+            CapabilityDefinition(
+                "test.weather.read", "Read deterministic Cullinan weather", "read", "none",
+                {"type": "object", "properties": {}, "additionalProperties": False},
+            ),
+            lambda payload: ScopeResolution("test/weather/cullinan", {}, "Read Cullinan weather"),
+            lambda payload: ActionResult(
+                True,
+                {"location": "Cullinan", "temperature_c": 24, "condition": "clear"},
+                {"ok": True, "observed_at": "2026-09-05T08:00:00+00:00"},
+            ),
+        ), replace=True)
+        runtime.policy_store.set(
+            principal_id=owner, scope="test/weather/cullinan", operation="read", decision="YES"
+        )
+
+    register_weather(rt)
+    cid = rt.chat_store.create_conversation("Flagship restart")["conversation_id"]
+    message = (
+        "Restart your API service, then verify that it came back healthy. "
+        "Then tell me what the weather is like today in Cullinan."
+    )
+
+    class FlagshipChatProvider:
+        def __init__(self):
+            self.requests = []
+            self.planner_round = 0
+
+        def generate(self, request):
+            self.requests.append(request)
+            if request.capability_id == "chat.obligation_intake":
+                text = json.dumps({
+                    "obligations": [
+                        {"grounding_excerpt": "Restart your API service", "text": "Restart the API service", "kind": "state_change"},
+                        {"grounding_excerpt": "verify that it came back healthy", "text": "Verify the API is healthy", "kind": "state_change"},
+                        {"grounding_excerpt": "tell me what the weather is like today in Cullinan", "text": "Report today's Cullinan weather", "kind": "communication"},
+                    ],
+                    "unmapped_spans": [],
+                })
+            elif request.capability_id == "chat.communication_delivery_verify":
+                text = '{"grounded":false,"fulfilled_obligation_ids":[],"unsupported_claims":[]}'
+            else:
+                self.planner_round += 1
+                if self.planner_round == 1:
+                    obligations = json.loads(request.input)["owner_obligations"]
+                    by_text = {row["text"]: row["obligation_id"] for row in obligations}
+                    text = json.dumps({
+                        "kind": "capability", "capability_id": "work.create", "input": {
+                            "objective": "Restart Atlas, verify health, then gather Cullinan weather",
+                            "run": True,
+                            "steps": [
+                                {
+                                    "capability_id": "host.service.restart",
+                                    "description": "Restart Atlas API",
+                                    "input": {"unit": "atlas-api.service"},
+                                    "obligation_ids": [by_text["Restart the API service"]],
+                                },
+                                {
+                                    "capability_id": "host.service.status",
+                                    "description": "Verify Atlas API health",
+                                    "input": {"unit": "atlas-api.service"},
+                                    "obligation_ids": [by_text["Verify the API is healthy"]],
+                                },
+                                {
+                                    "capability_id": "test.weather.read",
+                                    "description": "Read today's Cullinan weather",
+                                    "input": {},
+                                    "obligation_ids": [by_text["Report today's Cullinan weather"]],
+                                },
+                            ],
+                        },
+                    })
+                else:
+                    text = '{"kind":"reply","reply":"I staged the ordered responsibility and will continue it after this response is handed off."}'
+            return ModelResponse(text=text, provider_key="test", model="flagship-chat", raw={})
+
+    provider = FlagshipChatProvider()
     rt.chat.provider = provider
     rt.obligation_intake.provider = provider
-    result = rt.chat.send(
-        cid, "Give me a short greeting", principal_id=owner.principal_id, defer_capture=True
-    )
-    obligation = rt.obligation_store.for_turn(result["_owner_turn_id"])[0]
-    assert obligation.status == "open"
-    assert result["turn"]["metadata"]["communication_delivery"]["grounded"] is False
+    initial = rt.chat.send(cid, message, principal_id=owner, defer_capture=True)
+    owner_turn = rt.chat_store.turn(initial["_owner_turn_id"])
+    obligations = rt.obligation_store.for_turn(owner_turn["turn_id"])
+    assert len(obligations) == 3
+    assert [item.kind for item in obligations] == ["state_change", "state_change", "communication"]
+    work = rt.work_store.list(limit=10)[0]
+    assert work.status == "staged"
+    assert not [row for row in rt.actions_store.recent(limit=50) if row.capability_id == "host.service.restart"]
 
+    rt.chat_store.mark_response_handed_off(owner_turn["turn_id"])
+    assert rt.work.promote_runnable() == (work.work_id,)
+    waiting = rt.work.run_runnable()[0]
+    assert waiting["status"] == "waiting"
+    assert [step["status"] for step in waiting["steps"]] == ["waiting", "queued", "queued"]
+    restart_occurrence = rt.actions_store.get(waiting["steps"][0]["occurrence_id"])
+    assert restart_occurrence.status == "uncertain"
 
-def test_section_15_forbidden_state_list_has_one_executable_check_per_bullet():
-    from atlas_core.obligations.invariants import FORBIDDEN_STATE_CHECK_IDS, mapped_forbidden_state_checks
-    assert mapped_forbidden_state_checks() == FORBIDDEN_STATE_CHECK_IDS
-    assert len(FORBIDDEN_STATE_CHECK_IDS) == 20
-    assert len(set(FORBIDDEN_STATE_CHECK_IDS)) == 20
+    monkeypatch.setenv("INVOCATION_ID", "new-invocation")
+    rt2 = build_runtime(root)
+    register_weather(rt2)
+    recovered = rt2.work.detail(work.work_id)
+    assert [step["status"] for step in recovered["steps"]] == ["completed", "queued", "queued"]
+    assert rt2.work.promote_runnable() == (work.work_id,)
+    completed = rt2.work.run_runnable()[0]
+    assert completed["status"] == "completed"
+    assert [step["status"] for step in completed["steps"]] == ["completed", "completed", "completed"]
 
+    class FlagshipReconcileProvider:
+        def generate(self, request):
+            if request.capability_id == "obligation.state_change_verify":
+                text = '{"fulfilled":true,"reason":"The explicitly bound successful runtime evidence proves this exact obligation."}'
+            elif request.capability_id == "chat.obligation_report":
+                text = '{"kind":"reply","reply":"Atlas restarted and verified healthy. Today in Cullinan it is 24°C and clear."}'
+            elif request.capability_id == "chat.obligation_report_verify":
+                text = '{"grounded":true,"unsupported_claims":[]}'
+            else:
+                raise AssertionError(f"unexpected reconciliation provider role: {request.capability_id}")
+            return ModelResponse(text=text, provider_key="test", model="flagship-reconcile", raw={})
 
-def test_quarantine_is_sticky_until_repair_and_explicit_clearance(tmp_path):
-    from atlas_core.obligations import collect_runtime_violations
-
-    root = tmp_path / "instance"
-    rt = build_runtime(root)
-    owner, cid, turn, obligation_id = _open_obligation(rt, "Repair this safely")
-    work = rt.work.create(
-        "Repair safely", [{"capability_id":"memory.search","input":{"query":"x"}}],
-        owner_principal_id=owner,
-        metadata={"chat_origin":{"conversation_id":cid,"owner_turn_id":turn["turn_id"]}},
-        obligation_ids=[obligation_id], stage=True,
-    )
-    with sqlite3.connect(root / "atlas-work.db") as db:
-        db.execute("DROP TRIGGER binding_delete_preserves_staged_work")
-        db.execute("DELETE FROM obligation_bindings WHERE work_id=?", (work.work_id,))
-    quarantined = build_runtime(root)
-    assert quarantined.operational.state()["quarantined"] == 1
-    binding = quarantined.work_store.bind_obligation(work.work_id, obligation_id)
-    repair_event = quarantined.operational.record_repair(
-        runtime_revision=quarantined.runtime_revision, actor=owner,
-        reason="restore staged Work backing", evidence={"binding": binding},
-    )
-    assert repair_event
-    current = collect_runtime_violations(
-        quarantined.chat_store, quarantined.obligation_store, quarantined.work_store,
-        quarantined.actions_store, quarantined.evidence,
-    )
-    assert current == ()
-    assert quarantined.operational.state()["quarantined"] == 1
-
-    clean_boot = build_runtime(root)
-    assert clean_boot.startup_violations == ()
-    assert clean_boot.operational.state()["quarantined"] == 1
-    clear_event = clean_boot.operational.clear_quarantine(
-        runtime_revision=clean_boot.runtime_revision, actor=owner,
-        validation_evidence={"violations": []},
-    )
-    assert clear_event
-    assert clean_boot.operational.state()["quarantined"] == 0
-    kinds = [event["kind"] for event in clean_boot.operational.events(limit=10)]
-    assert "quarantine_entered" in kinds
-    assert "repair" in kinds
-    assert "quarantine_cleared" in kinds
-
-
-def test_quarantine_serves_health_and_diagnostics_but_refuses_normal_api(tmp_path, monkeypatch):
-    from starlette.testclient import TestClient
-    from atlas_api.app import create_app
-
-    root = tmp_path / "instance"
-    rt = build_runtime(root)
-    _owner, _cid, turn, _obligation_id = _commit_obligation(
-        rt, "Corrupt this only for the quarantine test", kind="state_change"
-    )
-    with sqlite3.connect(root / "atlas-chat.db") as db:
-        db.execute("PRAGMA ignore_check_constraints=ON")
-        db.execute("UPDATE chat_turns SET intake_status=NULL WHERE turn_id=?", (turn["turn_id"],))
-    monkeypatch.setenv("ATLAS_COMPANION_PASSWORD", "secret")
-    monkeypatch.setenv("ATLAS_SESSION_SECRET", "test-session-secret")
-    monkeypatch.setenv("ATLAS_ENV", "development")
-
-    with TestClient(create_app(instance_root=root, static_dir=tmp_path / "missing")) as client:
-        health = client.get("/api/health")
-        assert health.status_code == 200
-        assert health.json()["quarantined"] is True
-        assert health.json()["operational_status"] == "quarantined"
-        refused = client.get("/api/system")
-        assert refused.status_code == 503
-        assert refused.json()["code"] == "runtime_quarantined"
-        login = client.post("/api/auth/login", json={"password": "secret"})
-        assert login.status_code == 200
-        csrf = login.json()["csrf_token"]
-        diag = client.get("/api/quarantine")
-        assert diag.status_code == 200
-        assert diag.json()["state"]["quarantined"] == 1
-        assert any(
-            row["code"] == "invalid_owner_intake"
-            for row in diag.json()["current_violations"]
-        )
-        clear = client.post(
-            "/api/quarantine/clear", headers={"X-CSRF-Token": csrf}, json={}
-        )
-        assert clear.status_code == 409
-        assert clear.json()["code"] == "quarantine_validation_failed"
+    rt2.obligation_reconciler.provider = FlagshipReconcileProvider()
+    tick = rt2.obligation_reconciler.tick()
+    assert len(tick["resolved"]) == 2
+    assert len(tick["reports"]) == 1
+    final = [rt2.obligation_store.get(item.obligation_id) for item in obligations]
+    assert [item.status for item in final] == ["resolved", "resolved", "resolved"]
+    assert final[0].resolution_ref.startswith("evidence:")
+    assert final[1].resolution_ref.startswith("evidence:")
+    assert final[2].resolution_ref == f"chat_turn:{tick['reports'][0]}"
+    report_turn = rt2.chat_store.turn(tick["reports"][0])
+    assert "Cullinan" in report_turn["content"] and "24°C" in report_turn["content"]
+    owner_turns = [turn for turn in rt2.chat_store.turns(cid) if turn["role"] == "user"]
+    assert [turn["turn_id"] for turn in owner_turns] == [owner_turn["turn_id"]]

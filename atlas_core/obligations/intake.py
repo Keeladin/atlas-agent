@@ -83,9 +83,6 @@ class ObligationIntakeRuntime:
                             "text": {"type": "string", "minLength": 1},
                             "kind": {"type": "string", "enum": ["state_change", "communication"]},
                             "temporal_grounding_excerpt": {"type": ["string", "null"]},
-                            "satisfiable_until": {"type": ["string", "null"]},
-                            "temporal_anchor_at": {"type": ["string", "null"]},
-                            "temporal_anchor_timezone": {"type": ["string", "null"]},
                         },
                         "additionalProperties": False,
                     },
@@ -103,8 +100,9 @@ class ObligationIntakeRuntime:
                 "A commitment states what Atlas owes, never how to do it: do not emit capabilities, tools, steps, "
                 "dependencies, or execution ordering. Use kind state_change when fulfilment is an externally verifiable "
                 "state/effect, and communication when Atlas owes an owner-facing answer/report. "
-                "grounding_excerpt must be copied verbatim from owner_message. Cover every material requested outcome, "
-                "constraint, condition, prohibition, or requested communication; put any span you cannot safely map in "
+                "grounding_excerpt must be copied verbatim from owner_message. If the owner states a deadline or temporal bound, "
+                "copy that exact source phrase into temporal_grounding_excerpt; do not calculate timestamps or timezones. "
+                "Cover every material requested outcome, constraint, condition, prohibition, or requested communication; put any span you cannot safely map in "
                 "unmapped_spans. A greeting or non-request may validly return zero obligations and zero unmapped_spans."
             ),
             input=json.dumps(
@@ -139,7 +137,6 @@ class ObligationIntakeRuntime:
             raise IntakeExtractionError("intake_invalid_shape")
         allowed = {
             "grounding_excerpt", "text", "kind", "temporal_grounding_excerpt",
-            "satisfiable_until", "temporal_anchor_at", "temporal_anchor_timezone",
         }
         cleaned = []
         for item in obligations:

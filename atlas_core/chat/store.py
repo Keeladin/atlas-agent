@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 
-_INTAKE_STATES = {"pending", "complete", "partial", "interrupted", "failed"}
+_INTAKE_STATES = {"complete", "partial", "failed"}
 
 
 def _turn_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -85,7 +85,7 @@ class ChatStore:
                 FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE,
                 CHECK(CASE WHEN role='user' THEN
                     owner_principal_id IS NOT NULL
-                    AND COALESCE(intake_status IN ('pending','complete','partial','interrupted','failed'),0)=1
+                    AND COALESCE(intake_status IN ('complete','partial','failed'),0)=1
                     AND COALESCE(intake_schema_version=1,0)=1
                 ELSE
                     owner_principal_id IS NULL AND intake_status IS NULL
@@ -145,7 +145,7 @@ class ChatStore:
                 """INSERT INTO chat_turns(
                        turn_id,conversation_id,role,content,metadata_json,owner_principal_id,
                        intake_status,intake_schema_version,intake_error_code
-                   ) VALUES (?,?,?,?,?,?,'pending',1,NULL)""",
+                   ) VALUES (?,?,?,?,?,?,'failed',1,'intake_not_completed')""",
                 (tid, cid, "user", content, encoded, principal_id),
             )
             db.execute(
@@ -220,28 +220,13 @@ class ChatStore:
             db.execute("UPDATE chat_turns SET response_handed_off_at=NULL WHERE turn_id=?",(turn_id,))
         return self.turn(turn_id)
 
-    def interrupt_pending_intakes(self) -> tuple[str, ...]:
-        """Boot boundary: no prior invocation can still own a pending intake."""
-        with self._db() as db:
-            rows = db.execute(
-                "SELECT turn_id FROM chat_turns WHERE role='user' AND intake_status='pending'"
-            ).fetchall()
-            ids = tuple(row["turn_id"] for row in rows)
-            if ids:
-                db.execute(
-                    """UPDATE chat_turns
-                       SET intake_status='interrupted',intake_error_code='intake_interrupted'
-                       WHERE role='user' AND intake_status='pending'"""
-                )
-        return ids
-
     def invalid_owner_intakes(self) -> tuple[str, ...]:
         with self._db() as db:
             rows = db.execute(
                 """SELECT turn_id FROM chat_turns
                    WHERE role='user' AND (
                        owner_principal_id IS NULL OR COALESCE(intake_schema_version=1,0)=0
-                       OR COALESCE(intake_status IN ('pending','complete','partial','interrupted','failed'),0)=0
+                       OR COALESCE(intake_status IN ('complete','partial','failed'),0)=0
                    )"""
             ).fetchall()
         return tuple(row["turn_id"] for row in rows)

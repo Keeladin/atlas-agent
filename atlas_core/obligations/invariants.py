@@ -61,8 +61,30 @@ def collect_runtime_violations(chat_store, obligation_store, work_store, actions
     for turn_id in chat_store.invalid_owner_intakes():
         _append(violations, "invalid_owner_intake", turn_id, "owner turn intake state is invalid")
 
-    for work_id in work_store.staged_without_bindings():
-        _append(violations, "staged_work_unbacked", work_id, "staged Work has no obligation binding")
+    for work in work_store.list(limit=10000):
+        if work.status != "staged":
+            continue
+        valid_backing = False
+        origin = work.metadata.get("chat_origin") if isinstance(work.metadata.get("chat_origin"), dict) else {}
+        owner_turn_id = str(origin.get("owner_turn_id") or "")
+        for binding in work_store.bindings(work.work_id):
+            if binding.get("mechanism_kind") != "work_step":
+                continue
+            try:
+                step = work_store.step(str(binding.get("mechanism_id") or ""))
+                obligation = obligation_store.get(str(binding.get("obligation_id") or ""))
+            except KeyError:
+                continue
+            if step.work_id != work.work_id or obligation.status != "open":
+                continue
+            if obligation.owner_principal_id != work.owner_principal_id:
+                continue
+            if owner_turn_id and obligation.owner_turn_id != owner_turn_id:
+                continue
+            valid_backing = True
+            break
+        if not valid_backing:
+            _append(violations, "staged_work_unbacked", work.work_id, "staged Work has no valid open step-level obligation binding")
 
     for work in work_store.list(limit=10000):
         origin = work.metadata.get("chat_origin") if isinstance(work.metadata.get("chat_origin"), dict) else None
@@ -98,6 +120,21 @@ def collect_runtime_violations(chat_store, obligation_store, work_store, actions
             if turn.get("intake_status") != "complete":
                 _append(violations, "occurrence_before_complete_intake", occurrence.occurrence_id, owner_turn_id)
 
+        with work_store._db() as work_db:
+            direct_bindings = work_db.execute(
+                """SELECT obligation_id,mechanism_id FROM obligation_bindings
+                   WHERE mechanism_kind='occurrence'"""
+            ).fetchall()
+        for binding in direct_bindings:
+            try:
+                obligation = obligation_store.get(binding["obligation_id"])
+                turn = chat_store.turn(obligation.owner_turn_id)
+            except KeyError:
+                _append(violations, "occurrence_before_complete_intake", binding["mechanism_id"], "direct binding authority is missing")
+                continue
+            if turn.get("intake_status") != "complete":
+                _append(violations, "occurrence_before_complete_intake", binding["mechanism_id"], obligation.owner_turn_id)
+
     for obligation_id in obligation_store.grounding_violations():
         _append(violations, "invalid_obligation_grounding", obligation_id, "grounding does not match owner turn")
 
@@ -132,23 +169,23 @@ def collect_runtime_violations(chat_store, obligation_store, work_store, actions
                                   WHERE kind='state_change' AND status='resolved' AND resolution_kind='fulfilled'""").fetchall()
         for row in state_rows:
             ref = str(row["resolution_ref"] or "")
-            valid = ref.startswith("evidence:") or ref.startswith("action:")
-            if not valid:
+            if not ref.startswith("evidence:"):
                 _append(violations, "state_change_resolution_missing_evidence", row["obligation_id"], ref)
                 continue
-            if ref.startswith("evidence:") and evidence is not None:
+            if evidence is not None:
                 try:
                     record = evidence.get(ref.split(":", 1)[1])
                     occurrence = actions.get(record.occurrence_id) if actions is not None else None
                     if occurrence is not None and occurrence.status != "succeeded":
                         raise ValueError("evidence occurrence is not succeeded")
-                except (KeyError, ValueError):
-                    _append(violations, "state_change_resolution_missing_evidence", row["obligation_id"], ref)
-            if ref.startswith("action:") and actions is not None:
-                try:
-                    occurrence = actions.get(ref.split(":", 1)[1])
-                    if not (occurrence.status == "blocked" and occurrence.policy_decision == "NO"):
-                        raise ValueError("action is not authoritative refusal")
+                    payload = record.payload if isinstance(record.payload, dict) else {}
+                    if (
+                        record.kind != "obligation_fulfilment_verification"
+                        or payload.get("fulfilled") is not True
+                        or payload.get("obligation_id") != row["obligation_id"]
+                        or not str(payload.get("evidence_digest") or "")
+                    ):
+                        raise ValueError("evidence is not a grounded obligation fulfilment verification")
                 except (KeyError, ValueError):
                     _append(violations, "state_change_resolution_missing_evidence", row["obligation_id"], ref)
         withdrawn = db.execute("""SELECT obligation_id,owner_principal_id,owner_turn_id,resolution_ref
@@ -241,8 +278,3 @@ def assert_runtime_invariants(chat_store, obligation_store, work_store, actions=
     violations = collect_runtime_violations(chat_store, obligation_store, work_store, actions, evidence)
     if violations:
         raise RuntimeInvariantError(violations)
-
-
-def mapped_forbidden_state_checks() -> tuple[str, ...]:
-    """CI contract: every frozen Section 15 bullet has a named executable check."""
-    return FORBIDDEN_STATE_CHECK_IDS

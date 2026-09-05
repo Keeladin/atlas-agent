@@ -8,7 +8,7 @@ from atlas_core.schema_validation import SchemaValidationError, validate_json
 
 MAX_WORK_STEPS = 64
 MAX_WORK_TEMPLATE_BYTES = 256 * 1024
-_ALLOWED_STEP_KEYS = {"capability_id", "description", "input"}
+_ALLOWED_STEP_KEYS = {"capability_id", "description", "input", "obligation_ids"}
 
 
 class WorkflowValidationError(ValueError):
@@ -42,6 +42,11 @@ def validate_workflow_steps(registry: CapabilityRegistry, steps: list[dict[str, 
         description = str(step.get("description") or "").strip()
         if "description" in step and not description:
             raise WorkflowValidationError(f"step {ordinal}: description must not be empty")
+        obligation_ids = step.get("obligation_ids", [])
+        if not isinstance(obligation_ids, list) or not all(isinstance(item, str) and item.strip() for item in obligation_ids):
+            raise WorkflowValidationError(f"step {ordinal}: obligation_ids must be an array of non-empty ids")
+        if len(set(obligation_ids)) != len(obligation_ids):
+            raise WorkflowValidationError(f"step {ordinal}: obligation_ids must be unique")
         payload = step.get("input")
         if not isinstance(payload, dict):
             raise WorkflowValidationError(f"step {ordinal}: input must be an object")

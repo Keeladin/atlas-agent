@@ -16,13 +16,15 @@ from atlas_core.providers import ModelResponse, ProviderRuntime
 
 
 class SequenceProvider:
-    def __init__(self, *responses: str) -> None:
+    def __init__(self, *responses) -> None:
         self.responses = list(responses)
         self.requests = []
 
     def generate(self, request):
         self.requests.append(request)
-        return ModelResponse(text=self.responses.pop(0), provider_key="test", model="test-model", raw={})
+        response = self.responses.pop(0)
+        text = response(request) if callable(response) else response
+        return ModelResponse(text=text, provider_key="test", model="test-model", raw={})
 
 
 def _completed(args, stdout="", stderr="", code=0):
@@ -85,13 +87,13 @@ def test_chat_promotes_self_restart_to_detached_work_after_handoff(tmp_path, mon
     cid = rt.chat_store.create_conversation("Restart")['conversation_id']
     rt.chat.provider = SequenceProvider(
         '{"kind":"capability","capability_id":"host.service.restart","input":{"unit":"atlas-api.service"}}',
-        json.dumps({"kind":"capability","capability_id":"work.create","input":{
+        lambda request: (lambda oid: json.dumps({"kind":"capability","capability_id":"work.create","input":{
             "objective":"Restart the Atlas API and verify it is running",
             "steps":[
-                {"capability_id":"host.service.restart","description":"Restart Atlas API","input":{"unit":"atlas-api.service"}},
-                {"capability_id":"host.service.status","description":"Verify Atlas API service state","input":{"unit":"atlas-api.service"}}
+                {"capability_id":"host.service.restart","description":"Restart Atlas API","input":{"unit":"atlas-api.service"},"obligation_ids":[oid]},
+                {"capability_id":"host.service.status","description":"Verify Atlas API service state","input":{"unit":"atlas-api.service"},"obligation_ids":[oid]}
             ]
-        }}),
+        }}))(json.loads(request.input)["owner_obligations"][0]["obligation_id"]),
         '{"kind":"reply","reply":"I moved that into durable Work before restarting the runtime."}',
     )
     result = rt.chat.send(cid, "Restart your API and verify it comes back healthy", principal_id=owner.principal_id, defer_capture=True)
@@ -128,10 +130,10 @@ def test_uncertain_direct_action_is_adopted_not_replayed(tmp_path):
     cid = rt.chat_store.create_conversation("Async")['conversation_id']
     rt.chat.provider = SequenceProvider(
         '{"kind":"capability","capability_id":"test.async.start","input":{"target":"job-1"}}',
-        json.dumps({"kind":"capability","capability_id":"work.create","input":{
+        lambda request: (lambda oid: json.dumps({"kind":"capability","capability_id":"work.create","input":{
             "objective":"Start job 1 and retain responsibility for its unresolved outcome",
-            "steps":[{"capability_id":"test.async.start","description":"Existing async start","input":{"target":"job-1"}}]
-        }}),
+            "steps":[{"capability_id":"test.async.start","description":"Existing async start","input":{"target":"job-1"},"obligation_ids":[oid]}]
+        }}))(json.loads(request.input)["owner_obligations"][0]["obligation_id"]),
         '{"kind":"reply","reply":"I retained the unresolved operation as durable Work."}',
     )
     rt.chat.send(cid, "Start job 1 and keep track of the outcome", principal_id=owner.principal_id, defer_capture=True)
@@ -164,11 +166,11 @@ def test_recovery_reconciles_restart_but_detached_loop_resumes_verification(tmp_
         "Restart the Atlas API and verify it is running",
         [
             {"capability_id":"host.service.restart","description":"Restart Atlas API","input":{"unit":"atlas-api.service"}},
-            {"capability_id":"host.service.status","description":"Verify Atlas API service state","input":{"unit":"atlas-api.service"}},
+            {"capability_id":"host.service.status","description":"Verify Atlas API service state","input":{"unit":"atlas-api.service"},"obligation_ids":[obligation_id]},
         ],
         owner_principal_id=owner.principal_id,
         metadata={"auto_resume_on_recovery":True,"chat_origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"]}},
-        obligation_ids=[obligation_id], stage=True,
+        stage=True,
     )
     rt.chat_store.append(cid, "assistant", "The restart is staged for detached execution.")
     rt.chat_store.mark_turn_completed(owner_turn["turn_id"])
@@ -192,6 +194,9 @@ def test_recovery_reconciles_restart_but_detached_loop_resumes_verification(tmp_
     assert detail["status"] == "completed"
     assert [step["status"] for step in detail["steps"]] == ["completed", "completed"]
     assert not [turn for turn in rt2.chat_store.turns(cid) if turn["metadata"].get("work_completion")]
+    rt2.obligation_reconciler.provider = SequenceProvider(
+        '{"fulfilled":true,"reason":"The post-restart service status proves the requested healthy state."}'
+    )
     assert rt2.obligation_reconciler.reconcile_noncommunication() == (obligation_id,)
     assert rt2.obligation_store.get(obligation_id).status == "resolved"
 
@@ -254,8 +259,8 @@ def test_identical_work_composition_from_same_owner_turn_is_idempotent(tmp_path)
     provenance = InvocationProvenance(owner, "human", "chat")
     payload = {
         "objective":"Original objective", "run":False,
-        "origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"],"obligation_ids":[obligation_id]},
-        "steps":[{"capability_id":"memory.search","description":"Search once","input":{"query":"x"}}],
+        "origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"]},
+        "steps":[{"capability_id":"memory.search","description":"Search once","input":{"query":"x"},"obligation_ids":[obligation_id]}],
     }
 
     first = rt.capabilities.invoke("work.create", payload, provenance=provenance)
@@ -271,9 +276,9 @@ def test_one_owner_turn_may_create_distinct_work_items(tmp_path):
     owner_turn = rt.chat_store.append_owner(cid, "Create two different responsibilities", principal_id=owner)
     obligation_id = _commit_test_obligation(rt, owner_turn)
     provenance = InvocationProvenance(owner, "human", "chat")
-    base = {"run":False,"origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"],"obligation_ids":[obligation_id]}}
-    a = rt.capabilities.invoke("work.create", {**base,"objective":"Job A","steps":[{"capability_id":"memory.search","input":{"query":"a"}}]}, provenance=provenance)
-    b = rt.capabilities.invoke("work.create", {**base,"objective":"Job B","steps":[{"capability_id":"memory.search","input":{"query":"b"}}]}, provenance=provenance)
+    base = {"run":False,"origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"]}}
+    a = rt.capabilities.invoke("work.create", {**base,"objective":"Job A","steps":[{"capability_id":"memory.search","input":{"query":"a"},"obligation_ids":[obligation_id]}]}, provenance=provenance)
+    b = rt.capabilities.invoke("work.create", {**base,"objective":"Job B","steps":[{"capability_id":"memory.search","input":{"query":"b"},"obligation_ids":[obligation_id]}]}, provenance=provenance)
     assert a.result["work_id"] != b.result["work_id"]
     assert len(rt.work_store.list()) == 2
 
@@ -488,8 +493,8 @@ def test_interrupted_work_create_occurrence_reconciles_from_durable_work(tmp_pat
     obligation_id = _commit_test_obligation(rt, owner_turn)
     payload = {
         "objective":"Search durable memory", "run":True,
-        "origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"],"obligation_ids":[obligation_id]},
-        "steps":[{"capability_id":"memory.search","input":{"query":"x"}}],
+        "origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"]},
+        "steps":[{"capability_id":"memory.search","input":{"query":"x"},"obligation_ids":[obligation_id]}],
     }
     created = rt.capabilities.invoke("work.create", payload, provenance=InvocationProvenance(owner, "human", "chat"))
     work_id = created.result["work_id"]
@@ -514,13 +519,13 @@ def test_interrupted_work_create_reconciles_without_pre_handoff_execution(tmp_pa
     cid = rt.chat_store.create_conversation("Staged create")['conversation_id']
     owner_turn = rt.chat_store.append_owner(cid, "Create and run durable work", principal_id=owner)
     obligation_id = _commit_test_obligation(rt, owner_turn)
-    steps = [{"capability_id":"memory.search","input":{"query":"x"}}]
+    steps = [{"capability_id":"memory.search","input":{"query":"x"},"obligation_ids":[obligation_id]}]
     objective = "Search durable memory"
-    origin = {"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"],"obligation_ids":[obligation_id]}
+    origin = {"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"]}
     work = rt.work.create(
         objective, steps, owner_principal_id=owner,
         metadata={"auto_resume_on_recovery":True,"chat_origin":{"conversation_id":cid,"owner_turn_id":owner_turn["turn_id"],"work_key":_chat_work_key(owner_turn["turn_id"], objective, steps)}},
-        obligation_ids=[obligation_id], stage=True,
+        stage=True,
     )
     payload = {"objective":objective,"steps":steps,"run":True,"origin":origin}
     orphan = rt.actions_store.create(

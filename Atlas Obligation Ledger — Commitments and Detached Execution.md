@@ -297,7 +297,7 @@ WHERE owner_turn_id = ?
 ```
 
 Zero rows means that turn has no outstanding commitments. Any remaining row prevents Atlas from presenting the owner objective as wholly complete.
-Historical/pre-ledger turns are explicitly excluded from this arithmetic; section 17 defines their migration state so absence of obligations can never be misread as completion.
+There is no historical/pre-ledger completeness branch. Section 17 requires a clean development-state reset when this architecture lands, so every retained owner turn is governed by the obligation-intake schema.
 
 ## 14. Attention and dangling commitments
 
@@ -354,21 +354,25 @@ Retain but demote:
 
 The deletion criterion is deliberate: if Work-level completeness guessing, residual-request machinery, or restart-specific ownership handling remains necessary after migration, the boundary has not actually moved.
 
-## 17. Migration and pre-existing Work
+## 17. Development schema cutover and state reset
 
-Atlas must not fabricate historical commitments during schema migration. Existing Work objectives are not guaranteed to be verbatim owner commitments, and retrospectively model-extracting obligations would create new durable duties after the fact.
+Atlas is still in active development. Existing SQLite runtime entries are disposable development state and must not constrain the obligation architecture.
 
-Therefore pre-ledger state is **explicitly legacy-untracked, not backfilled**.
+When this specification is implemented, Atlas uses a **clean schema/state reset**, not a compatibility migration. The implementation may recreate the development SQLite databases from the current canonical schema rather than preserving pre-ledger rows.
 
-Migration records a ledger cutover identity/time. Owner turns created before the cutover do not receive `complete` with an empty obligation set. They retain no ledger intake status and are exposed through a separate migration/coverage marker such as `legacy_untracked`.
+Do not:
 
-Completeness arithmetic applies only to owner turns with the ledger intake schema/version. Any API/UI asking about a pre-ledger turn must report obligation coverage as untracked rather than complete.
+- backfill obligations from historical Work objectives or Chat turns;
+- introduce `legacy_untracked` markers;
+- add ledger cutover exemptions for historical Work;
+- support mixed pre-ledger/post-ledger completeness semantics;
+- retain compatibility branches whose only purpose is preserving disposable development rows.
 
-Work created before the cutover is legacy execution history and is exempt from the new `staged Work must have backing obligations` invariant. The exemption derives from the durable cutover boundary, not from pretending those Work items have obligations.
+Persistent source files, managed files that are deliberately re-enrolled, and encrypted secret material are outside this database-retention decision. They may be reattached or reconfigured through the current runtime contracts after the reset; old database identities are not authoritative merely because they existed before the reset.
 
-No new consequential owner request after cutover may use the exemption. A later owner request concerning historical Work goes through normal obligation intake; new obligations may bind to an existing mechanism only if ordinary runtime rules permit it.
+After reset, every retained owner turn is ledger-era state. Every owner turn therefore has explicit obligation-intake state, and every staged Work item that services an owner request must satisfy the normal backing-obligation invariant. There is no historical exemption path.
 
-This choice preserves historical truth and prevents migration from silently converting `zero ledger rows` into `nothing owed`.
+The reset is part of the architectural migration: obsolete database state is discarded so the live runtime has one coherent set of semantics rather than compatibility archaeology.
 ## 18. Required acceptance tests
 
 The ledger is load-bearing only if these behaviours are proven end to end:
@@ -388,13 +392,13 @@ The ledger is load-bearing only if these behaviours are proven end to end:
 13. Report generation is discarded when any snapshotted obligation revision or relevant evidence basis changes before persistence.
 14. Staged Work cannot run before `response_handed_off_at`; the request handler never performs the runnable transition.
 15. Failure to persist `response_handed_off_at` is logged loudly, leaves Work waiting, and surfaces handoff ambiguity without a fallback release path.
-16. Recovery deterministically distinguishes released, handoff-unconfirmed, partial/failed-intake, invalid-unbacked, and legacy-untracked Work.
+16. Recovery deterministically distinguishes released, handoff-unconfirmed, partial/failed-intake, and invalid-unbacked Work; there is no legacy exemption path.
 17. A lapsed open obligation receives a durable `lapsed_at` observation; resolving it removes the live lapse annotation while preserving lapse event history.
 18. A later owner turn may supersede an earlier obligation; same-turn or backward-invalid supersession is rejected.
 19. Registry change identifies stale `unserviceable` assessments without reopening the resolved obligation.
 20. Withdrawal can be written only by an explicit authenticated owner action or grounded later owner utterance. Work cancellation, planner output, recovery, policy refusal and unserviceable resolution are each asserted unable to write `withdrawn`.
 21. Deleting every obligation binding leaves obligation status and resolution unchanged.
-22. Pre-ledger turns are reported as `legacy_untracked`, never as complete merely because they have zero obligation rows.
+22. A clean development-state reset leaves no pre-ledger Chat/Work rows and no `legacy_untracked` or cutover-exemption path; every newly retained owner turn carries explicit obligation-intake state.
 
 ## 19. Flagship restart test under this model
 

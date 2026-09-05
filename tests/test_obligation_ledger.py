@@ -372,6 +372,139 @@ def test_failed_report_verification_leaves_communication_open(tmp_path):
     assert rt.obligation_store.get(obligation_id).status == "open"
 
 
+def _commit_items(rt, message: str, items, *, conversation_id: str | None = None):
+    owner = rt.identities.current_owner().principal_id
+    cid = conversation_id or rt.chat_store.create_conversation("Obligation")["conversation_id"]
+    turn = rt.chat_store.append_owner(cid, message, principal_id=owner)
+    attempt = rt.obligation_store.begin_attempt(turn["turn_id"])
+    result = rt.obligation_store.commit_intake(
+        turn["turn_id"], items, attempts=attempt, provider="test", model="test"
+    )
+    return owner, cid, rt.chat_store.turn(turn["turn_id"]), tuple(result.obligation_ids)
+
+
+_RESTART_TURN = "Restart the service and tell me when it is up"
+_RESTART_ITEMS = [
+    {"grounding_excerpt": "Restart the service", "text": "Restart the service", "kind": "state_change"},
+    {"grounding_excerpt": "tell me when it is up", "text": "Tell me when it is up", "kind": "communication"},
+]
+
+
+def _report_basis(provider):
+    request = next(item for item in provider.requests if item.capability_id == "chat.obligation_report")
+    return json.loads(request.input)
+
+
+def test_report_waits_for_sibling_state_change_verification(tmp_path):
+    """The incident: a serviced, evidenced action must never be reported as outstanding."""
+    rt = build_runtime(tmp_path / "instance")
+    owner, cid, turn, (state_id, comm_id) = _commit_items(rt, _RESTART_TURN, _RESTART_ITEMS)
+    _completed_support(rt, owner, state_id, capability_id="test.restart")
+    _completed_support(rt, owner, comm_id, capability_id="test.observe")
+
+    verdicts = [
+        '{"fulfilled":false,"reason":"only dispatch is proven"}',
+        '{"fulfilled":true,"reason":"the bound execution receipt proves the restart"}',
+    ]
+    rt.obligation_reconciler.provider = ScriptProvider(
+        state_verify=lambda _request: verdicts.pop(0),
+        report='{"kind":"reply","reply":"The service was restarted and is up."}',
+        report_verify='{"grounded":true,"unsupported_claims":[]}',
+    )
+
+    assert rt.obligation_reconciler.reconcile_noncommunication() == ()
+    assert rt.obligation_reconciler.report_communications() == ()
+    assert rt.obligation_store.get(comm_id).status == "open"
+    assert [row for row in rt.chat_store.turns(cid) if row["role"] == "assistant"] == []
+    assert not [item for item in rt.obligation_reconciler.provider.requests
+                if item.capability_id == "chat.obligation_report"]
+
+    assert rt.obligation_reconciler.reconcile_noncommunication() == (state_id,)
+    reports = rt.obligation_reconciler.report_communications()
+    assert len(reports) == 1
+    basis = _report_basis(rt.obligation_reconciler.provider)
+    assert basis["still_open"] == []
+    assert [row["obligation_id"] for row in basis["fulfilled_in_turn"]] == [state_id]
+    assert basis["fulfilled_in_turn"][0]["evidence"][0]["capability_id"] == "test.restart"
+    meta = rt.chat_store.turn(reports[0])["metadata"]["obligation_report"]
+    assert meta["owner_turn_id"] == turn["turn_id"]
+    assert meta["outstanding_obligation_states"] == {}
+
+
+def test_report_labels_unserviced_outstanding_obligation(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner, _cid, turn, (state_id, comm_id) = _commit_items(rt, _RESTART_TURN, _RESTART_ITEMS)
+    _completed_support(rt, owner, comm_id, capability_id="test.observe")
+    rt.obligation_reconciler.provider = ScriptProvider(
+        report='{"kind":"reply","reply":"Observed. The restart is still outstanding."}',
+        report_verify='{"grounded":true,"unsupported_claims":[]}',
+    )
+    reports = rt.obligation_reconciler.report_communications()
+    assert len(reports) == 1
+    assert _report_basis(rt.obligation_reconciler.provider)["still_open"] == [
+        {"obligation_id": state_id, "text": "Restart the service",
+         "kind": "state_change", "servicing_state": "unserviced"}
+    ]
+    meta = rt.chat_store.turn(reports[0])["metadata"]["obligation_report"]
+    assert meta["owner_turn_id"] == turn["turn_id"]
+    assert meta["outstanding_obligation_states"] == {state_id: "unserviced"}
+
+
+def test_waiting_owner_turn_does_not_hold_an_unrelated_turn_report(tmp_path):
+    """Reporting is scoped to one owner turn; a waiting sibling holds only its own turn."""
+    rt = build_runtime(tmp_path / "instance")
+    owner, cid, first_turn, (state_id, first_comm_id) = _commit_items(rt, _RESTART_TURN, _RESTART_ITEMS)
+    _completed_support(rt, owner, state_id, capability_id="test.restart")
+    _completed_support(rt, owner, first_comm_id, capability_id="test.observe")
+    second_message = "Also tell me the recorded disk usage"
+    _owner, _cid, second_turn, (second_comm_id,) = _commit_items(
+        rt, second_message,
+        [{"grounding_excerpt": "tell me the recorded disk usage",
+          "text": "Report the recorded disk usage", "kind": "communication"}],
+        conversation_id=cid,
+    )
+    _completed_support(rt, owner, second_comm_id, capability_id="test.disk")
+
+    rt.obligation_reconciler.provider = ScriptProvider(
+        state_verify='{"fulfilled":false,"reason":"only dispatch is proven"}',
+        report='{"kind":"reply","reply":"The recorded disk usage is available."}',
+        report_verify='{"grounded":true,"unsupported_claims":[]}',
+    )
+    reports = rt.obligation_reconciler.report_communications()
+    assert len(reports) == 1
+    assert rt.obligation_store.get(second_comm_id).status == "resolved"
+    assert rt.obligation_store.get(first_comm_id).status == "open"
+    assert rt.chat_store.turn(reports[0])["metadata"]["obligation_report"]["owner_turn_id"] == second_turn["turn_id"]
+    assert first_turn["turn_id"] != second_turn["turn_id"]
+
+
+def test_report_outstanding_over_fulfilled_evidence_is_a_forbidden_state(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner, cid, _turn, (state_id, _comm_id) = _commit_items(rt, _RESTART_TURN, _RESTART_ITEMS)
+    _completed_support(rt, owner, state_id, capability_id="test.restart")
+
+    def _forge(turn_id: str, report: dict) -> None:
+        with sqlite3.connect(rt.chat_store.path) as db:
+            db.execute(
+                "INSERT INTO chat_turns(turn_id,conversation_id,role,content,metadata_json) VALUES (?,?,?,?,?)",
+                (turn_id, cid, "assistant", "Still outstanding.",
+                 json.dumps({"obligation_report": report})),
+            )
+
+    base = {"obligation_ids": [], "obligation_revisions": {}, "evidence_ids": [],
+            "outstanding_obligation_revisions": {state_id: 1}}
+    _forge("turn_mislabelled", {**base, "outstanding_obligation_states": {state_id: "unserviced"}})
+    _forge("turn_unlabelled", dict(base))
+
+    violations = collect_runtime_violations(
+        rt.chat_store, rt.obligation_store, rt.work_store, rt.actions_store, rt.evidence
+    )
+    mislabelled = [item for item in violations
+                   if item.code == "report_outstanding_over_fulfilled_evidence"]
+    assert {item.reference for item in mislabelled} == {"turn_mislabelled", "turn_unlabelled"}
+    assert any(state_id in item.detail for item in mislabelled)
+
+
 def test_report_snapshot_change_discards_candidate(tmp_path):
     rt = build_runtime(tmp_path / "instance")
     message = "Tell me the result within 1 second"
@@ -708,7 +841,7 @@ def test_forbidden_state_list_has_one_executable_check_per_bullet():
     }
     frozen = set(invariants_module.FORBIDDEN_STATE_CHECK_IDS)
     assert implemented == frozen
-    assert len(invariants_module.FORBIDDEN_STATE_CHECK_IDS) == 20
+    assert len(invariants_module.FORBIDDEN_STATE_CHECK_IDS) == 21
 
 
 def test_flagship_restart_health_then_cullinan_weather_survives_restart_without_second_owner_turn(tmp_path, monkeypatch):
@@ -862,3 +995,15 @@ def test_flagship_restart_health_then_cullinan_weather_survives_restart_without_
     assert "Cullinan" in report_turn["content"] and "24°C" in report_turn["content"]
     owner_turns = [turn for turn in rt2.chat_store.turns(cid) if turn["role"] == "user"]
     assert [turn["turn_id"] for turn in owner_turns] == [owner_turn["turn_id"]]
+
+    # No persisted report ever described a serviced commitment as outstanding.
+    reports = [turn for turn in rt2.chat_store.turns(cid)
+               if turn["role"] == "assistant" and turn["metadata"].get("obligation_report")]
+    assert len(reports) == 1
+    report_meta = reports[0]["metadata"]["obligation_report"]
+    assert report_meta["owner_turn_id"] == owner_turn["turn_id"]
+    assert report_meta["outstanding_obligation_revisions"] == {}
+    assert report_meta["outstanding_obligation_states"] == {}
+    assert collect_runtime_violations(
+        rt2.chat_store, rt2.obligation_store, rt2.work_store, rt2.actions_store, rt2.evidence
+    ) == ()

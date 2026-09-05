@@ -196,14 +196,45 @@ class ObligationReconciler:
         return tuple(changed)
 
     def _reportable(self) -> dict[str, list[tuple[Any, dict[str, Any]]]]:
+        """Group reportable communication obligations by owner turn: one turn, one commitment set."""
         grouped: dict[str, list[tuple[Any, dict[str, Any]]]] = {}
         for obligation in self.obligations.list_open(limit=5000):
             if obligation.kind != "communication":
                 continue
             support = self._support(obligation)
             if support and support["kind"] == "fulfilled":
-                grouped.setdefault(obligation.conversation_id, []).append((obligation, support))
+                grouped.setdefault(obligation.owner_turn_id, []).append((obligation, support))
         return grouped
+
+    def _servicing_state(self, obligation) -> str:
+        """Deterministic servicing truth for an open obligation, derived from bound evidence."""
+        support = self._support(obligation)
+        if support is None:
+            return "unserviced"
+        return "declined_policy" if support["kind"] == "declined_policy" else "awaiting_verification"
+
+    def _fulfilled_in_turn(self, owner_turn_id: str) -> list[dict[str, Any]]:
+        """Verified outcomes already resolved for this owner turn, so the report may state them."""
+        rows: list[dict[str, Any]] = []
+        for item in self.obligations.for_turn(owner_turn_id):
+            if item.status != "resolved" or item.resolution_kind != "fulfilled":
+                continue
+            ref = str(item.resolution_ref or "")
+            if not ref.startswith("evidence:"):
+                continue
+            try:
+                record = self.evidence.get(ref.split(":", 1)[1])
+            except KeyError:
+                continue
+            occurrence = self._occurrence_evidence(record.occurrence_id)
+            if occurrence is None:
+                continue
+            rows.append({
+                "obligation_id": item.obligation_id, "text": item.text, "kind": item.kind,
+                "verification_evidence_id": record.evidence_id,
+                "evidence": [self._bounded_record(occurrence)],
+            })
+        return rows
 
     @staticmethod
     def _bounded_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -216,7 +247,7 @@ class ObligationReconciler:
             "evidence_ids": [row["evidence_id"] for row in record.get("evidence", [])],
         }
 
-    def _generate_report(self, reportable, outstanding) -> tuple[str, dict[str, Any]]:
+    def _generate_report(self, reportable, outstanding, states, fulfilled) -> tuple[str, dict[str, Any]]:
         payload = {
             "reportable": [
                 {
@@ -227,15 +258,22 @@ class ObligationReconciler:
                 for obligation, support in reportable
             ],
             "still_open": [
-                {"obligation_id": item.obligation_id, "text": item.text, "kind": item.kind}
+                {
+                    "obligation_id": item.obligation_id, "text": item.text, "kind": item.kind,
+                    "servicing_state": states[item.obligation_id],
+                }
                 for item in outstanding
             ],
+            "fulfilled_in_turn": list(fulfilled),
         }
         response = self.provider.generate(ModelRequest(
             capability_id="chat.obligation_report",
             system=(
                 "Report only the supplied durable evidence to the owner. Cover every reportable communication obligation. "
                 "If still_open is non-empty, explicitly say those commitments remain outstanding without inventing an outcome. "
+                "A still_open entry whose servicing_state is awaiting_verification has already been acted on with durable "
+                "evidence: describe it as serviced with the outcome not yet verified, never as not done and never as fulfilled. "
+                "A fulfilled_in_turn entry is a verified outcome from this same owner turn and may be reported as done. "
                 "Do not claim that Work completion alone proves an owner commitment. Return JSON only as {\"kind\":\"reply\",\"reply\":\"...\"}."
             ),
             input=json.dumps(payload, ensure_ascii=False, default=str),
@@ -289,22 +327,23 @@ class ObligationReconciler:
             "model": getattr(response, "model", None),
         }
 
-    def _snapshot_current(self, conversation_id: str, reportable) -> tuple[dict[str, int], tuple[str, ...], dict[str, str]]:
+    def _snapshot_current(self, owner_turn_id: str, reportable) -> tuple[dict[str, int], tuple[str, ...], dict[str, str]]:
         all_open = [
             item for item in self.obligations.list_open(limit=5000)
-            if item.conversation_id == conversation_id
+            if item.owner_turn_id == owner_turn_id
         ]
         revisions = {item.obligation_id: item.revision for item in all_open}
         reportable_ids = tuple(item.obligation_id for item, _support in reportable)
         digests = {item.obligation_id: support["digest"] for item, support in reportable}
         return revisions, reportable_ids, digests
 
-    def report_communications(self, *, limit_conversations: int = 4) -> tuple[str, ...]:
+    def report_communications(self, *, limit_turns: int = 4) -> tuple[str, ...]:
         persisted: list[str] = []
         grouped = self._reportable()
-        for conversation_id, reportable in list(grouped.items())[:max(1, int(limit_conversations))]:
+        for owner_turn_id, reportable in list(grouped.items())[:max(1, int(limit_turns))]:
+            conversation_id = reportable[0][0].conversation_id
             snapshot_revisions, reportable_ids, snapshot_digests = self._snapshot_current(
-                conversation_id, reportable
+                owner_turn_id, reportable
             )
             reportable_set = set(reportable_ids)
             outstanding = [
@@ -312,8 +351,19 @@ class ObligationReconciler:
                 for oid in snapshot_revisions
                 if oid not in reportable_set
             ]
+            outstanding_states = {
+                item.obligation_id: self._servicing_state(item) for item in outstanding
+            }
+            if "awaiting_verification" in outstanding_states.values():
+                # A commitment from this same owner turn is already serviced by durable
+                # evidence and only awaits verification. Reporting now would describe a
+                # done thing as outstanding, so hold the turn rather than mislead the owner.
+                continue
+            fulfilled = self._fulfilled_in_turn(owner_turn_id)
             try:
-                candidate, generation = self._generate_report(reportable, outstanding)
+                candidate, generation = self._generate_report(
+                    reportable, outstanding, outstanding_states, fulfilled
+                )
                 verification = self._verify_report(candidate, generation["basis"])
             except Exception:
                 logger.warning("obligation report generation/verification failed", exc_info=True)
@@ -323,7 +373,7 @@ class ObligationReconciler:
 
             current = [
                 item for item in self.obligations.list_open(limit=5000)
-                if item.conversation_id == conversation_id
+                if item.owner_turn_id == owner_turn_id
             ]
             current_revisions = {item.obligation_id: item.revision for item in current}
             if current_revisions != snapshot_revisions:
@@ -341,6 +391,13 @@ class ObligationReconciler:
                 continue
             if current_digests != snapshot_digests:
                 continue
+            if any(
+                self._servicing_state(item) == "awaiting_verification"
+                for item in current if item.obligation_id not in reportable_set
+            ):
+                # Servicing evidence can land while the report is being generated; the
+                # revision/digest checks above do not observe that direction.
+                continue
             revisions_to_resolve = {
                 item.obligation_id: snapshot_revisions[item.obligation_id]
                 for item, _support in reportable
@@ -351,12 +408,14 @@ class ObligationReconciler:
                 obligation_revisions=revisions_to_resolve,
                 metadata={
                     "obligation_report": {
+                        "owner_turn_id": owner_turn_id,
                         "obligation_ids": list(reportable_ids),
                         "obligation_revisions": revisions_to_resolve,
                         "outstanding_obligation_revisions": {
                             oid: revision for oid, revision in snapshot_revisions.items()
                             if oid not in reportable_set
                         },
+                        "outstanding_obligation_states": dict(outstanding_states),
                         "evidence_digests": snapshot_digests,
                         "evidence_ids": sorted({
                             evidence_row["evidence_id"]

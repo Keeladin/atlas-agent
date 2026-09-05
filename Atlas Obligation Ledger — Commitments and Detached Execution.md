@@ -334,6 +334,7 @@ The following states are invalid and must be prevented by schema constraints, tr
 - persisted `reportable` readiness state;
 - communication resolution occurring before the fulfilling Chat turn is durably persisted;
 - report persistence against stale obligation revisions or stale evidence basis;
+- owner-facing report whose basis labels an obligation unserviced while durable evidence already satisfied its fulfilment basis before the report was persisted;
 - inference of `response_handed_off_at` from elapsed time, assistant-turn existence, Work state, or restart evidence.
 ## 16. What this specification deletes or demotes
 

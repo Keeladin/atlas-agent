@@ -24,6 +24,7 @@ FORBIDDEN_STATE_CHECK_IDS = (
     "persisted_reportable_state",
     "communication_resolved_before_chat",
     "stale_or_unproven_report_snapshot",
+    "report_outstanding_over_fulfilled_evidence",
     "handoff_without_transport_provenance",
 )
 
@@ -52,6 +53,32 @@ def _chat_rows(chat_store, sql: str, args: tuple[Any, ...] = ()):
 def _work_rows(work_store, sql: str, args: tuple[Any, ...] = ()):
     with work_store._db() as db:
         return db.execute(sql, args).fetchall()
+
+
+def _authoritative_evidence_before(work_store, actions, evidence, obligation_id: str, cutoff: str) -> str | None:
+    """Evidence that already satisfied an obligation's fulfilment basis at `cutoff`, if any."""
+    for binding in work_store.servicing(obligation_id):
+        mechanism_kind = str(binding.get("mechanism_kind") or "")
+        mechanism_id = str(binding.get("mechanism_id") or "")
+        occurrence_id = mechanism_id if mechanism_kind == "occurrence" else ""
+        if mechanism_kind == "work_step":
+            try:
+                occurrence_id = str(work_store.step(mechanism_id).occurrence_id or "")
+            except KeyError:
+                continue
+        if not occurrence_id:
+            continue
+        try:
+            occurrence = actions.get(occurrence_id)
+        except KeyError:
+            continue
+        if occurrence.status != "succeeded":
+            continue
+        for record in evidence.for_occurrence(occurrence_id):
+            payload = record.payload if isinstance(record.payload, dict) else {}
+            if record.kind == "execution_receipt" and payload.get("ok") is True and str(record.created_at) <= cutoff:
+                return record.evidence_id
+    return None
 
 
 def collect_runtime_violations(chat_store, obligation_store, work_store, actions=None, evidence=None):
@@ -234,7 +261,7 @@ def collect_runtime_violations(chat_store, obligation_store, work_store, actions
         if reportable_columns:
             _append(violations, "persisted_reportable_state", "schema", ",".join(reportable_columns))
 
-        reports = db.execute("""SELECT turn_id,metadata_json FROM chat_turns
+        reports = db.execute("""SELECT turn_id,created_at,metadata_json FROM chat_turns
                               WHERE role='assistant' AND json_extract(metadata_json,'$.obligation_report') IS NOT NULL""").fetchall()
         for row in reports:
             import json
@@ -262,6 +289,23 @@ def collect_runtime_violations(chat_store, obligation_store, work_store, actions
                         break
             if bad:
                 _append(violations, "stale_or_unproven_report_snapshot", row["turn_id"], "snapshot authority is stale or missing")
+
+            outstanding = report.get("outstanding_obligation_revisions") if isinstance(report, dict) else None
+            states = report.get("outstanding_obligation_states") if isinstance(report, dict) else None
+            if outstanding:
+                if not isinstance(states, dict) or set(states) != set(outstanding):
+                    _append(violations, "report_outstanding_over_fulfilled_evidence", row["turn_id"],
+                            "outstanding servicing state is missing from the report basis")
+                elif actions is not None and evidence is not None:
+                    for obligation_id, state in states.items():
+                        if state != "unserviced":
+                            continue
+                        proof = _authoritative_evidence_before(
+                            work_store, actions, evidence, str(obligation_id), str(row["created_at"])
+                        )
+                        if proof is not None:
+                            _append(violations, "report_outstanding_over_fulfilled_evidence", row["turn_id"],
+                                    f"{obligation_id} was already evidenced by {proof}")
     handed = _chat_rows(chat_store, """SELECT t.turn_id FROM chat_turns t
                                       WHERE t.role='user' AND t.response_handed_off_at IS NOT NULL
                                         AND NOT EXISTS(

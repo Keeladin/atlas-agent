@@ -301,3 +301,9 @@ def test_multi_read_chat_chain_does_not_become_work(tmp_path):
     result = rt.chat.send(conversation_id, "Check both sources", principal_id=owner.principal_id, defer_capture=True)
     assert result["turn"]["content"] == "I checked both sources."
     assert rt.work_store.list() == ()
+
+
+def test_runtime_service_identity_can_be_derived_from_systemd_cgroup():
+    from atlas_core.host import _service_unit_from_cgroup
+    cgroup = "0::/user.slice/user-995.slice/user@995.service/app.slice/atlas-api.service\n"
+    assert _service_unit_from_cgroup(cgroup) == "atlas-api.service"

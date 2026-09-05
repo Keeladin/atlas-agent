@@ -33,12 +33,28 @@ def _trusted_package_broker()->tuple[bool,str]:
 def _run(args:list[str],*,timeout:float=20)->subprocess.CompletedProcess[str]:
     return subprocess.run(args,text=True,capture_output=True,timeout=timeout,check=False)
 
+def _service_unit_from_cgroup(text:str)->str|None:
+    for line in text.splitlines():
+        path=line.rsplit(":",1)[-1]
+        for part in reversed(path.split("/")):
+            if _UNIT.fullmatch(part):return part
+    return None
+
+def _current_service_unit()->str|None:
+    """Resolve the user-systemd service that owns this process from its cgroup."""
+    try:
+        text=Path("/proc/self/cgroup").read_text(encoding="utf-8",errors="replace")
+    except OSError:
+        return None
+    return _service_unit_from_cgroup(text)
+
 class HostRuntime:
     """Deterministic host observation and user-systemd administration."""
     def __init__(self,registry:CapabilityRegistry,actions:ActionStore,*,protected_paths:tuple[Path,...]=(),self_service_unit:str|None=None)->None:
         self.registry=registry;self.actions=actions
         self.protected_paths=tuple(path.expanduser().resolve(strict=False) for path in protected_paths)
-        self.self_service_unit=_unit(self_service_unit) if self_service_unit else None
+        resolved_self_unit=self_service_unit or _current_service_unit()
+        self.self_service_unit=_unit(resolved_self_unit) if resolved_self_unit else None
         self._register()
     def _register(self)->None:
         empty={"type":"object","properties":{},"additionalProperties":False}

@@ -140,11 +140,15 @@ class WorkStore:
     def servicing(self,obligation_id:str)->tuple[dict[str,Any],...]:
         with self._db() as db:
             rows=db.execute(
-                """SELECT b.*,w.status AS work_status,a.status AS occurrence_status
+                """SELECT b.*,w.status AS work_status,s.status AS step_status,
+                          s.occurrence_id AS step_occurrence_id,a.status AS occurrence_status
                    FROM obligation_bindings b
                    LEFT JOIN work_items w ON w.work_id=b.work_id
+                   LEFT JOIN work_steps s
+                     ON b.mechanism_kind='work_step' AND s.step_id=b.mechanism_id
                    LEFT JOIN action_occurrences a
-                     ON b.mechanism_kind='occurrence' AND a.occurrence_id=b.mechanism_id
+                     ON (b.mechanism_kind='occurrence' AND a.occurrence_id=b.mechanism_id)
+                     OR (b.mechanism_kind='work_step' AND a.occurrence_id=s.occurrence_id)
                    WHERE b.obligation_id=? ORDER BY b.created_at,b.rowid""",
                 (obligation_id,),
             ).fetchall()

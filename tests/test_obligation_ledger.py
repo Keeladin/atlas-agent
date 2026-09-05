@@ -313,7 +313,9 @@ def test_policy_no_resolves_only_the_obligation_bound_to_the_blocked_step(tmp_pa
 
 def test_work_cancellation_leaves_obligation_open_and_attention_derived_from_ledger(tmp_path):
     rt = build_runtime(tmp_path / "instance")
-    owner, _cid, _turn, obligation_id = _commit(rt, "Keep responsibility for this")
+    owner, _cid, turn, obligation_id = _commit(rt, "Keep responsibility for this")
+    rt.chat_store.mark_turn_completed(turn["turn_id"])
+    rt.chat_store.mark_response_handed_off(turn["turn_id"])
     _register_effect(rt)
     work = rt.work.create(
         "Disposable mechanism", [_mapped_step("test.effect", obligation_id)], owner_principal_id=owner
@@ -329,10 +331,42 @@ def test_work_cancellation_leaves_obligation_open_and_attention_derived_from_led
 def test_unbound_obligation_survives_restart_and_remains_attention(tmp_path):
     root = tmp_path / "instance"
     rt = build_runtime(root)
-    _owner, _cid, _turn, obligation_id = _commit(rt, "Keep this dangling duty")
+    _owner, _cid, turn, obligation_id = _commit(rt, "Keep this dangling duty")
+    rt.chat_store.mark_turn_completed(turn["turn_id"])
+    rt.chat_store.mark_response_handed_off(turn["turn_id"])
     rt2 = build_runtime(root)
     assert rt2.obligation_store.get(obligation_id).status == "open"
     assert any(row["obligation_id"] == obligation_id for row in rt2.attention.snapshot())
+
+
+def test_attention_does_not_surface_obligation_while_chat_still_owns_turn(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    _owner, _cid, turn, obligation_id = _commit(rt, "Do this after planning")
+    assert not any(row["obligation_id"] == obligation_id for row in rt.attention.snapshot())
+
+    rt.chat_store.mark_turn_completed(turn["turn_id"])
+    assert any(
+        row["kind"] == "handoff_unconfirmed" and row["obligation_id"] == obligation_id
+        for row in rt.attention.snapshot()
+    )
+
+    rt.chat_store.mark_response_handed_off(turn["turn_id"])
+    assert any(
+        row["kind"] == "unserviced_obligation" and row["obligation_id"] == obligation_id
+        for row in rt.attention.snapshot()
+    )
+
+
+def test_succeeded_bound_occurrence_waiting_for_reconciliation_is_not_attention(tmp_path):
+    rt = build_runtime(tmp_path / "instance")
+    owner, _cid, turn, obligation_id = _commit(rt, "Report the completed result", kind="communication")
+    rt.chat_store.mark_turn_completed(turn["turn_id"])
+    rt.chat_store.mark_response_handed_off(turn["turn_id"])
+    _completed_support(rt, owner, obligation_id)
+    assert rt.obligation_store.get(obligation_id).status == "open"
+    servicing = rt.work_store.servicing(obligation_id)
+    assert any(row.get("occurrence_status") == "succeeded" for row in servicing)
+    assert not any(row["obligation_id"] == obligation_id for row in rt.attention.snapshot())
 
 
 def _completed_support(rt, owner, obligation_id, *, capability_id="test.effect"):

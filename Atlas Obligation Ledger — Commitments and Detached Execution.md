@@ -301,13 +301,15 @@ There is no historical/pre-ledger completeness branch. Section 17 requires a cle
 
 ## 14. Attention and dangling commitments
 
-`Needs you` is derived from obligation truth rather than Work-status heuristics. Useful derived conditions include:
+`Needs you` means owner intervention is required. It is derived from obligation truth plus exact servicing/evidence facts, never from a Work-status shortcut. Useful derived conditions include:
 
-- open obligation with no active servicing binding;
-- open obligation whose servicing mechanism is blocked or waiting on owner input;
+- open obligation from a completed, handed-off owner turn with no servicing binding and no succeeded bound occurrence awaiting reconciliation;
+- open obligation whose servicing mechanism is terminally blocked or explicitly waiting on owner input;
 - open obligation with `lapsed_at` set;
 - open obligation from a complete turn whose response handoff is unconfirmed;
 - historical `unserviceable` resolution whose registry basis is stale.
+
+An obligation does **not** belong in `Needs you` merely because Chat is still planning, detached Work is staged/runnable/active, or a succeeded bound occurrence is waiting for obligation verification/report reconciliation. Those are Atlas-owned in-progress states.
 
 These are views over durable facts. They are not additional obligation states.
 

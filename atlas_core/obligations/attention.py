@@ -7,7 +7,7 @@ from atlas_core.retrieval.capabilities import registry_fingerprint
 
 _ACTIVE_WORK_STATUSES = {"staged", "queued", "runnable", "active"}
 _BLOCKED_WORK_STATUSES = {"waiting", "paused", "failed"}
-_ACTIVE_OCCURRENCE_STATUSES = {"executing", "uncertain", "succeeded"}
+_SERVICED_OCCURRENCE_STATUSES = {"executing", "uncertain", "succeeded"}
 _BLOCKED_OCCURRENCE_STATUSES = {"blocked", "failed"}
 
 
@@ -22,21 +22,38 @@ class AttentionRuntime:
     def snapshot(self, *, limit: int = 500) -> tuple[dict[str, Any], ...]:
         rows: list[dict[str, Any]] = []
         for obligation in self.obligations.list_open(limit=limit):
+            turn = self.obligations.owner_turn_state(obligation.owner_turn_id)
+            if turn.get("turn_completed_at") is None:
+                # Chat still owns this turn. Intake preceding planning is not an owner-attention event.
+                continue
+            if turn.get("response_handed_off_at") is None:
+                rows.append({
+                    "kind": "handoff_unconfirmed",
+                    "obligation_id": obligation.obligation_id,
+                    "owner_turn_id": obligation.owner_turn_id,
+                    "conversation_id": obligation.conversation_id,
+                    "obligation_kind": obligation.kind,
+                    "text": obligation.text,
+                    "created_at": obligation.created_at,
+                })
+                continue
+
             servicing = self.work_store.servicing(obligation.obligation_id)
             active = []
             blocked = []
             for binding in servicing:
-                if binding.get("mechanism_kind") == "occurrence":
-                    status = str(binding.get("occurrence_status") or "")
-                    if status in _ACTIVE_OCCURRENCE_STATUSES:
-                        active.append(binding)
-                    elif status in _BLOCKED_OCCURRENCE_STATUSES:
-                        blocked.append(binding)
-                    continue
-                status = str(binding.get("work_status") or "")
-                if status in _ACTIVE_WORK_STATUSES:
+                occurrence_status = str(binding.get("occurrence_status") or "")
+                if occurrence_status in _SERVICED_OCCURRENCE_STATUSES:
+                    # A succeeded bound occurrence is still servicing truth until the ledger reconciles it.
                     active.append(binding)
-                elif status in _BLOCKED_WORK_STATUSES:
+                    continue
+                if occurrence_status in _BLOCKED_OCCURRENCE_STATUSES:
+                    blocked.append(binding)
+                    continue
+                work_status = str(binding.get("work_status") or "")
+                if work_status in _ACTIVE_WORK_STATUSES:
+                    active.append(binding)
+                elif work_status in _BLOCKED_WORK_STATUSES:
                     blocked.append(binding)
 
             if not active and not blocked:
@@ -65,27 +82,6 @@ class AttentionRuntime:
                     "status": first.get("work_status") or first.get("occurrence_status"),
                     "created_at": obligation.created_at,
                 })
-
-            for binding in servicing:
-                work_id = binding.get("work_id")
-                if not work_id:
-                    continue
-                try:
-                    work = self.work_store.get(str(work_id))
-                except KeyError:
-                    continue
-                gate = work.metadata.get("execution_gate") if isinstance(work.metadata.get("execution_gate"), dict) else {}
-                if work.status == "waiting" and gate.get("reason") == "handoff_unconfirmed":
-                    rows.append({
-                        "kind": "handoff_unconfirmed",
-                        "obligation_id": obligation.obligation_id,
-                        "owner_turn_id": obligation.owner_turn_id,
-                        "conversation_id": obligation.conversation_id,
-                        "work_id": work.work_id,
-                        "text": obligation.text,
-                        "created_at": obligation.created_at,
-                    })
-                    break
 
             if obligation.lapsed_at is not None:
                 rows.append({

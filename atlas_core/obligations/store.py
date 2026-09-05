@@ -124,6 +124,16 @@ class ObligationStore:
     def open_for_turn(self, owner_turn_id: str) -> tuple[Obligation, ...]:
         return tuple(item for item in self.for_turn(owner_turn_id) if item.status == "open")
 
+    def owner_turn_state(self, owner_turn_id: str) -> dict[str, Any]:
+        with self._db() as db:
+            row = db.execute(
+                """SELECT intake_status,turn_completed_at,response_handed_off_at
+                   FROM chat_turns WHERE turn_id=? AND role='user'""",
+                (owner_turn_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(owner_turn_id)
+        return dict(row)
 
     def list_open(self, limit: int = 1000) -> tuple[Obligation, ...]:
         with self._db() as db:

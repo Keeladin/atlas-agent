@@ -331,11 +331,23 @@ class ChatRuntime:
                 planner_events.extend({**item, "decision_round": _round + 1} for item in attempts)
             except PlannerUnavailable as exc:
                 planner_events.extend({**item, "decision_round": _round + 1} for item in exc.attempts)
-                text = "The planning model didn't return a usable route; nothing was executed." if not tool_context else "The planning model didn't return a usable next route; I didn't execute anything further."
+                if staged_chat_work_ids:
+                    text = "I've staged the requested work. It will continue after this response is handed off."
+                    planner_status = "unavailable_after_staging"
+                    metadata = {
+                        "tools_used": [x.get("capability_id") for x in tool_context if x.get("capability_id")],
+                        "staged_work_ids": sorted(staged_chat_work_ids),
+                        "planner": {"status": planner_status, "attempt_count": len(planner_events), "attempts": planner_events},
+                    }
+                else:
+                    text = "The planning model didn't return a usable route; nothing was executed." if not tool_context else "The planning model didn't return a usable next route; I didn't execute anything further."
+                    metadata = {
+                        "tools_used": [x.get("capability_id") for x in tool_context if x.get("capability_id")],
+                        "error": PlannerUnavailable.code,
+                        "planner": {"status": "unavailable", "attempt_count": len(planner_events), "attempts": planner_events},
+                    }
                 return self._finish_turn(
-                    conversation_id, message, principal_id, owner_turn, text,
-                    {"tools_used": [x.get("capability_id") for x in tool_context if x.get("capability_id")],
-                     "error": PlannerUnavailable.code, "planner": {"status": "unavailable", "attempt_count": len(planner_events), "attempts": planner_events}},
+                    conversation_id, message, principal_id, owner_turn, text, metadata,
                     skip_capture=capture_done, defer_capture=defer_capture,
                 )
             kind = str(decision.get("kind") or "reply")

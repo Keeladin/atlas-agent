@@ -116,6 +116,38 @@ def test_chat_promotes_self_restart_to_detached_work_after_handoff(tmp_path, mon
     assert signal["status"] == "durable_required"
 
 
+def test_planner_unavailable_after_work_create_hands_off_staged_work_not_false_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("ATLAS_SERVICE_UNIT", "atlas-api.service")
+    monkeypatch.setenv("INVOCATION_ID", "old-invocation")
+    monkeypatch.setattr(host_module, "_run", _fake_systemd)
+    rt = build_runtime(tmp_path / "instance")
+    owner = rt.identities.current_owner()
+    cid = rt.chat_store.create_conversation("Restart fallback")['conversation_id']
+    rt.chat.provider = SequenceProvider(
+        lambda request: (lambda oid: json.dumps({"kind":"capability","capability_id":"work.create","input":{
+            "objective":"Restart the Atlas API and verify it is running",
+            "steps":[
+                {"capability_id":"host.service.restart","description":"Restart Atlas API","input":{"unit":"atlas-api.service"},"obligation_ids":[oid]},
+                {"capability_id":"host.service.status","description":"Verify Atlas API service state","input":{"unit":"atlas-api.service"},"obligation_ids":[oid]}
+            ]
+        }}))(json.loads(request.input)["owner_obligations"][0]["obligation_id"]),
+        "not-json",
+        "still-not-json",
+    )
+    result = rt.chat.send(
+        cid, "Restart your API and verify it comes back healthy",
+        principal_id=owner.principal_id, defer_capture=True,
+    )
+    turn = result["turn"]
+    assert turn["content"] == "I've staged the requested work. It will continue after this response is handed off."
+    assert turn["metadata"]["planner"]["status"] == "unavailable_after_staging"
+    assert "error" not in turn["metadata"]
+    work = rt.work_store.list(limit=10)[0]
+    assert work.status == "staged"
+    assert turn["metadata"]["staged_work_ids"] == [work.work_id]
+    assert not [row for row in rt.actions_store.recent(limit=30) if row.capability_id == "host.service.restart"]
+
+
 def test_uncertain_direct_action_is_adopted_not_replayed(tmp_path):
     rt = build_runtime(tmp_path / "instance")
     owner = rt.identities.current_owner()
